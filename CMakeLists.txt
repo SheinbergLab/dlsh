@@ -17,8 +17,8 @@ if(WIN32)
     link_directories(c:/usr/local/lib/$ENV{VSCMD_ARG_TGT_ARCH})
 elseif(APPLE)
     add_definitions(-DMACOS -Dunix -DLINUX)
-    include_directories(src src/lablib /usr/local/include)
-    link_directories(/usr/local/lib)
+    include_directories(src src/lablib /usr/local/include /opt/homebrew/include/ /opt/homebrew/include/tcl-tk)
+    link_directories(/usr/local/lib /opt/homebrew/lib)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "QNX")
     add_definitions(-DLINUX)
     include_directories(../local/include)
@@ -87,10 +87,6 @@ target_link_libraries( dlsh ${LIBJANSSON} ${TCLLIB} ${PDFLIB} ${LZ4LIB} ${ZLIB} 
 
 target_link_libraries( dlsh-static ${LIBJANSSON} ${TCLLIB} ${PDFLIB} ${LZ4LIB} ${ZLIB} )
 
-install(TARGETS dlsh PUBLIC_HEADER)
-install(TARGETS dlsh LIBRARY)
-install(TARGETS dlsh-static LIBRARY)
-
 set(CPACK_PACKAGE_NAME dlsh)
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Dynamic Lists and other TCL utilities.")
 set(CPACK_PACKAGE_CONTACT SheinbergLab)
@@ -99,10 +95,35 @@ include(InstallRequiredSystemLibraries)
 if(WIN32)
     # TODO
 elseif(APPLE)
-    # TODO
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
+    set(CPACK_COMPONENTS_ALL dlsh dg)
+    install(TARGETS dlsh PUBLIC_HEADER COMPONENT dlsh)
+    install(TARGETS dlsh LIBRARY COMPONENT dlsh)
+    install(TARGETS dlsh-static ARCHIVE COMPONENT dlsh)
+
+    if(DEFINED "CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM")
+        # Configure for apple code signing, notarization, and gatekeeper/entitlements.
+        set(CMAKE_XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS "--strict --timestamp --options=runtime")
+        set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_INJECT_BASE_ENTITLEMENTS "NO")
+        set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Developer ID Application")
+        set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Manual")
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0")
+        set(CMAKE_SKIP_RPATH TRUE)
+
+        # Set up .pkg metadata.
+        list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/macos)
+        set(CPACK_PRODUCTBUILD_IDENTIFIER "org.sheinberglab")
+        set(CPACK_RESOURCE_FILE_WELCOME ${CMAKE_SOURCE_DIR}/macos/welcome.txt)
+        set(CPACK_RESOURCE_FILE_README ${CMAKE_SOURCE_DIR}/macos/readme.txt)
+        set(CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/macos/license.txt)
+    endif()
 else()
+    install(TARGETS dlsh PUBLIC_HEADER COMPONENT dlsh)
+    install(TARGETS dlsh LIBRARY COMPONENT dlsh)
+    install(TARGETS dlsh-static LIBRARY COMPONENT dlsh)
     set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
     set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 endif()
 
 include(CPack)
+cpack_add_component(dlsh dg REQUIRED)

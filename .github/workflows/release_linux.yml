@@ -1,8 +1,8 @@
-name: Build and Release
+name: Release for Linux
 
 on:
   push:
-    tags:        
+    tags:
       - '*'
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
 
     permissions:
         contents: write
-        
+
     steps:
 
       - name: Set up a build environment.
@@ -56,7 +56,7 @@ jobs:
           cmake --build build
           sudo cmake --install build
 
-      - name: Install dlsh and package for release.
+      - name: Build dlsh and package for release.
         run: |
           cmake -D PROJECT_VERSION=${{ github.ref_name }} -B build
           cmake --build build
