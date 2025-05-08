@@ -30,14 +30,17 @@ add_library(dg
 
 add_subdirectory( test )
 
+set_target_properties(dg PROPERTIES PUBLIC_HEADER "../src/lablib/dynio.h;../src/lablib/df.h")
 if(WIN32)
-
+  # TODO
+elseif(APPLE)
+  install(TARGETS dg LIBRARY COMPONENT dg)
+  install(TARGETS dg ARCHIVE COMPONENT dg)
+  install(TARGETS dg PUBLIC_HEADER COMPONENT dg)
 else()
-	set_target_properties(dg PROPERTIES PUBLIC_HEADER "../src/lablib/dynio.h;../src/lablib/df.h")
-INSTALL(TARGETS dg
-        LIBRARY DESTINATION /usr/local/lib
-        ARCHIVE DESTINATION /usr/local/lib
-        PUBLIC_HEADER DESTINATION /usr/local/include
-)
+  INSTALL(TARGETS dg
+    LIBRARY DESTINATION /usr/local/lib
+    ARCHIVE DESTINATION /usr/local/lib
+    PUBLIC_HEADER DESTINATION /usr/local/include
+  )
 endif()
-
