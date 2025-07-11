@@ -8,5 +8,4 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-# on MacOS, don't include the Dslog at the end?
-package ifneeded dslog 1.0 [list load [file join $dir libdslog[info sharedlibextension]] Dslog]
+package ifneeded dslog 1.0 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libdslog[info sharedlibextension]] Dslog]

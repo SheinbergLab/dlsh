@@ -8,4 +8,4 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded qpcs 3.35 [list source [file join $dir qpcs.tcl]]
+package ifneeded qpcs 3.40 [list source [file join $dir qpcs.tcl]]

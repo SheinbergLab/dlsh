@@ -35,6 +35,6 @@ The workflow might go like this:
    - `git tag -a 0.0.2 -m "Now with lasers."`
    - `git push --tags`
  - When the new tag is pushed to GitHub, GitHub Actions will kick off a new build and release.
- - See workflow definition(s) like [build-and-release.yml](./.github/workflows/build-and-release.yml).
+ - See workflow definition(s) in [.github/workflows](./.github/workflows).
  - Follow workflow progress at the repo [Actions tab](https://github.com/SheinbergLab/dlsh/actions).
  - See completed releases and build artifacts at the repo [Releases](https://github.com/SheinbergLab/dlsh/releases).

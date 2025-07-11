@@ -1,9 +1,43 @@
 [submodule "deps/tcl"]
 	path = deps/tcl
 	url = https://github.com/tcltk/tcl.git
+    ignore = untracked
 [submodule "deps/jansson"]
 	path = deps/jansson
 	url = https://github.com/akheron/jansson.git
+    ignore = untracked
 [submodule "deps/libharu"]
 	path = deps/libharu
 	url = https://github.com/libharu/libharu.git
+    ignore = untracked
+[submodule "deps/tcllib"]
+	path = deps/tcllib
+	url = https://github.com/tcltk/tcllib.git
+    ignore = untracked
+[submodule "deps/tklib"]
+	path = deps/tklib
+	url = https://github.com/tcltk/tklib.git
+    ignore = untracked
+[submodule "deps/TkCon"]
+	path = deps/TkCon
+	url = https://github.com/bohagan1/TkCon.git
+    ignore = untracked
+[submodule "deps/bwidget"]
+	path = deps/bwidget
+	url = https://github.com/tcltk/bwidget
+    ignore = untracked
+[submodule "deps/sqlite"]
+	path = deps/sqlite
+	url = https://github.com/sqlite/sqlite.git
+    ignore = untracked
+[submodule "deps/yajl-tcl"]
+	path = deps/yajl-tcl
+	url = https://github.com/flightaware/yajl-tcl.git
+    ignore = untracked
+[submodule "deps/box2d"]
+	path = deps/box2d
+	url = https://github.com/erincatto/box2d.git
+    ignore = untracked
+[submodule "deps/fltk"]
+	path = deps/fltk
+	url = https://github.com/fltk/fltk.git

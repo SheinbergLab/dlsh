@@ -159,7 +159,7 @@ static int findBink(Tcl_Interp *interp,
 
 int
 binkCmd(ClientData clientData, Tcl_Interp *interp, 
-	int argc, Tcl_Obj *CONST objv[])
+	int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *)clientData;
   int subi;
@@ -204,7 +204,7 @@ binkCmd(ClientData clientData, Tcl_Interp *interp,
 static int
 tclBinkCreateCmd(ClientData clientData,
 		 Tcl_Interp *interp,
-		 int argc, Tcl_Obj *CONST objv[])
+		 int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;  
   HBINK bink;
@@ -239,7 +239,7 @@ tclBinkCreateCmd(ClientData clientData,
 static int
 tclBinkDestroyCmd(ClientData clientData,
 		  Tcl_Interp *interp,
-		  int argc, Tcl_Obj *CONST objv[])
+		  int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;  
   Tcl_HashEntry *entryPtr;
@@ -281,7 +281,7 @@ tclBinkDestroyCmd(ClientData clientData,
  */
 static int tclBinkGetFrameCmd (ClientData clientData,
 			       Tcl_Interp *interp,
-			       int argc, Tcl_Obj *CONST objv[])
+			       int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;  
   int w = -1, h, d = 4, pitch;
@@ -324,7 +324,7 @@ static int tclBinkGetFrameCmd (ClientData clientData,
  */
 static int tclBinkGetFramePNGCmd (ClientData clientData,
 				  Tcl_Interp *interp,
-				  int argc, Tcl_Obj *CONST objv[])
+				  int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;  
   int w = -1, h, d = 4, pitch;
@@ -376,7 +376,7 @@ static int tclBinkGetFramePNGCmd (ClientData clientData,
 
 static int tclBinkWaitCmd (ClientData clientData,
 			   Tcl_Interp *interp,
-			   int argc, Tcl_Obj *CONST objv[])
+			   int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   BINKOBJ *b;
@@ -394,7 +394,7 @@ static int tclBinkWaitCmd (ClientData clientData,
 
 static int tclBinkNextFrameCmd (ClientData clientData,
 				Tcl_Interp *interp,
-				int argc, Tcl_Obj *CONST objv[])
+				int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   BINKOBJ *b;
@@ -413,7 +413,7 @@ static int tclBinkNextFrameCmd (ClientData clientData,
 
 static int tclBinkSetSoundOnOffCmd (ClientData clientData,
 				    Tcl_Interp *interp,
-				    int argc, Tcl_Obj *CONST objv[])
+				    int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   BINKOBJ *b;
@@ -435,7 +435,7 @@ static int tclBinkSetSoundOnOffCmd (ClientData clientData,
 
 static int tclBinkGetFramesCmd (ClientData clientData,
 				Tcl_Interp *interp,
-				int argc, Tcl_Obj *CONST objv[])
+				int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   BINKOBJ *b;
@@ -453,7 +453,7 @@ static int tclBinkGetFramesCmd (ClientData clientData,
 
 static int tclBinkGetFrameNumCmd (ClientData clientData,
 				  Tcl_Interp *interp,
-				  int argc, Tcl_Obj *CONST objv[])
+				  int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   BINKOBJ *b;
@@ -471,7 +471,7 @@ static int tclBinkGetFrameNumCmd (ClientData clientData,
 
 static int tclBinkSetFrameRateCmd (ClientData clientData,
 				   Tcl_Interp *interp,
-				   int argc, Tcl_Obj *CONST objv[])
+				   int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   char *cmd;
@@ -490,7 +490,7 @@ static int tclBinkSetFrameRateCmd (ClientData clientData,
 
 static int tclBinkSetSoundTrackCmd (ClientData clientData,
 				    Tcl_Interp *interp,
-				    int argc, Tcl_Obj *CONST objv[])
+				    int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   char *cmd;
@@ -517,7 +517,7 @@ static int tclBinkSetSoundTrackCmd (ClientData clientData,
 
 static int tclBinkGotoCmd (ClientData clientData,
 			   Tcl_Interp *interp,
-			   int argc, Tcl_Obj *CONST objv[])
+			   int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   BINKOBJ *b;
@@ -539,7 +539,7 @@ static int tclBinkGotoCmd (ClientData clientData,
 
 static int tclBinkInfoCmd (ClientData clientData,
 			   Tcl_Interp *interp,
-			   int argc, Tcl_Obj *CONST objv[])
+			   int argc, Tcl_Obj *const objv[])
 {
   Tcl_HashTable *binkTable = (Tcl_HashTable *) clientData;
   BINKOBJ *b;

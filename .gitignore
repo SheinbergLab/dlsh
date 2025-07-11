@@ -1,5 +1,10 @@
+.vscode/
 build/
 _CPack_Packages/
 .DS_Store
 pkgtest/
 *.pkg
+*.deb
+*.zip
+
+deps/dlsh-dependencies/

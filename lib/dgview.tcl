@@ -24,15 +24,15 @@ namespace eval groupview {
 	# the count is declared for entry purposes.
 	
 	set groupkey dgview
-	append groupkey $groupview::count
-	set groupview::groups($groupkey) $group
+	append groupkey $::groupview::count
+	set ::groupview::groups($groupkey) $group
 	if { $parent == "" } {
 	    set t [toplevel .$groupkey]
 	} else {
 	    set t $parent
 	}
 
-	global $groupview::count
+	global ::groupview::count
 
 	# Next, the associated widgets are created, as well as the
 	# array to contain the group data.
@@ -41,11 +41,11 @@ namespace eval groupview {
 		[list $t.vs set ] -xscrollcommand [list $t.hs set ] \
 		-roworigin 0 -colorigin 0 -colstretchmode none -titlerows 1 \
 		-state disabled -cursor arrow -borderwidth 2 -pady 1 \
-		-colwidth 15 -variable groupview::$groupkey \
+		-colwidth 15 -variable ::groupview::$groupkey \
 		-selectmode extended \
 		-selecttype cell \
 		-rowseparator \n -colseparator \t  \
-		-browsecommand [list groupview::updateEntry $t.table $t.text %S]]
+		-browsecommand [list ::groupview::updateEntry $t.table $t.text %S]]
 	scrollbar $t.vs -orient vertical -command [list $table yview ] 
 	scrollbar $t.hs -orient horizontal -command [list $table xview ]
 
@@ -69,19 +69,19 @@ namespace eval groupview {
 	    "switch_selection_mode $table;
              event generate $table <Button-1> -button 1 -state %s -x %x -y %y"
 
-	bind $table <Destroy> [list groupview::cleanUpAfterGroup \
+	bind $table <Destroy> [list ::groupview::cleanUpAfterGroup \
 		$groupkey $openflag ]
 
-	bind $table <Double-1> [list groupview::openListMouse $table %x %y \
+	bind $table <Double-1> [list ::groupview::openListMouse $table %x %y \
 		$group ]
 
-	bind $table <Double-3> [list groupview::openFile ]
+	bind $table <Double-3> [list ::groupview::openFile ]
 
-	bind $table <Return> [list groupview::openListKeys $table $group ]
+	bind $table <Return> [list ::groupview::openListKeys $table $group ]
 
 	# Finally, the group's data is filled into the array.
 
-	upvar #0 groupview::$groupkey array 
+	upvar #0 ::groupview::$groupkey array 
 
 	dl_local nodenames [dg_listnames $group]
 	set maxlength 0
@@ -111,7 +111,7 @@ namespace eval groupview {
 	    }
 	}
 
-	incr groupview::count
+	incr ::groupview::count
 	return $t
     }
 
@@ -123,7 +123,7 @@ namespace eval groupview {
 	# the count). The count is also incremented
 	
 	set listkey dlview
-	append listkey $groupview::count
+	append listkey $::groupview::count
 	set t [toplevel .$listkey]
 
 	# Next, the associated widgets are created, as well as the
@@ -133,11 +133,11 @@ namespace eval groupview {
 		[list $t.vs set ] -xscrollcommand [list $t.hs set ] \
 		-roworigin 0 -colorigin 0 -colstretchmode none -titlerows 1 \
 		-state disabled -cursor arrow -borderwidth 2 -pady 1 \
-		-colwidth 15 -variable groupview::$listkey \
+		-colwidth 15 -variable ::groupview::$listkey \
 		-selectmode extended \
 		-selecttype cell \
 		-rowseparator \n -colseparator \t  \
-		-browsecommand [list groupview::updateEntry $t.table $t.text %S]]
+		-browsecommand [list ::groupview::updateEntry $t.table $t.text %S]]
 	scrollbar $t.vs -orient vertical -command [list $table yview ] 
 	scrollbar $t.hs -orient horizontal -command [list $table xview ]
 	label $t.text -background lightgray -relief sunken -justify left \
@@ -154,17 +154,17 @@ namespace eval groupview {
 	# Now bindings are added to give the viewer some functionality,
 	# as well as to allow it to clean up after itself.
 
-	bind $t.table <Destroy> [list groupview::cleanUpAfterList $listkey ]
+	bind $t.table <Destroy> [list ::groupview::cleanUpAfterList $listkey ]
 
-	bind $table <Double-1> [list groupview::openListMouse $table %x %y ]
+	bind $table <Double-1> [list ::groupview::openListMouse $table %x %y ]
 
-	bind $table <Return> [list groupview::openListKeys $table ]
+	bind $table <Return> [list ::groupview::openListKeys $table ]
 
 
 	# Finally, the group's data is filled into the array. 
 	# The count is also incremented.
 
-	upvar #0 groupview::$listkey array 
+	upvar #0 ::groupview::$listkey array 
 
 	set maxlength [dl_length $list]
 	$table configure -rows [expr $maxlength + 1] -cols 1
@@ -182,7 +182,7 @@ namespace eval groupview {
 	    }
 	}
 
-	incr groupview::count
+	incr ::groupview::count
 
     }
         
@@ -190,8 +190,8 @@ namespace eval groupview {
     # table's array just as it is destroyed. The group is also deleted
     # if it was opened by this program (the openflag is set).
     proc cleanUpAfterGroup { groupkey openflag } {
-	upvar #0 groupview::$groupkey array1
-	upvar #0 groupview::groups array2
+	upvar #0 ::groupview::$groupkey array1
+	upvar #0 ::groupview::groups array2
 	foreach cell [array names array1] {
 	    unset array1($cell)
 	}
@@ -205,7 +205,7 @@ namespace eval groupview {
 	unset array2($groupkey) 
 
 	if {[llength [array names array2]] == 0} {
-	    if {$groupview::runstate} {
+	    if {$::groupview::runstate} {
 		exit
 	    }
 	}
@@ -217,7 +217,7 @@ namespace eval groupview {
     # to the above procedure, but is called to clean up after list
     # viewers.
     proc cleanUpAfterList { listkey } {
-	upvar #0 groupview::$listkey array
+	upvar #0 ::groupview::$listkey array
 	foreach cell [array names array] {
 	    unset array($cell)
 	}
@@ -233,12 +233,12 @@ namespace eval groupview {
 
 	if {[string match $group ""]} {
 	    if {[string match [dl_datatype $xcor] list]} {
-		groupview::viewList $xcor:$ycor 
+		::groupview::viewList $xcor:$ycor 
 	    }	
 	} else {
 	    if {[dg_exists $group]} {
 		if {[string match [dl_datatype $group:$xcor] list]} {
-		    groupview::viewList $group:$xcor:$ycor 
+		    ::groupview::viewList $group:$xcor:$ycor 
 		}	
 	    }
 	}
@@ -254,12 +254,12 @@ namespace eval groupview {
 	
 	if {[string match $group ""]} {
 	    if {[string match [dl_datatype $xcor] list]} {
-		groupview::viewList $xcor:$ycor 
+		::groupview::viewList $xcor:$ycor 
 	    }	
 	} else {
 	    if {[dg_exists $group]} {
 		if {[string match [dl_datatype $group:$xcor] list]} {
-		    groupview::viewList $group:$xcor:$ycor 
+		    ::groupview::viewList $group:$xcor:$ycor 
 		}	
 	    }
 	}
@@ -275,7 +275,7 @@ namespace eval groupview {
     proc openFile { } {
 	set filename [tk_getOpenFile -filetype {{"Dynamic Groups" {".dgz"}}}]
 	if {$filename != ""} {
-	    groupview::viewGroup [dg_read $filename]
+	    ::groupview::viewGroup [dg_read $filename]
 	}
     }
     proc getRow { g } {
@@ -294,9 +294,9 @@ namespace eval groupview {
 proc dg_view { g { parent "" } } {
     if {![dg_exists $g]} { error "dyngroup $g does not exist" }
     if { $parent != "" } { 
-	set w [groupview::viewGroup $g 0 $parent]
+	set w [::groupview::viewGroup $g 0 $parent]
     } else {
-	set w [groupview::viewGroup $g]
+	set w [::groupview::viewGroup $g]
     }
     return $w
 }
@@ -304,7 +304,7 @@ proc dg_view { g { parent "" } } {
 proc dl_view { l } { 
     if {![dl_exists $l]} { error "dynlist $l does not exist" }
     set g [dl_to_dg $l]
-    set w [groupview::viewGroup $g]
+    set w [::groupview::viewGroup $g]
     return $w
 }
 
@@ -329,8 +329,8 @@ if { 0 } {
     wm withdraw .
     
     if {$argc == 1} {
-	set groupview::runstate 1
-	groupview::viewGroup [dg_read [lindex $argv 0]]
+	set ::groupview::runstate 1
+	::groupview::viewGroup [dg_read [lindex $argv 0]]
     } 
 }
 

@@ -8,4 +8,5 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded impro 1.4 [list load [file join $dir libimpro[info sharedlibextension]]]
+
+package ifneeded impro 1.4 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libimpro[info sharedlibextension]]]

@@ -8,4 +8,4 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded curve 1.1 [list load [file join $dir libcurve[info sharedlibextension]] Curve]
+package ifneeded curve 1.1 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libcurve[info sharedlibextension]]]\n[list source [file join $dir curve.tcl]]

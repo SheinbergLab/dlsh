@@ -8,4 +8,4 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded points 1.0 [list load [file join $dir libpoints[info sharedlibextension]]]
+package ifneeded points 1.0 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libpoints[info sharedlibextension]]]

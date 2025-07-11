@@ -6,14 +6,6 @@
 #  Startup file for dlsh and dlwish that set global variables etc.
 #
 
-# Add directories to the autoloading directory
-set auto_path [linsert $auto_path 0 ${dlsh_library}]
-set auto_path [linsert $auto_path 0 ${dlsh_library}/local]
-set auto_path [linsert $auto_path 0 ./]
-
-# Set the math precision high
-set tcl_precision 13
-
 # Mathematical niceties
 set pi 3.141592653589793238
 set e  2.718281828459045235
@@ -50,5 +42,5 @@ set marker(3)             SQUARE
 set marker(4)             CIRCLE
 set marker(total)         5
 
-# loads modules specified in dlmodules.tcl
+# load additional packages
 #default_dlsh_modules

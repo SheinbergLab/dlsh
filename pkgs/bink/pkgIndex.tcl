@@ -8,4 +8,4 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded bink 2.0 [list load [file join $dir libtcl_bink[info sharedlibextension]]]
+package ifneeded bink 2.0 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libtcl_bink[info sharedlibextension]]]

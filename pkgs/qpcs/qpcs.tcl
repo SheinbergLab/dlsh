@@ -1,6 +1,5 @@
-package provide qpcs 3.35
+package provide qpcs 3.40
 
-package require stimctrl
 package require dlsh
 
 namespace eval qpcs {
@@ -40,17 +39,6 @@ namespace eval qpcs {
 	return $status
     }
 
-    # This function takes the name of the host of the Stim process
-    # with which to register to receive information.  The name of 
-    # the host is then stored for future use in an array. 
-    proc registerWithStim {servername} {
-	if {[llength [array names ::qpcs::data main]] == 0} {return -1}
-	set socklist [fconfigure $::qpcs::data(main) -sockname]
-	if {[catch {rmt_send $servername "register [lindex $socklist 1] \
-		[lindex $socklist 2]"}]} { return -1 }
-	return 1
-    }
-    
     # This function sends the input text message to the specified7
     # QNX server, or to all on which have been registered if none is
     # specified.
