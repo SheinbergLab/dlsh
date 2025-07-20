@@ -45,6 +45,9 @@
 
 static const char *DLSH_ASSOC_DATA_KEY = "dlsh";
 
+/* to protect non thread safe dynio operations */
+static Tcl_Mutex dgBufferMutex;
+
 /* to save as JSON */
 extern json_t *dg_to_json(DYN_GROUP *dg);
 extern json_t *dg_element_to_json(DYN_GROUP *dg, int element);
@@ -1434,6 +1437,8 @@ static int tclWriteDynGroup (ClientData data, Tcl_Interp *interp,
     outfile = argv[2];
   }
   
+  Tcl_MutexLock(&dgBufferMutex);
+  
   dgInitBuffer();
   if (!buffer_increment) {
     oldval = dgSetBufferIncrement(buffer_increment);
@@ -1448,6 +1453,8 @@ static int tclWriteDynGroup (ClientData data, Tcl_Interp *interp,
   dgCloseBuffer();
 
   dgSetBufferIncrement(oldval);
+  
+  Tcl_MutexUnlock(&dgBufferMutex);
   
   if (argc < 3) free(outfile);
   
@@ -1686,6 +1693,8 @@ static int tclDynGroupToString(ClientData data, Tcl_Interp * interp, int objc,
     return TCL_OK;
   }
   
+  Tcl_MutexLock(&dgBufferMutex);
+   
   dgInitBuffer();
   oldval = dgSetBufferIncrement(dgEstimateGroupSize(dg));
   dgRecordDynGroup(dg);    
@@ -1704,6 +1713,8 @@ static int tclDynGroupToString(ClientData data, Tcl_Interp * interp, int objc,
   }
   dgCloseBuffer();
   dgSetBufferIncrement(oldval);
+
+  Tcl_MutexUnlock(&dgBufferMutex);
 
   if (Tcl_ObjSetVar2(interp, objv[2], NULL, o,
 		     TCL_LEAVE_ERR_MSG) == NULL)
@@ -1847,13 +1858,11 @@ static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp,
   char *newname = NULL;
   unsigned char *data;
   Tcl_Size length;
-
   DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
   if (!dlinfo) return TCL_ERROR;
   
   int encode64 = 0;
   if ((Tcl_Size) cdata == DG_TOFROM_BASE64) encode64 = 1;
-
   if (objc < 2) {
     Tcl_WrongNumArgs(interp, 1, objv, "string [newname]");
     return TCL_ERROR;
@@ -1868,12 +1877,10 @@ static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp,
     Tcl_AppendResult(interp, "dg_fromString: invalid dg string", NULL);
     return TCL_ERROR;
   }
-
   if (length < 5) {
     Tcl_AppendResult(interp, "dg_fromString: invalid dg string", NULL);
     return TCL_ERROR;
   }
-
   if (objc > 2) {
     newname = Tcl_GetStringFromObj(objv[2], NULL);
     if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dgTable, newname))) {
@@ -1882,15 +1889,19 @@ static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp,
       Tcl_DeleteHashEntry(entryPtr);
     }
   }
-
   if (!(dg = dfuCreateDynGroup(4))) {
     Tcl_SetResult(interp, "dg_fromString: error creating new dyngroup",
 		  TCL_STATIC);
     return TCL_ERROR;
   }
   
+  /* dynio code not thread safe so need to protect this section */
+  Tcl_MutexLock(&dgBufferMutex);
+  
   if (!encode64) {
     if (dguBufferToStruct(data, length, dg) != DF_OK) {
+      Tcl_MutexUnlock(&dgBufferMutex);  // Don't forget to unlock on error!
+      dfuFreeDynGroup(dg);  // Clean up the allocated dg
       Tcl_SetResult(interp, "dg_fromString: file not recognized as dg format",
 		    TCL_STATIC);
       return TCL_ERROR;
@@ -1900,12 +1911,12 @@ static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp,
     unsigned char *decoded_data;
     unsigned int decoded_length = length;
     int result;
-
     decoded_data = calloc(decoded_length, sizeof(char));
     result = base64decode((char *) data, length, decoded_data, &decoded_length);
-
     if (result) {
       free(decoded_data);
+      Tcl_MutexUnlock(&dgBufferMutex);  // Unlock on error
+      dfuFreeDynGroup(dg);  // Clean up
       char resultstr[128];
       snprintf(resultstr, sizeof(resultstr),
 	       "dg_fromString64: error decoding data (%d/%d bytes)", 
@@ -1913,18 +1924,20 @@ static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp,
       Tcl_SetObjResult(interp, Tcl_NewStringObj(resultstr, -1));
       return TCL_ERROR;
     }
-
     if (dguBufferToStruct(decoded_data, decoded_length, dg) != DF_OK) {
       free(decoded_data);
+      Tcl_MutexUnlock(&dgBufferMutex);  // Unlock on error
+      dfuFreeDynGroup(dg);  // Clean up
       Tcl_SetResult(interp,
 		    "dg_fromString64: file not recognized as dg format",
 		    TCL_STATIC);
       return TCL_ERROR;
     }
-
     free(decoded_data);
   }
-
+  
+  Tcl_MutexUnlock(&dgBufferMutex);
+  
   if (newname) strncpy(DYN_GROUP_NAME(dg), newname, DYN_GROUP_NAME_SIZE-1);
   if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dgTable, DYN_GROUP_NAME(dg)))) {
     DYN_GROUP *dgold;
@@ -1933,7 +1946,6 @@ static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp,
     }
     Tcl_DeleteHashEntry(entryPtr);
   }
-
   /*
    * Add to hash table which contains list of open dyngroups
    */
@@ -1943,7 +1955,6 @@ static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp,
   Tcl_SetResult(interp, DYN_GROUP_NAME(dg), TCL_VOLATILE);
   return TCL_OK;
 }
-
 
 static int tclDynListFromString(ClientData cdata, Tcl_Interp * interp, 
 				int objc, Tcl_Obj * const objv[])
