@@ -184,7 +184,10 @@ static void Box2DDelete(BOX2D_WORLD *bw)
   /* free hash table */
   Tcl_DeleteHashTable(&bw->bodyTable);
 
+  Tcl_MutexLock(&Box2D_Mutex);
   b2DestroyWorld(bw->worldId);
+  Tcl_MutexUnlock(&Box2D_Mutex);
+  
   free((void *) bw);
 }
 
@@ -681,6 +684,30 @@ static int Box2DSetTransformCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+static int Box2DSetLinearVelocityCmd(ClientData clientData, Tcl_Interp *interp,
+                                     int argc, char *argv[])
+{
+  BOX2D_WORLD *bw;
+  b2BodyId body;
+  double vx, vy;
+  
+  if (argc != 5)
+  {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " world body vx vy", NULL);
+    return TCL_ERROR;
+  }
+  
+
+  if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
+
+  if (find_body(bw, argv[2], &body) != TCL_OK) return TCL_ERROR;
+
+  if (Tcl_GetDouble(interp, argv[3], &vx) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDouble(interp, argv[4], &vy) != TCL_OK) return TCL_ERROR;
+  
+  b2Body_SetLinearVelocity(body, (b2Vec2){vx, vy});
+  return TCL_OK;
+}
 
 /***********************************************************************/
 /**********************      Shape Settings       **********************/
@@ -1087,6 +1114,9 @@ int Tclbox_Init(Tcl_Interp *interp)
 		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "box2d::setTransform", 
 		    (Tcl_CmdProc *) Box2DSetTransformCmd, 
+		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "box2d::setLinearVelocity", 
+		    (Tcl_CmdProc *) Box2DSetLinearVelocityCmd, 
 		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
 
   Tcl_CreateCommand(interp, "box2d::step", 
