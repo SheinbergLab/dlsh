@@ -258,6 +258,7 @@ json_t *dg_to_hybrid_json(DYN_GROUP *dg)
     return NULL;
   }
   
+  json_object_set_new(result, "name", json_string(DYN_GROUP_NAME(dg)));
   json_object_set_new(result, "rows", rows_array);
   json_object_set_new(result, "arrays", array_refs);
   
