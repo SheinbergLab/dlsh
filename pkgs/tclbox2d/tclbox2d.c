@@ -178,7 +178,12 @@ static void Box2DDelete(BOX2D_WORLD *bw)
        entryPtr != NULL;
        entryPtr = Tcl_NextHashEntry(&search)) {
     body = (b2BodyId *) Tcl_GetHashValue(entryPtr);
-    free(b2Body_GetUserData(*body));
+    if (body && b2Body_IsValid(*body)) {  // Add validity check
+      void *userdata = b2Body_GetUserData(*body);
+      if (userdata) {  // Check for NULL
+	free(userdata);
+      }
+    }    
   }
 
   /* free hash table */
