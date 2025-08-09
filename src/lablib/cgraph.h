@@ -3,7 +3,7 @@
  *       header file for c process control system graphics
  *       Created: 20-NOV-88
  *       By: Nikos K. Logothetis
- *       Edited: DLS (93-96)
+ *       Edited: DLS (93-25)
  */
 
 #ifndef __cgraph_h__
@@ -13,6 +13,8 @@
 extern "C" {
 #endif
 
+#include <tcl.h>
+  
 typedef int (*HANDLER)();
 typedef int (*LHANDLER)(float, float, float, float);	/* line */
 typedef int (*PHANDLER)(float, float);	/* point */
@@ -183,6 +185,8 @@ typedef struct {
 
 #endif
 
+extern void Cgraph_InitInterp(Tcl_Interp *interp);
+  
 /*
  * Video handlers
  */

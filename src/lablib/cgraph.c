@@ -12,6 +12,7 @@
 /*      Adapted for LYNX by DLS & DAL 17-APR-94                           */
 /*	Modified by Michael Thayer, DEC-97: added extra handlers to       */
 /*                                          ``FRAME'' structure           */
+/*      Modified to use Tcl AssocData for thread-safety                   */
 /**************************************************************************/
 
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include <string.h>
 #include <cgraph.h>
 #include <math.h>
+#include <tcl.h>
 
 #ifdef WIN32
 #pragma warning (disable:4244)
@@ -35,8 +37,14 @@
 #define FF 014
 #define EOT 04
 
+/* AssocData key for storing interpreter-specific cgraph data */
+#define CGRAPH_ASSOC_KEY "cgraph_context"
 
-static FRAME cntxt = {0.0,0.0,640.0,480.0,0.0,0.0,1000.0,1000.0,
+/* Thread-local storage for current interpreter when not in Tcl command context */
+static Tcl_ThreadDataKey contextDataKey;
+
+/* Default frame initialization values */
+static FRAME default_frame_template = {0.0,0.0,640.0,480.0,0.0,0.0,1000.0,1000.0,
 		      1.0,1.0,1.0,1.0,7.0,9.0,NULL,10.0, 0.0,0.0,8.0,8.0,
 		      1,100,0,0,0,0,0,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
 		      NULL,NULL,NULL,NULL,
@@ -44,16 +52,54 @@ static FRAME cntxt = {0.0,0.0,640.0,480.0,0.0,0.0,1000.0,1000.0,
 		      0.0,0.0,0.0,0.0,
 		      0.0,0.0,0.0,0.0,NULL};
 
+/* Complete per-interpreter context */
+typedef struct CgraphContext {
+    FRAME *current_frame;           /* Current frame */
+    FRAME default_frame;            /* Default frame template */
+    
+    /* Global handlers */
+    HANDLER bframe;
+    HANDLER eframe;
+    
+    /* Drawing state */
+    float barwidth;
+    int img_preview;
+    
+    /* Viewport stack */
+    VW_STACK *viewport_stack;
+    
+    /* Static buffers and state */
+    char draw_buffer[80];           /* For drawnum, drawfnum, drawf */
+    char old_fontname[64];          /* For setfont */
+    int labeltick;                  /* For tck() */
+    
+    /* Temporary variables */
+    float temp_float;               /* For SWAP macro */
+} CgraphContext;
+
+/* Thread-local context storage */
+typedef struct ThreadData {
+    Tcl_Interp *current_interp;
+    CgraphContext *current_context;
+} ThreadData;
+
+/* For backward compatibility, maintain a global pointer that gets updated */
+FRAME *contexp = NULL;
+
+/* Forward declarations */
+static CgraphContext *GetCurrentContext(void);
+static void DeleteContextData(ClientData clientData, Tcl_Interp *interp);
+static void SetCurrentInterp(Tcl_Interp *interp);
+static void CgraphInterpDeleteProc(ClientData clientData, Tcl_Interp *interp);
 static int GetNorm (float *, float *);
+static void setvw(void);
+static void linutl(float x, float y);
+static int dclip(void);
+static int fclip(void);
 
-static float temp_float;	/* used in SWAP */
-
-static VW_STACK *ViewportStack = NULL;
-
-FRAME *contexp = &cntxt;
-
+/* Macros that now use context */
 #define MULDIV(x,y,z) (((x)*(y))/(z))
-#define SWAP(x,y) {temp_float = x; x = y; y = temp_float;}
+#define SWAP(x,y) do { float _t = x; x = y; y = _t; } while(0)
 #define WINDOW(f,x,y) {x=f->xl+MULDIV(x-f->xul,f->xs,f->xus); \
                        y=f->yb+MULDIV(y-f->yub,f->ys,f->yus);}
 #define SCREEN(f,x,y) {x=f->xul + MULDIV(x-f->xl,f->xus,f->xs); \
@@ -64,15 +110,150 @@ FRAME *contexp = &cntxt;
 #define CHECKXMX(f,x) {if (x>((f->xsres)-1.0)) x=((f->xsres)-1.0);}
 #define CHECKYMX(f,x) {if (x>((f->ysres)-1.0)) x=((f->ysres)-1.0);}
 
-HANDLER bframe = NULL;
-HANDLER eframe = NULL;
-static float barwidth = 10.0;
-static void setvw(void);
-static void linutl(float x, float y);
-static int dclip(void);
-static int fclip(void);		/* filled version of clip checker */
+/*********************************************************************
+ * Thread-safe context management functions
+ *********************************************************************/
 
-static int img_preview = 0;	/* preview or keyline ps images   */
+static void CgraphInterpDeleteProc(ClientData clientData, Tcl_Interp *interp)
+{
+    /* Clean up thread-local data while Tcl thread system is still intact */
+    ThreadData *data = (ThreadData *)Tcl_GetThreadData(&contextDataKey, 
+                                                       sizeof(ThreadData));
+    if (data) {
+        /* Get the context for this interpreter */
+        CgraphContext *ctx = (CgraphContext *)Tcl_GetAssocData(interp, 
+                                                               CGRAPH_ASSOC_KEY, NULL);
+        
+        /* Clear thread-local pointers if they match */
+        if (data->current_context == ctx) {
+            data->current_context = NULL;
+        }
+        if (data->current_interp == interp) {
+            data->current_interp = NULL;
+        }
+    }
+    
+    /* Clear global pointer */
+    contexp = NULL;
+}
+
+/* Keep your existing simple DeleteContextData as is (the one that works) */
+static void DeleteContextData(ClientData clientData, Tcl_Interp *interp)
+{
+    CgraphContext *ctx = (CgraphContext *)clientData;
+    if (!ctx) return;
+    
+    /* Just clear the global */
+    contexp = NULL;
+    
+    /* Clean up frames */
+    FRAME *frame = ctx->current_frame;
+    while (frame) {
+        FRAME *next = frame->parent;
+        if (frame->fontname) {
+            free(frame->fontname);
+        }
+        free(frame);
+        frame = next;
+    }
+    
+    /* Clean up viewport stack */
+    if (ctx->viewport_stack) {
+        if (ctx->viewport_stack->vals) {
+            free(ctx->viewport_stack->vals);
+        }
+        free(ctx->viewport_stack);
+    }
+    
+    /* Free the context */
+    free(ctx);
+}
+
+/* Update the existing Cgraph_InitInterp function (around line 210) */
+void Cgraph_InitInterp(Tcl_Interp *interp)
+{
+    SetCurrentInterp(interp);
+    
+    /* Register cleanup callback for when interpreter is deleted */
+    Tcl_CallWhenDeleted(interp, CgraphInterpDeleteProc, NULL);
+}
+
+/* Get or create context for an interpreter */
+static CgraphContext *GetContextForInterp(Tcl_Interp *interp)
+{
+    CgraphContext *ctx;
+    
+    if (!interp) return NULL;
+    
+    ctx = (CgraphContext *)Tcl_GetAssocData(interp, CGRAPH_ASSOC_KEY, NULL);
+    if (!ctx) {
+        /* Create new context for this interpreter */
+        ctx = (CgraphContext *)calloc(1, sizeof(CgraphContext));
+        
+        /* Initialize with defaults */
+        memcpy(&ctx->default_frame, &default_frame_template, sizeof(FRAME));
+        
+        /* Create initial frame */
+        ctx->current_frame = (FRAME *)malloc(sizeof(FRAME));
+        memcpy(ctx->current_frame, &ctx->default_frame, sizeof(FRAME));
+        ctx->current_frame->fontname = NULL;
+        ctx->current_frame->parent = NULL;
+        
+        /* Initialize other context members */
+        ctx->barwidth = 10.0;
+        ctx->img_preview = 0;
+        ctx->labeltick = 1;
+        ctx->bframe = NULL;
+        ctx->eframe = NULL;
+        
+        Tcl_SetAssocData(interp, CGRAPH_ASSOC_KEY, DeleteContextData, 
+                        (ClientData)ctx);
+    }
+    
+    return ctx;
+}
+
+/* Set the current interpreter in thread-local storage */
+static void SetCurrentInterp(Tcl_Interp *interp)
+{
+    ThreadData *data = (ThreadData *)Tcl_GetThreadData(&contextDataKey, 
+                                                       sizeof(ThreadData));
+    data->current_interp = interp;
+    if (interp) {
+        data->current_context = GetContextForInterp(interp);
+        if (data->current_context && data->current_context->current_frame) {
+            contexp = data->current_context->current_frame;  /* Update global for compatibility */
+        }
+    }
+}
+
+/* Get current context from thread-local storage */
+static CgraphContext *GetCurrentContext(void)
+{
+    ThreadData *data = (ThreadData *)Tcl_GetThreadData(&contextDataKey, 
+                                                       sizeof(ThreadData));
+    if (data->current_context) {
+        return data->current_context;
+    }
+    if (data->current_interp) {
+        data->current_context = GetContextForInterp(data->current_interp);
+        return data->current_context;
+    }
+    
+    /* This should not happen in properly initialized code */
+    return NULL;
+}
+
+/* Get current frame (convenience function) */
+static FRAME *GetCurrentFrame(void)
+{
+    CgraphContext *ctx = GetCurrentContext();
+    if (ctx && ctx->current_frame) {
+        contexp = ctx->current_frame;  /* Update global for compatibility */
+        return ctx->current_frame;
+    }
+    return NULL;
+}
 
 /*********************************************************************
  *          Allow pushing & popping of frames and viewports
@@ -80,9 +261,13 @@ static int img_preview = 0;	/* preview or keyline ps images   */
 
 FRAME *gsave()
 {
+   CgraphContext *ctx = GetCurrentContext();
+   if (!ctx) return NULL;
+   
+   FRAME *currentFrame = ctx->current_frame;
    FRAME *newframe = (FRAME *) malloc(sizeof(FRAME));
-   copyframe(contexp, newframe);
-   newframe->parent = contexp;
+   copyframe(currentFrame, newframe);
+   newframe->parent = currentFrame;
    setstatus(newframe);
    if (RecordGEvents) record_gattr(G_SAVE, 1);
    return(newframe);
@@ -90,64 +275,75 @@ FRAME *gsave()
 
 FRAME *grestore()
 {
-   FRAME *oldframe = contexp;
-   if (!contexp->parent) return NULL;
-   setstatus(contexp->parent);
+   CgraphContext *ctx = GetCurrentContext();
+   if (!ctx) return NULL;
+   
+   FRAME *currentFrame = ctx->current_frame;
+   FRAME *oldframe = currentFrame;
+   if (!currentFrame->parent) return NULL;
+   setstatus(currentFrame->parent);
    if (oldframe->fontname) free((void *) oldframe->fontname);
    free((void *) oldframe);
-   if (contexp->dsetfont)
-   	contexp->dsetfont(contexp->fontname, contexp->fontsize);
+   currentFrame = ctx->current_frame;
+   if (currentFrame->dsetfont)
+   	currentFrame->dsetfont(currentFrame->fontname, currentFrame->fontsize);
    if (RecordGEvents) record_gattr(G_SAVE, -1);
-   return(contexp);
+   return(currentFrame);
 }
 
 FRAME *setstatus(FRAME *newframe)
 {
-  FRAME *f = contexp;
-  contexp = newframe;
+  CgraphContext *ctx = GetCurrentContext();
+  if (!ctx) return NULL;
+  
+  FRAME *f = ctx->current_frame;
+  ctx->current_frame = newframe;
+  contexp = newframe;  /* Update global for compatibility */
   return(f);
 }
 
 FRAME *setframe(FRAME *newframe)
 {
-  FRAME *f = contexp;
-  contexp = newframe;
-  return(f);
+  return setstatus(newframe);
 }
 
 FRAME *getframe(void)
 {
-  return(contexp);
+  return GetCurrentFrame();
 }
 
 
 void pushviewport(void)
 {
-  float *vw;
-
-/* if haven't created the stack yet, allocate */
-  if (!ViewportStack) {
-    ViewportStack = (VW_STACK *) calloc(1, sizeof(VW_STACK));
-    VW_SIZE(ViewportStack) = 0;
-    VW_INDEX(ViewportStack) = -1;
-    VW_VIEWPORTS(ViewportStack) = NULL;
-    VW_INC(ViewportStack) = 4;
-  }
-
-/* if there isn't space to add the current viewport, allocate */  
-  if (VW_INDEX(ViewportStack) == (VW_SIZE(ViewportStack)-1)) {
-    VW_SIZE(ViewportStack) += VW_INC(ViewportStack);
-    if (VW_VIEWPORTS(ViewportStack))
-      VW_VIEWPORTS(ViewportStack) = 
-	(float *) realloc(VW_VIEWPORTS(ViewportStack), 
-			  VW_SIZE(ViewportStack)*4*sizeof(float));
-    else VW_VIEWPORTS(ViewportStack) = 
-      (float *) calloc(VW_SIZE(ViewportStack)*4, sizeof(float));
-  }
-  VW_INDEX(ViewportStack)++;
+  CgraphContext *ctx = GetCurrentContext();
+  if (!ctx) return;
   
-/* set vw to the top of the stack */
-  vw = &VW_VIEWPORTS(ViewportStack)[4*VW_INDEX(ViewportStack)];
+  float *vw;
+  VW_STACK *stack = ctx->viewport_stack;
+
+  /* if haven't created the stack yet, allocate */
+  if (!stack) {
+    stack = ctx->viewport_stack = (VW_STACK *) calloc(1, sizeof(VW_STACK));
+    VW_SIZE(stack) = 0;
+    VW_INDEX(stack) = -1;
+    VW_VIEWPORTS(stack) = NULL;
+    VW_INC(stack) = 4;
+  }
+
+  /* if there isn't space to add the current viewport, allocate */  
+  if (VW_INDEX(stack) == (VW_SIZE(stack)-1)) {
+    VW_SIZE(stack) += VW_INC(stack);
+    if (VW_VIEWPORTS(stack))
+      VW_VIEWPORTS(stack) = 
+	(float *) realloc(VW_VIEWPORTS(stack), 
+			  VW_SIZE(stack)*4*sizeof(float));
+    else VW_VIEWPORTS(stack) = 
+      (float *) calloc(VW_SIZE(stack)*4, sizeof(float));
+  }
+  VW_INDEX(stack)++;
+  
+  /* set vw to the top of the stack */
+  vw = &VW_VIEWPORTS(stack)[4*VW_INDEX(stack)];
   
   getviewport(&vw[0], &vw[1], &vw[2], &vw[3]);
 }
@@ -160,34 +356,44 @@ void poppushviewport(void)
     
 int popviewport(void)
 {
+  CgraphContext *ctx = GetCurrentContext();
+  if (!ctx || !ctx->viewport_stack) return 0;
+  
+  VW_STACK *stack = ctx->viewport_stack;
   float *vw;
-  if (!ViewportStack || VW_INDEX(ViewportStack) < 0) {
+  
+  if (VW_INDEX(stack) < 0) {
     return(0);
   }
-  vw = &VW_VIEWPORTS(ViewportStack)[4*VW_INDEX(ViewportStack)];
+  vw = &VW_VIEWPORTS(stack)[4*VW_INDEX(stack)];
   setviewport(vw[0], vw[1], vw[2], vw[3]);
-  VW_INDEX(ViewportStack)--;
+  VW_INDEX(stack)--;
   return(1);
 }
 
-
 void beginframe(void)
 {
-   if (bframe)
-      (*bframe)();
+   CgraphContext *ctx = GetCurrentContext();
+   if (ctx && ctx->bframe)
+      (*ctx->bframe)();
 }
 
 void endframe(void)
 {
-   if (eframe)
-      (*eframe)();
+   CgraphContext *ctx = GetCurrentContext();
+   if (ctx && ctx->eframe)
+      (*ctx->eframe)();
 }
 
 void clearscreen()
 {
-  if (contexp->dclearfunc)
-  	contexp->dclearfunc();
-  else if (bframe) (*bframe)();
+  FRAME *currentFrame = GetCurrentFrame();
+  CgraphContext *ctx = GetCurrentContext();
+  if (!currentFrame || !ctx) return;
+  
+  if (currentFrame->dclearfunc)
+  	currentFrame->dclearfunc();
+  else if (ctx->bframe) (*ctx->bframe)();
 
   if (RecordGEvents) gbResetGevents();
 }
@@ -201,78 +407,89 @@ void noplot(void)
 
 HANDLER setclearfunc(HANDLER hnew)
 {
-	HANDLER hold = contexp->dclearfunc ;
+	FRAME *currentFrame = GetCurrentFrame();
+	HANDLER hold = currentFrame->dclearfunc ;
 
-	contexp->dclearfunc = hnew ;
+	currentFrame->dclearfunc = hnew ;
 	return(hold) ;
 }
 
 PHANDLER getpoint(void)
 {
-	return (contexp->dpoint);
+	FRAME *currentFrame = GetCurrentFrame();
+	return (currentFrame->dpoint);
 }
 
 PHANDLER setpoint(PHANDLER pointp)
 {
-   PHANDLER oldfunc = contexp->dpoint;
-   contexp->dpoint = pointp;
+   FRAME *currentFrame = GetCurrentFrame();
+   PHANDLER oldfunc = currentFrame->dpoint;
+   currentFrame->dpoint = pointp;
    return(oldfunc);
 }
 
 PHANDLER setclrpnt(PHANDLER clrpntp)
 {
-   PHANDLER oldfunc = contexp->dclrpnt;
-   contexp->dclrpnt = clrpntp;
+   FRAME *currentFrame = GetCurrentFrame();
+   PHANDLER oldfunc = currentFrame->dclrpnt;
+   currentFrame->dclrpnt = clrpntp;
    return(oldfunc);
 }
 
 THANDLER setchar(THANDLER charp)
 {
-   THANDLER oldfunc = contexp->dchar;
-   contexp->dchar = charp;
+   FRAME *currentFrame = GetCurrentFrame();
+   THANDLER oldfunc = currentFrame->dchar;
+   currentFrame->dchar = charp;
    if (charp == NULL) setchrsize(6.0, 8.0);    /* for point driven char hand */
    return(oldfunc);
 }
 
 THANDLER settext(THANDLER textp)
 {
-   THANDLER oldfunc = contexp->dtext;
-   contexp->dtext = textp;
+   FRAME *currentFrame = GetCurrentFrame();
+   THANDLER oldfunc = currentFrame->dtext;
+   currentFrame->dtext = textp;
    return(oldfunc);
 }
 
 LHANDLER setline(LHANDLER linep)
 {
-   LHANDLER oldfunc = contexp->dline;
-   contexp->dline = linep;
+   FRAME *currentFrame = GetCurrentFrame();
+   LHANDLER oldfunc = currentFrame->dline;
+   currentFrame->dline = linep;
    return(oldfunc);
 }
 
 FHANDLER setfilledpoly(FHANDLER fillp)
 {
-   FHANDLER oldfunc = contexp->dfilledpoly;
-   contexp->dfilledpoly = fillp;
+   FRAME *currentFrame = GetCurrentFrame();
+   FHANDLER oldfunc = currentFrame->dfilledpoly;
+   currentFrame->dfilledpoly = fillp;
    return(oldfunc);
 }
 
 FHANDLER setpolyline(FHANDLER polyl)
 {
-   FHANDLER oldfunc = contexp->dpolyline;
-   contexp->dpolyline = polyl;
+   FRAME *currentFrame = GetCurrentFrame();
+   FHANDLER oldfunc = currentFrame->dpolyline;
+   currentFrame->dpolyline = polyl;
    return(oldfunc);
 }
 
 LHANDLER setclipfunc(LHANDLER clipf)
 {
-   LHANDLER oldfunc = contexp->dclip;
-   contexp->dclip = clipf;
+   FRAME *currentFrame = GetCurrentFrame();
+   LHANDLER oldfunc = currentFrame->dclip;
+   currentFrame->dclip = clipf;
    return(oldfunc);
 }
 
 CHANDLER setcircfunc(CHANDLER circfunc)
 {
-  CHANDLER oldfunc = contexp->dcircfunc;
-  contexp->dcircfunc = circfunc;
+  FRAME *currentFrame = GetCurrentFrame();
+  CHANDLER oldfunc = currentFrame->dcircfunc;
+  currentFrame->dcircfunc = circfunc;
   return(oldfunc);
 }
 
@@ -281,9 +498,10 @@ CHANDLER setcircfunc(CHANDLER circfunc)
 
 LSHANDLER setlstylefunc(LSHANDLER hnew)
 {
-	LSHANDLER hold = contexp->dlinestyle ;
+	FRAME *currentFrame = GetCurrentFrame();
+	LSHANDLER hold = currentFrame->dlinestyle ;
 
-	contexp->dlinestyle = hnew ;
+	currentFrame->dlinestyle = hnew ;
 	return(hold) ;
 }
 
@@ -292,9 +510,10 @@ LSHANDLER setlstylefunc(LSHANDLER hnew)
 
 LWHANDLER setlwidthfunc(LWHANDLER hnew)
 {
-	LWHANDLER hold = contexp->dlinewidth ;
+	FRAME *currentFrame = GetCurrentFrame();
+	LWHANDLER hold = currentFrame->dlinewidth ;
 
-	contexp->dlinewidth = hnew ;
+	currentFrame->dlinewidth = hnew ;
 	return(hold) ;
 }
 
@@ -303,9 +522,10 @@ LWHANDLER setlwidthfunc(LWHANDLER hnew)
 
 COHANDLER setcolorfunc(COHANDLER hnew)
 {
-	COHANDLER hold = contexp->dsetcolor ;
+	FRAME *currentFrame = GetCurrentFrame();
+	COHANDLER hold = currentFrame->dsetcolor ;
 
-	contexp->dsetcolor = hnew ;
+	currentFrame->dsetcolor = hnew ;
 	return(hold) ;
 }
 
@@ -314,9 +534,10 @@ COHANDLER setcolorfunc(COHANDLER hnew)
 
 COHANDLER setbgfunc(COHANDLER hnew)
 {
-	COHANDLER hold = contexp->dsetbg ;
+	FRAME *currentFrame = GetCurrentFrame();
+	COHANDLER hold = currentFrame->dsetbg ;
 
-	contexp->dsetbg = hnew ;
+	currentFrame->dsetbg = hnew ;
 	return(hold) ;
 }
 
@@ -325,9 +546,10 @@ COHANDLER setbgfunc(COHANDLER hnew)
 
 SWHANDLER strwidthfunc(SWHANDLER hnew)
 {
-	SWHANDLER hold = contexp->dstrwidth ;
+	FRAME *currentFrame = GetCurrentFrame();
+	SWHANDLER hold = currentFrame->dstrwidth ;
 
-	contexp->dstrwidth = hnew ;
+	currentFrame->dstrwidth = hnew ;
 	return(hold) ;
 }
 
@@ -335,9 +557,10 @@ SWHANDLER strwidthfunc(SWHANDLER hnew)
 
 SHHANDLER strheightfunc(SHHANDLER hnew)
 {
-	SHHANDLER hold = contexp->dstrheight ;
+	FRAME *currentFrame = GetCurrentFrame();
+	SHHANDLER hold = currentFrame->dstrheight ;
 
-	contexp->dstrheight = hnew ;
+	currentFrame->dstrheight = hnew ;
 	return(hold) ;
 }
 
@@ -346,9 +569,10 @@ SHHANDLER strheightfunc(SHHANDLER hnew)
 
 SOHANDLER setorientfunc(SOHANDLER hnew)
 {
-	SOHANDLER hold = contexp->dsetorient ;
+	FRAME *currentFrame = GetCurrentFrame();
+	SOHANDLER hold = currentFrame->dsetorient ;
 
-	contexp->dsetorient = hnew ;
+	currentFrame->dsetorient = hnew ;
 	return(hold) ;
 }
 
@@ -357,9 +581,10 @@ SOHANDLER setorientfunc(SOHANDLER hnew)
 
 SFHANDLER setfontfunc(SFHANDLER hnew)
 {
-	SFHANDLER hold = contexp->dsetfont ;
+	FRAME *currentFrame = GetCurrentFrame();
+	SFHANDLER hold = currentFrame->dsetfont ;
 
-	contexp->dsetfont = hnew ;
+	currentFrame->dsetfont = hnew ;
 	return(hold) ;
 }
 
@@ -367,8 +592,9 @@ SFHANDLER setfontfunc(SFHANDLER hnew)
 
 IMHANDLER setimagefunc(IMHANDLER hnew)
 {
-  IMHANDLER hold = contexp->dimage;
-  contexp->dimage = hnew;
+  FRAME *currentFrame = GetCurrentFrame();
+  IMHANDLER hold = currentFrame->dimage;
+  currentFrame->dimage = hnew;
   return(hold);
 }
 
@@ -376,31 +602,33 @@ IMHANDLER setimagefunc(IMHANDLER hnew)
 
 MIMHANDLER setmemimagefunc(MIMHANDLER hnew)
 {
-  MIMHANDLER hold = contexp->dmimage;
-  contexp->dmimage = hnew;
+  FRAME *currentFrame = GetCurrentFrame();
+  MIMHANDLER hold = currentFrame->dmimage;
+  currentFrame->dmimage = hnew;
   return(hold);
 }
 
-
 char *setfont(char *fontname, float size)
 {
-  static char oldfontname[64];
-  if (contexp->fontname && contexp->fontname != oldfontname) 
-    strncpy(oldfontname,contexp->fontname,63);
-  else strcpy(oldfontname,"");
+  FRAME *currentFrame = GetCurrentFrame();
+  CgraphContext *ctx = GetCurrentContext();
+  if (!currentFrame || !ctx) return NULL;
   
-  if (contexp->fontname) free((void *) contexp->fontname);
-  contexp->fontname = (char *) malloc(strlen(fontname)+1);
-  strcpy(contexp->fontname, fontname);
-  contexp->fontsize = size;
-  if (contexp->dsetfont)
-  	contexp->dsetfont(contexp->fontname, size);
+  if (currentFrame->fontname && currentFrame->fontname != ctx->old_fontname) 
+    strncpy(ctx->old_fontname, currentFrame->fontname, 63);
+  else strcpy(ctx->old_fontname, "");
+  
+  if (currentFrame->fontname) free((void *) currentFrame->fontname);
+  currentFrame->fontname = (char *) malloc(strlen(fontname)+1);
+  strcpy(currentFrame->fontname, fontname);
+  currentFrame->fontsize = size;
+  if (currentFrame->dsetfont)
+  	currentFrame->dsetfont(currentFrame->fontname, size);
   if (RecordGEvents) record_gtext(G_FONT, size, 0.0, fontname);
   
-  if (strcmp(oldfontname,"")) return(oldfontname);
+  if (strcmp(ctx->old_fontname,"")) return(ctx->old_fontname);
   else return (NULL);
 }
-
 
 /*
  * setsfont - set scaled font based on current viewport
@@ -408,7 +636,8 @@ char *setfont(char *fontname, float size)
 
 float setsfont(char *fontname, float ssize)
 {
-  float size = ssize * ((contexp->xr-contexp->xl)/contexp->xsres);
+  FRAME *currentFrame = GetCurrentFrame();
+  float size = ssize * ((currentFrame->xr-currentFrame->xl)/currentFrame->xsres);
   setfont(fontname, size);
   return(size);
 }
@@ -416,32 +645,38 @@ float setsfont(char *fontname, float ssize)
 
 float getxscale(void)
 {
-  return((contexp->xr-contexp->xl)/contexp->xsres);
+  FRAME *currentFrame = GetCurrentFrame();
+  return((currentFrame->xr-currentFrame->xl)/currentFrame->xsres);
 }
 
 float getyscale(void)
 {
-  return((contexp->yt-contexp->yb)/contexp->ysres);
+  FRAME *currentFrame = GetCurrentFrame();
+  return((currentFrame->yt-currentFrame->yb)/currentFrame->ysres);
 }
 
 char *getfontname()
 {
-   return(contexp->fontname);
+   FRAME *currentFrame = GetCurrentFrame();
+   return(currentFrame->fontname);
 }
 
 float getfontsize()
 {
-   return(contexp->fontsize);
+   FRAME *currentFrame = GetCurrentFrame();
+   return(currentFrame->fontsize);
 }
 
 void setbframe(HANDLER clearfunc)
 {
-   bframe = clearfunc;
+   CgraphContext *ctx = GetCurrentContext();
+   if (ctx) ctx->bframe = clearfunc;
 }
 
 void seteframe(HANDLER eoffunc)
 {
-   eframe = eoffunc;
+   CgraphContext *ctx = GetCurrentContext();
+   if (ctx) ctx->eframe = eoffunc;
 }
 
 void group(void)
@@ -456,14 +691,20 @@ void ungroup(void)
 
 int setimgpreview(int val)
 {
-  int old = img_preview;
-  img_preview = val;
+  CgraphContext *ctx = GetCurrentContext();
+  if (!ctx) return 0;
+  
+  int old = ctx->img_preview;
+  ctx->img_preview = val;
   return old;
 }
 
 void postscript(char *filename, float xsize, float ysize)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
+  CgraphContext *ctx = GetCurrentContext();
+  if (!f || !ctx) return;
+  
   int recording, oldmode, oldclip;
   float x = f->xpos;
   float y = f->ypos;
@@ -478,7 +719,7 @@ void postscript(char *filename, float xsize, float ysize)
     record_gpoint(G_MOVETO, f->xpos, f->ypos);
     record_gtext(G_POSTSCRIPT, xs, ys, filename); 
   }
-  if (!img_preview || !f->dimage) { /* Put a frame where image will appear */
+  if (!ctx->img_preview || !f->dimage) { /* Put a frame where image will appear */
   keyline:
     if (recording) gbDisableGevents();
     screen();
@@ -502,7 +743,10 @@ void postscript(char *filename, float xsize, float ysize)
 int place_image(int w, int h, int d, unsigned char *data, 
 		 float xsize, float ysize)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
+  CgraphContext *ctx = GetCurrentContext();
+  if (!f || !ctx) return -1;
+  
   int recording, oldmode, ref = -1;
   int oldclip;
   float x = f->xpos;
@@ -521,7 +765,7 @@ int place_image(int w, int h, int d, unsigned char *data,
     record_gline(G_IMAGE, xs, ys, (float) ref, 0);
   }
 
-  if (!img_preview || !f->dmimage) { /* Put a frame where image will appear */
+  if (!ctx->img_preview || !f->dmimage) { /* Put a frame where image will appear */
   keyline:
     if (recording) gbDisableGevents();
     screen();
@@ -545,7 +789,7 @@ int place_image(int w, int h, int d, unsigned char *data,
 
 int replace_image(int ref, int w, int h, int d, unsigned char *data)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   GBUF_IMAGE *gimg;
   gimg = gbFindImage(ref);
   if (!gimg) return 0;
@@ -558,44 +802,49 @@ int replace_image(int ref, int w, int h, int d, unsigned char *data)
 
 int setcolor(int color)
 {
-   int oldcolor = contexp->color;
+   FRAME *currentFrame = GetCurrentFrame();
+   int oldcolor = currentFrame->color;
    if (RecordGEvents) record_gattr(G_COLOR, color); 
-   contexp->color = color;
-   if (contexp->dsetcolor)
-   	contexp->dsetcolor(color);
+   currentFrame->color = color;
+   if (currentFrame->dsetcolor)
+   	currentFrame->dsetcolor(color);
    return(oldcolor);
 }
 
 int getcolor()
 {
-   return(contexp->color);
+   FRAME *currentFrame = GetCurrentFrame();
+   return(currentFrame->color);
 }
 
 int setbackgroundcolor(int color)
 {
-   int oldcolor = contexp->background_color;
-   contexp->background_color = color;
-   if (contexp->dsetbg)
-   	contexp->dsetbg(color) ;
+   FRAME *currentFrame = GetCurrentFrame();
+   int oldcolor = currentFrame->background_color;
+   currentFrame->background_color = color;
+   if (currentFrame->dsetbg)
+   	currentFrame->dsetbg(color) ;
    return(oldcolor);
 }
 
 int getbackgroundcolor()
 {
-  return(contexp->background_color);
+  FRAME *currentFrame = GetCurrentFrame();
+  return(currentFrame->background_color);
 }
 
 
 int setuser(int modearg)
 {
-   int olduser = contexp->mode;
-   contexp->mode = modearg;
+   FRAME *currentFrame = GetCurrentFrame();
+   int olduser = currentFrame->mode;
+   currentFrame->mode = modearg;
    return(olduser);
 }
 
 int setclip(int cliparg)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   LHANDLER dclip = f->dclip;
   int oldclip = f->clipf;
   if (oldclip == cliparg) return oldclip;
@@ -616,13 +865,13 @@ int setclip(int cliparg)
 
 int getclip(void)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   return f->clipf;
 }
 
 void setchrsize(float chrwarg, float chrharg)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    
    if(chrharg < 9.0) f->linsiz = 8.0;
    else f->linsiz = chrharg;
@@ -635,7 +884,7 @@ void setchrsize(float chrwarg, float chrharg)
 
 static void setvw(void)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    f->xus = f->xur - f->xul;
    f->yus = f->yut - f->yub;
    f->xs = f->xr - f->xl;
@@ -644,7 +893,7 @@ static void setvw(void)
 
 void setclipregion(float xlarg, float ybarg, float xrarg, float ytarg)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
 
   if (f->mode) WINDOW(f, xlarg, ybarg);
   if (f->mode) WINDOW(f, xrarg, ytarg);
@@ -656,7 +905,7 @@ void setclipregion(float xlarg, float ybarg, float xrarg, float ytarg)
 
 void setviewport(float xlarg,float ybarg,float xrarg,float ytarg)
 {
-	FRAME *f = contexp;
+	FRAME *f = GetCurrentFrame();
 	LHANDLER dclip = f->dclip;
 
 	CHECKMIN(xlarg);        /* check for lower than minimum values */
@@ -670,7 +919,7 @@ void setviewport(float xlarg,float ybarg,float xrarg,float ytarg)
 	CHECKYMX(f,ytarg);
 
 	if (xlarg>xrarg)        /* swap x-arguments if needed */
-	   SWAP(xlarg,xrarg);
+	   SWAP(xlarg,xrarg);   /* Now works with new SWAP macro */
 	if (ybarg>ytarg)        /* swap y-arguments if needed */
 	   SWAP(ybarg,ytarg);
 
@@ -691,7 +940,7 @@ void setviewport(float xlarg,float ybarg,float xrarg,float ytarg)
 
 void setpviewport(float xlarg,float ybarg,float xrarg,float ytarg)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float x0, x1, y0, y1;
   
   x0 = f->xl+xlarg*f->xs;
@@ -719,7 +968,7 @@ float getuaspect()
 
 void getviewport(float *xlarg, float *ybarg, float *xrarg, float *ytarg)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   *xlarg = f->xl;
   *ybarg = f->yb;
   *xrarg = f->xr;
@@ -728,14 +977,14 @@ void getviewport(float *xlarg, float *ybarg, float *xrarg, float *ytarg)
 
 void setfviewport(float fxlarg, float fybarg, float fxrarg, float fytarg)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   setviewport(fxlarg*f->xsres, fybarg*f->ysres,
 	      fxrarg*f->xsres, fytarg * f->ysres);
 }    
 
 void getwindow(float  *xul, float *yub, float *xur, float *yut)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   *xul = f->xul;
   *yub = f->yub;
   *xur = f->xur;
@@ -744,7 +993,7 @@ void getwindow(float  *xul, float *yub, float *xur, float *yut)
 
 void setwindow(float xularg, float yubarg, float xurarg, float yutarg)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   f->xul = xularg;
   f->yub = yubarg;
   f->xur = xurarg;
@@ -754,24 +1003,24 @@ void setwindow(float xularg, float yubarg, float xurarg, float yutarg)
 
 int setlstyle(int grainarg)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    int oldlstyle = f->grain;
    if(grainarg <= 0) grainarg = 1;
    f->grain = grainarg;
-   if (contexp->dlinestyle)
-   	(*contexp->dlinestyle)(grainarg);
+   if (f->dlinestyle)
+   	(*f->dlinestyle)(grainarg);
    if (RecordGEvents) record_gattr(G_LSTYLE, grainarg);
    return(oldlstyle);
 }
 
 int setlwidth(int width)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    int oldwidth = f->lwidth;
    if (width < 0) width = 1;
    f->lwidth = width;
-   if (contexp->dlinewidth)
-   	(*contexp->dlinewidth)(width);
+   if (f->dlinewidth)
+   	(*f->dlinewidth)(width);
    if (RecordGEvents) record_gattr(G_LWIDTH, width);
    return(oldwidth);
 }
@@ -783,12 +1032,13 @@ int setgrain(int grainarg)		/* for historical reasons... */
 
 int setorientation(int path)
 {
-  int oldorient = contexp->orientation;
+  FRAME *currentFrame = GetCurrentFrame();
+  int oldorient = currentFrame->orientation;
   
   if (RecordGEvents) record_gattr(G_ORIENTATION, path);
-  contexp->orientation = path;
-  if (contexp->dsetorient)
-  	contexp->dsetorient(path);
+  currentFrame->orientation = path;
+  if (currentFrame->dsetorient)
+  	currentFrame->dsetorient(path);
   return(oldorient);
 }
 
@@ -797,22 +1047,24 @@ int setorientation(int path)
 
 int getorientation(void)
 {
-	return(contexp->orientation) ;
+	FRAME *currentFrame = GetCurrentFrame();
+	return(currentFrame->orientation) ;
 }
 
 
 int setjust(int just)
 {
-  int oldjust = contexp->just;
+  FRAME *currentFrame = GetCurrentFrame();
+  int oldjust = currentFrame->just;
 
   if (RecordGEvents) record_gattr(G_JUSTIFICATION, just);
-   contexp->just = just;
+   currentFrame->just = just;
   return(oldjust);
 }
 
 void setresol(float xres, float yres)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    f->xsres = xres;                             /* set new x-resolution */
    f->ysres = yres;                             /* set new y-resolution */
 }
@@ -820,7 +1072,7 @@ void setresol(float xres, float yres)
 
 void getresol(float *xres, float *yres)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    *xres = f->xsres;                             /* get x-resolution */
    *yres = f->ysres;                             /* get y-resolution */
 }
@@ -828,7 +1080,7 @@ void getresol(float *xres, float *yres)
 
 static int GetNorm (float *x, float *y)
 {
-	FRAME *f = contexp;
+	FRAME *f = GetCurrentFrame();
 	float argx = *x;
 	float argy = *y;
 
@@ -852,7 +1104,7 @@ static int GetNorm (float *x, float *y)
 
 void dotat(float xarg, float yarg)
 {
-	FRAME *f = contexp;
+	FRAME *f = GetCurrentFrame();
 	PHANDLER dp = f->dpoint;
 
 	if(f->mode)
@@ -866,7 +1118,7 @@ void dotat(float xarg, float yarg)
 
 void BigDotAt(float x, float y)                 /* make a big dot         */
 {
-	FRAME *f = contexp;
+	FRAME *f = GetCurrentFrame();
 	PHANDLER pfunc;
 
 	pfunc = getpoint();
@@ -883,7 +1135,7 @@ void BigDotAt(float x, float y)                 /* make a big dot         */
 
 void SmallSquareAt(float x, float y)             /* make a filled square */
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    PHANDLER pfunc;
    register float i, j;
 
@@ -898,7 +1150,7 @@ void SmallSquareAt(float x, float y)             /* make a filled square */
 
 void SquareAt(float x, float y)              /* make a filled square */
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    filledrect(x-3.0*XUNIT(f),y-3.0*YUNIT(f),
 	      x+3.0*XUNIT(f),y+3.0*YUNIT(f));
 }
@@ -906,7 +1158,7 @@ void SquareAt(float x, float y)              /* make a filled square */
 
 void triangle(float x, float y, float scale) /* make a hollow square */
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    float root2 = sqrt(2.);
    float xoff = root2*0.5*scale*XUNIT(f);
    float yoff = root2*0.5*scale*YUNIT(f);
@@ -919,7 +1171,7 @@ void triangle(float x, float y, float scale) /* make a hollow square */
 
 void diamond(float x, float y, float scale) /* make a hollow square */
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    float xoff = 0.3*scale*XUNIT(f);
    float yoff = 0.5*scale*YUNIT(f);
    moveto(x-xoff,y);
@@ -932,7 +1184,7 @@ void diamond(float x, float y, float scale) /* make a hollow square */
 
 void square(float x, float y, float scale) /* make a hollow square */
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    float xoff = 0.5*scale*XUNIT(f);
    float yoff = 0.5*scale*YUNIT(f);
    moveto(x-xoff,y-yoff);
@@ -944,14 +1196,14 @@ void square(float x, float y, float scale) /* make a hollow square */
 
 void fsquare(float x, float y, float scale) /* make a filled square */
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    filledrect(x-0.5*scale*XUNIT(f),y-0.5*scale*YUNIT(f),
 	      x+0.5*scale*XUNIT(f),y+0.5*scale*YUNIT(f));
 }
 
 void circle(float xarg, float yarg, float scale)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   CHANDLER circfunc = f->dcircfunc;
   float xsize = scale/XUNIT(f);
   xsize = scale;
@@ -979,7 +1231,7 @@ void circle(float xarg, float yarg, float scale)
 
 void fcircle(float xarg, float yarg, float scale)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   CHANDLER circfunc = f->dcircfunc;
   float xsize = scale/XUNIT(f);
   xsize = scale;
@@ -1007,7 +1259,7 @@ void fcircle(float xarg, float yarg, float scale)
 
 void vtick(float x, float y, float scale) /* make a vertical tick */
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float yoff = scale*YUNIT(f);
   moveto(x, y-yoff/2.0);
   lineto(x, y+yoff/2.0);
@@ -1015,7 +1267,7 @@ void vtick(float x, float y, float scale) /* make a vertical tick */
 
 void htick(float x, float y, float scale) /* make a horiztonal tick */
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float xoff = scale*XUNIT(f);
   moveto(x-xoff/2.0, y);
   lineto(x+xoff/2.0, y);
@@ -1023,7 +1275,7 @@ void htick(float x, float y, float scale) /* make a horiztonal tick */
 
 void vtick_up(float x, float y, float scale) /* make a vertical tick */
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float yoff = scale*YUNIT(f);
   moveto(x, y);
   lineto(x, y+yoff/2.0);
@@ -1031,7 +1283,7 @@ void vtick_up(float x, float y, float scale) /* make a vertical tick */
 
 void vtick_down(float x, float y, float scale) /* make a vertical tick */
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float yoff = scale*YUNIT(f);
   moveto(x, y);
   lineto(x, y-yoff/2.0);
@@ -1039,7 +1291,7 @@ void vtick_down(float x, float y, float scale) /* make a vertical tick */
 
 void htick_left(float x, float y, float scale) /* make a horiztonal tick */
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float xoff = scale*XUNIT(f);
   moveto(x, y);
   lineto(x-xoff/2.0, y);
@@ -1047,7 +1299,7 @@ void htick_left(float x, float y, float scale) /* make a horiztonal tick */
 
 void htick_right(float x, float y, float scale) /* make a horiztonal tick */
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float xoff = scale*XUNIT(f);
   moveto(x, y);
   lineto(x+xoff/2.0, y);
@@ -1061,7 +1313,7 @@ void plus(float x, float y, float scale) /* make a plus sign tick */
 
 void TriangleAt(float x, float y)             /* make a filled triangle */
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    PHANDLER pfunc;
    float i, j, t;
    
@@ -1076,14 +1328,20 @@ void TriangleAt(float x, float y)             /* make a filled triangle */
 
 float setwidth(float w)
 {
-	float oldw = barwidth;
-
-	barwidth = w;
-	return(oldw);
+  CgraphContext *ctx = GetCurrentContext();
+  if (!ctx) return 10.0;
+  
+  float oldw = ctx->barwidth;
+  ctx->barwidth = w;
+  return(oldw);
 }
 
 void VbarsAt (float x, float y)              /* draw vertical bars */
 {
+	FRAME *currentFrame = GetCurrentFrame();
+	CgraphContext *ctx = GetCurrentContext();
+	if (!currentFrame || !ctx) return;
+	
 	PHANDLER pfunc;
 	float i, j;
 
@@ -1091,13 +1349,17 @@ void VbarsAt (float x, float y)              /* draw vertical bars */
 
 	if (GetNorm(&x, &y) == 0.0) return;
 
-	for (j=contexp->yb; j<y; j++)
-	   for (i=x-barwidth/2.0; i<x+barwidth/2.0; i++)
+	for (j=currentFrame->yb; j<y; j++)
+	   for (i=x-ctx->barwidth/2.0; i<x+ctx->barwidth/2.0; i++)
 	      (*pfunc)(i,j);
 }
 
 void HbarsAt (float x, float y)              /* draw horizontal bars */
 {
+   FRAME *currentFrame = GetCurrentFrame();
+   CgraphContext *ctx = GetCurrentContext();
+   if (!currentFrame || !ctx) return;
+   
    PHANDLER pfunc;
    float i, j;
    
@@ -1105,8 +1367,8 @@ void HbarsAt (float x, float y)              /* draw horizontal bars */
    
    if (GetNorm(&x, &y) == 0.0) return;
    
-   for (j=y+barwidth/2.0; j>y-barwidth/2.0; j--)
-      for (i=contexp->xl; i<x; i++)
+   for (j=y+ctx->barwidth/2.0; j>y-ctx->barwidth/2.0; j--)
+      for (i=currentFrame->xl; i<x; i++)
 	 (*pfunc)(i,j);
 }
 
@@ -1123,7 +1385,7 @@ int code(FRAME *f, float x, float y)
 
 void moveto(float xarg, float yarg)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    
    if(f->mode)
       WINDOW(f,xarg,yarg);
@@ -1134,7 +1396,7 @@ void moveto(float xarg, float yarg)
 
 void moverel(float dxarg, float dyarg)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    
    if(f->mode)
       SCALEXY(f,dxarg,dyarg);
@@ -1145,7 +1407,9 @@ void moverel(float dxarg, float dyarg)
 
 static int dclip(void)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
+   if (!f) return -1;  /* Remove ctx check */
+   
    float x1 = f->wx1;
    float y1 = f->wy1;
    float x2 = f->wx2;
@@ -1168,7 +1432,7 @@ static int dclip(void)
       if(c1 & c2)
 	 return(-1);
       if(!c1){
-	 SWAP(c1,c2);
+	 SWAP(c1,c2);   /* Works with new SWAP macro */
 	 SWAP(x1,x2);
 	 SWAP(y1,y2);
       }
@@ -1195,14 +1459,11 @@ static int dclip(void)
    }
 }
 
-/*
- * Similar to dclip(), except for filled polygons, so linear
- * interpolation (MULDIV stuff) is not necessary 
- */
-
 static int fclip(void)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
+   if (!f) return -1;  /* Remove ctx check */
+   
    float x1 = f->wx1;
    float y1 = f->wy1;
    float x2 = f->wx2;
@@ -1225,7 +1486,7 @@ static int fclip(void)
       if(c1 & c2)
 	 return(-1);
       if(!c1){
-	 SWAP(c1,c2);
+	 SWAP(c1,c2);   /* Works with new SWAP macro */
 	 SWAP(x1,x2);
 	 SWAP(y1,y2);
       }
@@ -1250,7 +1511,7 @@ static int fclip(void)
 
 static void linutl(float x, float y)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    PHANDLER dp = f->dpoint;
    LHANDLER dl = f->dline;
    float xx, yy, error;
@@ -1368,7 +1629,7 @@ static void linutl(float x, float y)
 
 void linerel(float dxarg, float dyarg)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    
    if (f->mode)
       SCALEXY(f, dxarg, dyarg);
@@ -1377,7 +1638,7 @@ void linerel(float dxarg, float dyarg)
 
 void lineto(float xarg, float yarg)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
 	
    if (f->mode)
       WINDOW(f, xarg, yarg);
@@ -1387,7 +1648,7 @@ void lineto(float xarg, float yarg)
 void polyline(int nverts, float *verts)
 {
   register int i;
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   FHANDLER polylinefunc = f->dpolyline;
   
   /*
@@ -1418,7 +1679,7 @@ void polyline(int nverts, float *verts)
 void filledpoly(int nverts, float *verts)
 {
   register int i;
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   FHANDLER fillfunc = f->dfilledpoly;
   
   
@@ -1436,7 +1697,7 @@ void filledpoly(int nverts, float *verts)
 
 void filledrect(float x1, float y1, float x2, float y2)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   FHANDLER fillfunc = f->dfilledpoly;
   float verts[8];
 
@@ -1529,16 +1790,18 @@ void cleartextf(char *str, ...)
 
 int strwidth(char *str)
 {
-   if (contexp->dchar && contexp->dstrwidth)
-   	return((*contexp->dstrwidth)(str));
-   else return(strlen(str)*contexp->colsiz);
+   FRAME *currentFrame = GetCurrentFrame();
+   if (currentFrame->dchar && currentFrame->dstrwidth)
+   	return((*currentFrame->dstrwidth)(str));
+   else return(strlen(str)*currentFrame->colsiz);
 }
 
 int strheight(char *str)
 {
-   if (contexp->dchar && contexp->dstrheight)
-   	return((*contexp->dstrheight)(str));
-   else return(contexp->linsiz);
+   FRAME *currentFrame = GetCurrentFrame();
+   if (currentFrame->dchar && currentFrame->dstrheight)
+   	return((*currentFrame->dstrheight)(str));
+   else return(currentFrame->linsiz);
 }
 
 void cleartext(char *str)
@@ -1551,7 +1814,7 @@ void cleartext(char *str)
 
 void drawtext(char *string)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   int c, add_newline = 0;
   THANDLER dc = f->dchar;
   THANDLER dt = f->dtext;
@@ -1611,8 +1874,8 @@ void drawtext(char *string)
 		* back up, so we move UP half of the width of the string
 		*/
 	       else {
-		  xoffset -= contexp->colsiz / 2.0;
-		  yoffset += (contexp->linsiz*strlen(string)) / 2.0;
+		  xoffset -= f->colsiz / 2.0;
+		  yoffset += (f->linsiz*strlen(string)) / 2.0;
 	       }
 	       break;
 	    case LEFT_JUST:
@@ -1620,8 +1883,8 @@ void drawtext(char *string)
 		  xoffset -= strheight(string) / 2.0;
 	       }
 	       else {
-		  yoffset += contexp->linsiz*strlen(string);
-		  xoffset -= contexp->colsiz / 2.0;
+		  yoffset += f->linsiz*strlen(string);
+		  xoffset -= f->colsiz / 2.0;
 	       }
 	       break;
 	    case RIGHT_JUST:
@@ -1630,7 +1893,7 @@ void drawtext(char *string)
 		  yoffset -= strwidth(string);
 	       }
 	       else {
-		  xoffset -= contexp->colsiz / 2.0;
+		  xoffset -= f->colsiz / 2.0;
 	       }
 	       break;
 	 }
@@ -1761,7 +2024,7 @@ static char chartab[90][5] = {
 
 void drawchar(int c)
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    PHANDLER dcp = f->dclrpnt;
    PHANDLER dp = f->dpoint;
    THANDLER dc = f->dchar;
@@ -1891,26 +2154,31 @@ static char s[MAX_STR_LEN];
 
 void drawnum (char *fmt, float n)
 {
-   sprintf (s, fmt, n);
-   drawtext (s);
+   CgraphContext *ctx = GetCurrentContext();
+   if (!ctx) return;
+   
+   sprintf (ctx->draw_buffer, fmt, n);
+   drawtext (ctx->draw_buffer);
 }
 
 void drawfnum (int dpoints, float n)
 {
-   char fmt[12];
-
-   /* first make format string for number */
+   CgraphContext *ctx = GetCurrentContext();
+   if (!ctx) return;
    
+   char fmt[12];
    sprintf(fmt, "%%.%df", dpoints); 
-   sprintf (s, fmt, n);
-   drawtext (s);
+   sprintf (ctx->draw_buffer, fmt, n);
+   drawtext (ctx->draw_buffer);
 }
 
-
-void drawf(char *fmt, double n)         /* draw floating number on screen */
+void drawf(char *fmt, double n)
 {
-   sprintf (s, fmt, n);
-   drawtext(s);
+   CgraphContext *ctx = GetCurrentContext();
+   if (!ctx) return;
+   
+   sprintf (ctx->draw_buffer, fmt, n);
+   drawtext(ctx->draw_buffer);
 }
 
 void HitRetKey(void)
@@ -1928,35 +2196,37 @@ void copyframe(FRAME *from, FRAME *to)
 
 void frame(void)         /* draw a frame around current world window (???) */
 {
+   FRAME *currentFrame = GetCurrentFrame();
    register int olduser;
 
-   olduser = contexp->mode;               /* save user/device stat */
+   olduser = currentFrame->mode;               /* save user/device stat */
    user();
-   moveto(contexp->xul,contexp->yub);
-   lineto(contexp->xul,contexp->yut);
-   lineto(contexp->xur,contexp->yut);
-   lineto(contexp->xur,contexp->yub);
-   lineto(contexp->xul,contexp->yub);
+   moveto(currentFrame->xul,currentFrame->yub);
+   lineto(currentFrame->xul,currentFrame->yut);
+   lineto(currentFrame->xur,currentFrame->yut);
+   lineto(currentFrame->xur,currentFrame->yub);
+   lineto(currentFrame->xul,currentFrame->yub);
    setuser(olduser);                      /* restore user/device stat */
 }
 
 void frameport(void)    /* draw a frame around current viewport */
 {
+   FRAME *currentFrame = GetCurrentFrame();
    register int olduser;
    
-   olduser = contexp->mode;               /* save user/device stat */
+   olduser = currentFrame->mode;               /* save user/device stat */
    user();
-   moveto(contexp->xl,contexp->yb);
-   lineto(contexp->xl,contexp->yt);
-   lineto(contexp->xr,contexp->yt);
-   lineto(contexp->xr,contexp->yb);
-   lineto(contexp->xl,contexp->yb);
+   moveto(currentFrame->xl,currentFrame->yb);
+   lineto(currentFrame->xl,currentFrame->yt);
+   lineto(currentFrame->xr,currentFrame->yt);
+   lineto(currentFrame->xr,currentFrame->yb);
+   lineto(currentFrame->xl,currentFrame->yb);
    setuser(olduser);                      /* restore user/device stat */
 }
 
 void gfill(float xl, float yl, float xh, float yh)     /* fill a screen region */
 {
-   FRAME *f = contexp;
+   FRAME *f = GetCurrentFrame();
    register float x, y;
    register float xsl, xsh, ysl, ysh;
    int saveuser;
@@ -1981,20 +2251,23 @@ int roundiv(int x, int y)
    return(x / y);
 }
 
+
 void tck(char *title)
 {
-   FRAME *fp= contexp;
-   static int labeltick = 1;       /* defaults to tick alone */
+   FRAME *fp = GetCurrentFrame();
+   CgraphContext *ctx = GetCurrentContext();
+   if (!fp || !ctx) return;
    
-   if (labeltick != 0) {
+   if (ctx->labeltick != 0) {
       setuser(0);
       linerel(0.0,-fp->linsiz/2.0);
       moverel(fp->colsiz/2.0,0.0);
-      if (labeltick < 0)
+      if (ctx->labeltick < 0)
 	 drawtext(title);
       setuser(1);
    }
 }
+
 
 void tickat(float x, float y, char *title)
 {
@@ -2016,7 +2289,7 @@ void user(void)
 
 void cross(void)                     /* draw a cross at current pos  */
 {
-   FRAME *f= contexp;
+   FRAME *f= GetCurrentFrame();
 
    screen();
    moverel(-3.0*XUNIT(f),0.0);
@@ -2037,7 +2310,7 @@ void drawbox(float xl, float yl, float xh, float yh)        /* draw a box */
 
 void screen2window(int x, int y, float *px, float *py)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float argx, argy;
   
   argx = (float)x;
@@ -2049,7 +2322,7 @@ void screen2window(int x, int y, float *px, float *py)
 
 void window2screen(int *px, int *py, float x, float y)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float argx, argy;
 
   argx = x;
@@ -2063,7 +2336,7 @@ void window2screen(int *px, int *py, float x, float y)
 
 void window_to_screen(float x, float y, int *px, int *py)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   WINDOW(f, x, y);
   *px = (int) x;
   *py = (int) ((f->ysres-1) - y);
@@ -2071,7 +2344,7 @@ void window_to_screen(float x, float y, int *px, int *py)
 
 void screen_to_window(int x, int y, float *px, float *py)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   float argx = x;
   float argy = ((f->ysres-1) - y);
 
@@ -2092,7 +2365,7 @@ void maketitle(char *s, float x, float y)
 
 void makeftitle(char *s, float x, float y)
 {
-  FRAME *f = contexp;
+  FRAME *f = GetCurrentFrame();
   int olduser = setuser(0);
   int oldj = setjust(0);
   float x1 = f->xl + x*(f->xr - f->xl);
@@ -2102,6 +2375,4 @@ void makeftitle(char *s, float x, float y)
   drawtext(s);
   setjust(oldj);
   setuser(olduser);
-} 
-
-
+}

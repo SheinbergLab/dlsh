@@ -209,7 +209,9 @@ EXPORTS
 	gbIsEmpty
 	gbSize
 	gbSetEmpty
-	
+
+	getframe
+	setframe
 	setresol
 	getresol
 	getxscale
