@@ -21,6 +21,7 @@ if(WIN32)
 else()
   find_library(LIBZ z)
   find_library(LIBLZ4 NAMES "liblz4.a")
+  find_library(LIBXXHASH NAMES "libxxhash.a")
   find_library(LIBJANSSON NAMES "libjansson.a")
   link_directories( ..  )
 endif()
@@ -28,8 +29,8 @@ endif()
 include_directories( ../src )
 
 add_executable( testdgread src/testdgread.c )
-target_link_libraries( testdgread dg ${LIBZ} ${LIBLZ4} )
+target_link_libraries( testdgread dg ${LIBZ} ${LIBLZ4} ${LIBXXHASH} )
 
 add_executable( dgtojson src/dgtojson.c )
-target_link_libraries( dgtojson dg ${LIBZ} ${LIBLZ4} ${LIBJANSSON} )
+target_link_libraries( dgtojson dg ${LIBZ} ${LIBLZ4} ${LIBJANSSON} ${LIBXXHASH} )
 
