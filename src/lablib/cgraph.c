@@ -269,7 +269,7 @@ FRAME *gsave()
    copyframe(currentFrame, newframe);
    newframe->parent = currentFrame;
    setstatus(newframe);
-   if (RecordGEvents) record_gattr(G_SAVE, 1);
+   if (gbIsRecordingEnabled()) record_gattr(G_SAVE, 1);
    return(newframe);
 }
 
@@ -287,7 +287,7 @@ FRAME *grestore()
    currentFrame = ctx->current_frame;
    if (currentFrame->dsetfont)
    	currentFrame->dsetfont(currentFrame->fontname, currentFrame->fontsize);
-   if (RecordGEvents) record_gattr(G_SAVE, -1);
+   if (gbIsRecordingEnabled()) record_gattr(G_SAVE, -1);
    return(currentFrame);
 }
 
@@ -395,7 +395,7 @@ void clearscreen()
   	currentFrame->dclearfunc();
   else if (ctx->bframe) (*ctx->bframe)();
 
-  if (RecordGEvents) gbResetGevents();
+  if (gbIsRecordingEnabled()) gbResetCurrentBuffer();
 }
 
 void noplot(void)
@@ -624,7 +624,7 @@ char *setfont(char *fontname, float size)
   currentFrame->fontsize = size;
   if (currentFrame->dsetfont)
   	currentFrame->dsetfont(currentFrame->fontname, size);
-  if (RecordGEvents) record_gtext(G_FONT, size, 0.0, fontname);
+  if (gbIsRecordingEnabled()) record_gtext(G_FONT, size, 0.0, fontname);
   
   if (strcmp(ctx->old_fontname,"")) return(ctx->old_fontname);
   else return (NULL);
@@ -681,12 +681,12 @@ void seteframe(HANDLER eoffunc)
 
 void group(void)
 {
-   if (RecordGEvents) record_gattr(G_GROUP, 1); 
+   if (gbIsRecordingEnabled()) record_gattr(G_GROUP, 1); 
 }
 
 void ungroup(void)
 {
-  if (RecordGEvents) record_gattr(G_GROUP, 0); 
+  if (gbIsRecordingEnabled()) record_gattr(G_GROUP, 0); 
 }
 
 int setimgpreview(int val)
@@ -715,13 +715,13 @@ void postscript(char *filename, float xsize, float ysize)
     SCALEXY(f,xs,ys);
   
   oldclip = setclip(0);
-  if ((recording = RecordGEvents)) {
+  if ((recording = gbIsRecordingEnabled())) {
     record_gpoint(G_MOVETO, f->xpos, f->ypos);
     record_gtext(G_POSTSCRIPT, xs, ys, filename); 
   }
   if (!ctx->img_preview || !f->dimage) { /* Put a frame where image will appear */
   keyline:
-    if (recording) gbDisableGevents();
+    if (recording) gbDisableCurrentBuffer();
     screen();
     rect(x, y, x+xs, y+ys);
     moveto(x, y);
@@ -729,7 +729,7 @@ void postscript(char *filename, float xsize, float ysize)
     moveto(x+xs, y);
     lineto(x, y+ys);
     if (oldmode) user();
-    if (recording) gbEnableGevents();
+    if (recording) gbEnableCurrentBuffer();
     setclip(oldclip);
     return;
   }
@@ -759,7 +759,7 @@ int place_image(int w, int h, int d, unsigned char *data,
   
   oldclip = setclip(0);
 
-  if ((recording = RecordGEvents)) {
+  if ((recording = gbIsRecordingEnabled())) {
     ref = gbAddImage(w, h, d, data, x, y, x+xs, y+ys);
     record_gpoint(G_MOVETO, f->xpos, f->ypos);
     record_gline(G_IMAGE, xs, ys, (float) ref, 0);
@@ -767,7 +767,7 @@ int place_image(int w, int h, int d, unsigned char *data,
 
   if (!ctx->img_preview || !f->dmimage) { /* Put a frame where image will appear */
   keyline:
-    if (recording) gbDisableGevents();
+    if (recording) gbDisableCurrentBuffer();
     screen();
     rect(x, y, x+xs, y+ys);
     moveto(x, y);
@@ -775,7 +775,7 @@ int place_image(int w, int h, int d, unsigned char *data,
     moveto(x+xs, y);
     lineto(x, y+ys);
     if (oldmode) user();
-    if (recording) gbEnableGevents();
+    if (recording) gbEnableCurrentBuffer();
     setclip(oldclip);
     return 0;
   }
@@ -804,7 +804,7 @@ int setcolor(int color)
 {
    FRAME *currentFrame = GetCurrentFrame();
    int oldcolor = currentFrame->color;
-   if (RecordGEvents) record_gattr(G_COLOR, color); 
+   if (gbIsRecordingEnabled()) record_gattr(G_COLOR, color); 
    currentFrame->color = color;
    if (currentFrame->dsetcolor)
    	currentFrame->dsetcolor(color);
@@ -851,12 +851,12 @@ int setclip(int cliparg)
 
   if (cliparg) {
     if (dclip) (*dclip)(f->xl, f->yb, f->xr, f->yt);
-    if (RecordGEvents)
+    if (gbIsRecordingEnabled())
       record_gline(G_CLIP, f->xl, f->yb, f->xr, f->yt);
   }
   else {
     if (dclip) (*dclip)(0, 0, f->xsres, f->ysres);
-    if (RecordGEvents)
+    if (gbIsRecordingEnabled())
       record_gline(G_CLIP, 0, 0, f->xsres, f->ysres);
   }
   f->clipf = cliparg;
@@ -899,7 +899,7 @@ void setclipregion(float xlarg, float ybarg, float xrarg, float ytarg)
   if (f->mode) WINDOW(f, xrarg, ytarg);
 
   if (f->dclip) (*(f->dclip))(xlarg, ybarg, xrarg, ytarg);
-  if (RecordGEvents)
+  if (gbIsRecordingEnabled())
     record_gline(G_CLIP, xlarg, ybarg, xrarg, ytarg);
 }
 
@@ -932,7 +932,7 @@ void setviewport(float xlarg,float ybarg,float xrarg,float ytarg)
 	f->yt = ytarg;
 
 	if (dclip) (*dclip)(xlarg, ybarg, xrarg, ytarg);
-	if (RecordGEvents)
+	if (gbIsRecordingEnabled())
 	   record_gline(G_CLIP, xlarg, ybarg, xrarg, ytarg);
 
 	setvw();
@@ -1009,7 +1009,7 @@ int setlstyle(int grainarg)
    f->grain = grainarg;
    if (f->dlinestyle)
    	(*f->dlinestyle)(grainarg);
-   if (RecordGEvents) record_gattr(G_LSTYLE, grainarg);
+   if (gbIsRecordingEnabled()) record_gattr(G_LSTYLE, grainarg);
    return(oldlstyle);
 }
 
@@ -1021,7 +1021,7 @@ int setlwidth(int width)
    f->lwidth = width;
    if (f->dlinewidth)
    	(*f->dlinewidth)(width);
-   if (RecordGEvents) record_gattr(G_LWIDTH, width);
+   if (gbIsRecordingEnabled()) record_gattr(G_LWIDTH, width);
    return(oldwidth);
 }
 
@@ -1035,7 +1035,7 @@ int setorientation(int path)
   FRAME *currentFrame = GetCurrentFrame();
   int oldorient = currentFrame->orientation;
   
-  if (RecordGEvents) record_gattr(G_ORIENTATION, path);
+  if (gbIsRecordingEnabled()) record_gattr(G_ORIENTATION, path);
   currentFrame->orientation = path;
   if (currentFrame->dsetorient)
   	currentFrame->dsetorient(path);
@@ -1057,7 +1057,7 @@ int setjust(int just)
   FRAME *currentFrame = GetCurrentFrame();
   int oldjust = currentFrame->just;
 
-  if (RecordGEvents) record_gattr(G_JUSTIFICATION, just);
+  if (gbIsRecordingEnabled()) record_gattr(G_JUSTIFICATION, just);
    currentFrame->just = just;
   return(oldjust);
 }
@@ -1112,7 +1112,7 @@ void dotat(float xarg, float yarg)
 	f->xpos = xarg;
 	f->ypos = yarg;
 	if (dp) (*dp)(xarg,yarg);
-	if (RecordGEvents)
+	if (gbIsRecordingEnabled())
 	   record_gpoint(G_POINT, xarg, yarg);
 }
 
@@ -1129,7 +1129,7 @@ void BigDotAt(float x, float y)                 /* make a big dot         */
 	(*pfunc)((x+=XUNIT(f)), y);
 	(*pfunc)(x, (y+=YUNIT(f)));
 	(*pfunc)((x-=XUNIT(f)), y);
-	if (RecordGEvents)
+	if (gbIsRecordingEnabled())
 	   record_gpoint(G_POINT, x, y);
 }
 
@@ -1225,7 +1225,7 @@ void circle(float xarg, float yarg, float scale)
     (*circfunc)(xarg-(xsize/2), yarg+(xsize/2), xsize, 0);
   }
   
-  if (RecordGEvents)
+  if (gbIsRecordingEnabled())
     record_gline(G_CIRCLE, xarg, yarg, xsize, 0.0);
 }
 
@@ -1253,7 +1253,7 @@ void fcircle(float xarg, float yarg, float scale)
     (*circfunc)(xarg-(xsize/2), yarg+(xsize/2), xsize, 1);
   }
   
-  if (RecordGEvents)
+  if (gbIsRecordingEnabled())
     record_gline(G_CIRCLE, xarg, yarg, xsize, 1.0);
 }
 
@@ -1391,7 +1391,7 @@ void moveto(float xarg, float yarg)
       WINDOW(f,xarg,yarg);
    f->xpos = xarg;
    f->ypos = yarg;
-   if (RecordGEvents) record_gpoint(G_MOVETO, f->xpos, f->ypos);
+   if (gbIsRecordingEnabled()) record_gpoint(G_MOVETO, f->xpos, f->ypos);
 }
 
 void moverel(float dxarg, float dyarg)
@@ -1402,7 +1402,7 @@ void moverel(float dxarg, float dyarg)
       SCALEXY(f,dxarg,dyarg);
    f->xpos += dxarg;
    f->ypos += dyarg;
-   if (RecordGEvents) record_gpoint(G_MOVETO, f->xpos, f->ypos);
+   if (gbIsRecordingEnabled()) record_gpoint(G_MOVETO, f->xpos, f->ypos);
 }
 
 static int dclip(void)
@@ -1534,7 +1534,7 @@ static void linutl(float x, float y)
 	 * Even if the entire line is clipped, we need to moveto the
 	 * destination for following lineto's...
 	 */
-	if (RecordGEvents) {
+	if (gbIsRecordingEnabled()) {
 	  record_gpoint(G_MOVETO, f->xpos, f->ypos);
 	}
 	return;
@@ -1548,7 +1548,7 @@ static void linutl(float x, float y)
    }
    if (dl){
       (*dl)(xx, yy, x, y);
-      if (RecordGEvents) {
+      if (gbIsRecordingEnabled()) {
 
 	 /*******************************************************************
 	  *  Recording the lineto as a "lineto" requires that the correct
@@ -1665,7 +1665,7 @@ void polyline(int nverts, float *verts)
     if (polylinefunc) {
       (*polylinefunc)(&verts[0], nverts);
     }
-    if (RecordGEvents) record_gpoly(G_POLY, nverts*2, verts);
+    if (gbIsRecordingEnabled()) record_gpoly(G_POLY, nverts*2, verts);
   }
   else {
     int i, j;
@@ -1692,7 +1692,7 @@ void filledpoly(int nverts, float *verts)
     (*fillfunc)(&verts[0], nverts);
   }
 
-  if (RecordGEvents) record_gpoly(G_FILLEDPOLY, nverts*2, verts);
+  if (gbIsRecordingEnabled()) record_gpoly(G_FILLEDPOLY, nverts*2, verts);
 }
 
 void filledrect(float x1, float y1, float x2, float y2)
@@ -1725,7 +1725,7 @@ void filledrect(float x1, float y1, float x2, float y2)
     (*fillfunc)(&verts[0], 4);
   }
 
-  if (RecordGEvents) record_gline(G_FILLEDRECT, f->wx1, f->wy1, f->wx2, f->wy2);
+  if (gbIsRecordingEnabled()) record_gline(G_FILLEDRECT, f->wx1, f->wy1, f->wx2, f->wy2);
 }
 
 /* make a hollow rectangle */
@@ -1830,7 +1830,7 @@ void drawtext(char *string)
      add_newline = 1;
   }
   
-  if (RecordGEvents) record_gtext(G_TEXT, f->xpos, f->ypos, string);
+  if (gbIsRecordingEnabled()) record_gtext(G_TEXT, f->xpos, f->ypos, string);
 
   /*
    * now figure where text should begin based on current orientation

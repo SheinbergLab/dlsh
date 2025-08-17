@@ -85,12 +85,12 @@ void dl_ps_init_dpc(dpc * inst, float w, float h, int inverse_video)
 {
   GBUF_DATA * gb = gbGetGeventBuffer() ;
   
-  gbDisableGevents() ;				  /* valid data */
+  gbDisableCurrentBuffer() ;				  /* valid data */
   setframe(&inst->fr);
   dl_ps_init_frame(w, h, inverse_video) ;
   gbInitGeventBuffer(&inst->gb) ;
   gbSetGeventBuffer(gb) ;
-  gbEnableGevents() ;
+  gbEnableCurrentBuffer() ;
   inst->next = first_dpc;
   first_dpc = inst ;
 }
@@ -106,7 +106,7 @@ int dl_ps_install_dpc(dpc * inst)
   current_dpc = d;
   setframe(&d->fr);
   gbSetGeventBuffer(& d->gb);
-  gbEnableGevents();
+  gbEnableCurrentBuffer();
   user();
   return(1);
 }
@@ -121,7 +121,7 @@ dpc *dl_ps_create(void)
   current_dpc = new_dpc;
   setframe(&new_dpc->fr);
   gbSetGeventBuffer(&new_dpc->gb);
-  gbEnableGevents();
+  gbEnableCurrentBuffer();
   user();
   return(new_dpc);
 }
@@ -140,7 +140,7 @@ int dl_ps_destroy(dpc * inst)
     if (d->next == NULL) return(0) ;
     d->next = d->next->next ;
   }
-  gbDisableGevents() ;
+  gbDisableCurrentBuffer() ;
   if (inst == current_dpc)
     dl_ps_install_dpc(NULL) ;
   gb = gbGetGeventBuffer() ;

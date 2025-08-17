@@ -187,6 +187,15 @@ EXPORTS
 	dslog_to_dg
 	dslog_to_essdg
 
+	gbEnableGeventBuffer
+	gbDisableGeventBuffer
+	gbEnableCurrentBuffer
+	gbDisableCurrentBuffer
+	gbResetCurrentBuffer
+	gbResetGeventBuffer
+	gbCleanupGeventBuffer
+	gbFreeImagesBuffer
+	gbIsRecordingEnabled
 	gbInitGevents
 	gbCloseGevents
 	gbResetGevents

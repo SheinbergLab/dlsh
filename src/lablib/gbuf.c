@@ -64,9 +64,11 @@ GBUF_DATA *gbInitGeventBuffer(GBUF_DATA *gb)
   GBUF_DATA *oldgb = curGB;
   curGB = gb;
   GB_IMAGES(gb).nimages = 0;
+  GB_RECORD_EVENTS(gb) = 1;
   gbInitGevents();
   return(oldgb);
 }
+
 
 GBUF_DATA *gbSetGeventBuffer(GBUF_DATA *gb)
 {
@@ -80,7 +82,37 @@ GBUF_DATA *gbGetGeventBuffer()
   return(curGB);
 }
 
+void gbEnableGeventBuffer(GBUF_DATA *gb)
+{
+   if (gb) GB_RECORD_EVENTS(gb) = 1;
+}
 
+void gbDisableGeventBuffer(GBUF_DATA *gb)  
+{
+   if (gb) GB_RECORD_EVENTS(gb) = 0;
+}
+
+// Convenience functions for current buffer
+void gbEnableCurrentBuffer(void)
+{
+   GB_RECORD_EVENTS(curGB) = 1;
+}
+
+void gbDisableCurrentBuffer(void)
+{
+   GB_RECORD_EVENTS(curGB) = 0;
+}
+
+void gbResetCurrentBuffer(void)
+{
+  gbResetGeventBuffer(curGB);
+}
+
+int gbIsRecordingEnabled(void)
+{
+  return GB_RECORD_EVENTS(curGB);
+}
+  
 /*
  * gbAddImage(w, h, d, data, x0, y0, x1, y1) - add image to local storage
  */
@@ -284,14 +316,10 @@ void gbInitGevents()
    gbInitImageList(16);
    GB_GBUFINDEX(curGB) = 0;
    
-   RecordGEvents = 1;
-   
    G_VERSION(&header) = VERSION_NUMBER;
-   
    getresol(&G_WIDTH(&header),&G_HEIGHT(&header));
    
    send_event(G_HEADER,(unsigned char *) &header);
-
    gbRecordDefaults();
 }
 
@@ -299,13 +327,13 @@ void gbInitGevents()
 void gbRecordDefaults()
 {
   /* This sends the current font to the file */
-  if (RecordGEvents && getfontname(contexp))
+  if (GB_RECORD_EVENTS(curGB) && getfontname(contexp))  // ← Use per-buffer state
     record_gtext(G_FONT, getfontsize(contexp), 0.0, getfontname(contexp));
-  if (RecordGEvents) record_gattr(G_COLOR, contexp->color); 
-  if (RecordGEvents) record_gattr(G_LSTYLE, contexp->grain);
-  if (RecordGEvents) record_gattr(G_LWIDTH, contexp->lwidth);
-  if (RecordGEvents) record_gattr(G_ORIENTATION, contexp->orientation);
-  if (RecordGEvents) record_gattr(G_JUSTIFICATION, contexp->just);
+  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_COLOR, contexp->color); 
+  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_LSTYLE, contexp->grain);
+  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_LWIDTH, contexp->lwidth);
+  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_ORIENTATION, contexp->orientation);
+  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_JUSTIFICATION, contexp->just);
 }
 
 void gbEnableGeventTimes()
@@ -351,19 +379,64 @@ int gbSize()
   return (GB_GBUFINDEX(curGB));
 }
 
-void gbResetGevents()
+void gbCleanupGeventBuffer(GBUF_DATA *gb)
+{
+   if (!gb) return;
+   
+   // Disable recording
+   GB_RECORD_EVENTS(gb) = 0;
+   
+   // Free images
+   gbFreeImagesBuffer(gb);
+   
+   // Free buffer data
+   if (gb->gbuf) {
+       free(gb->gbuf);
+       gb->gbuf = NULL;
+   }
+   
+   // Reset counters
+   gb->gbufindex = 0;
+   gb->gbufsize = 0;
+   gb->empty = 1;
+}
+
+void gbResetGeventBuffer(GBUF_DATA *gb)
 {
    GHeader header;
-
-   GB_GBUFINDEX(curGB) = 0;
+   
+   if (!gb) return;
+   
+   // Reset this specific buffer
+   gb->gbufindex = 0;
    
    G_VERSION(&header) = VERSION_NUMBER;
-   getresol(&G_WIDTH(&header),&G_HEIGHT(&header));
-
-   send_event(G_HEADER,(unsigned char *) &header);
+   getresol(&G_WIDTH(&header), &G_HEIGHT(&header));
+   
+   // Temporarily set as current to send header and record defaults
+   GBUF_DATA *oldGB = gbSetGeventBuffer(gb);
+   
+   send_event(G_HEADER, (unsigned char *) &header);
    gbRecordDefaults();
-   gbFreeImages();
-   gbSetEmpty(1);
+   
+   // Restore previous buffer
+   gbSetGeventBuffer(oldGB);
+   
+   // Clean up images for this specific buffer
+   gbFreeImagesBuffer(gb);
+   gb->empty = 1;
+}
+
+// Helper function for per-buffer image cleanup
+void gbFreeImagesBuffer(GBUF_DATA *gb)
+{
+   int i;
+   GBUF_IMAGES *images = &gb->images;
+   
+   for (i = 0; i < images->nimages; i++) {
+     gbFreeImage(&images->images[i]);
+   }
+   images->nimages = 0;
 }
 
 
@@ -373,11 +446,15 @@ int gbPlaybackGevents(void)
   float w, h;
   
   if (GB_GBUFINDEX(curGB)) { /* screen is not empty */
-    gbDisableGevents();
+
+	gbDisableCurrentBuffer();
+
     getwindow(&xl, &yb, &xr, &yt) ;
     playback_gbuf(GB_GBUF(curGB),GB_GBUFINDEX(curGB));
     setwindow(xl, yb, xr, yt) ;
-    gbEnableGevents();
+
+    gbEnableCurrentBuffer();
+
   }
   else {
     clearscreen();
@@ -414,16 +491,6 @@ int gbWriteGevents(char *filename, int format)
 
    if (filename && filename[0]) fclose(fp);
    return(1);
-}
-
-void gbDisableGevents()
-{
-   RecordGEvents = 0;
-}
-
-void gbEnableGevents()
-{
-   RecordGEvents = 1;
 }
 
 void gbPrintGevents()

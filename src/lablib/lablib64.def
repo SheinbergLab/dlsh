@@ -1,4 +1,13 @@
 EXPORTS
+	gbEnableGeventBuffer
+	gbDisableGeventBuffer
+	gbEnableCurrentBuffer
+	gbDisableCurrentBuffer
+	gbResetCurrentBuffer
+	gbResetGeventBuffer
+	gbCleanupGeventBuffer
+	gbFreeImagesBuffer
+	gbIsRecordingEnabled
 	gbInitGevents
 	gbCloseGevents
 	gbResetGevents
