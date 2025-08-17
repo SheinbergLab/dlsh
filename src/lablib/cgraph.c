@@ -137,16 +137,15 @@ static void CgraphInterpDeleteProc(ClientData clientData, Tcl_Interp *interp)
     contexp = NULL;
 }
 
-/* Keep your existing simple DeleteContextData as is (the one that works) */
 static void DeleteContextData(ClientData clientData, Tcl_Interp *interp)
 {
     CgraphContext *ctx = (CgraphContext *)clientData;
     if (!ctx) return;
     
-    /* Just clear the global */
+    // Clear global first
     contexp = NULL;
     
-    /* Clean up frames */
+    // Clean up frames
     FRAME *frame = ctx->current_frame;
     while (frame) {
         FRAME *next = frame->parent;
@@ -157,25 +156,22 @@ static void DeleteContextData(ClientData clientData, Tcl_Interp *interp)
         frame = next;
     }
     
-    /* Clean up viewport stack */
-    if (ctx->viewport_stack) {
-        if (ctx->viewport_stack->vals) {
-            free(ctx->viewport_stack->vals);
-        }
-        free(ctx->viewport_stack);
-    }
-    
-    /* Free the context */
     free(ctx);
 }
 
-/* Update the existing Cgraph_InitInterp function (around line 210) */
+/* setup and setup delete callback */
 void Cgraph_InitInterp(Tcl_Interp *interp)
 {
     SetCurrentInterp(interp);
     
     /* Register cleanup callback for when interpreter is deleted */
     Tcl_CallWhenDeleted(interp, CgraphInterpDeleteProc, NULL);
+}
+
+/* just set to current */
+void Cgraph_SetInterp(Tcl_Interp *interp)
+{
+    SetCurrentInterp(interp);
 }
 
 /* Get or create context for an interpreter */
@@ -193,23 +189,26 @@ static CgraphContext *GetContextForInterp(Tcl_Interp *interp)
         /* Initialize with defaults */
         memcpy(&ctx->default_frame, &default_frame_template, sizeof(FRAME));
         
-        /* Create initial frame */
+        /* CRITICAL: Create a completely new, independent frame */
         ctx->current_frame = (FRAME *)malloc(sizeof(FRAME));
         memcpy(ctx->current_frame, &ctx->default_frame, sizeof(FRAME));
-        ctx->current_frame->fontname = NULL;
+        
+        /* IMPORTANT: Create independent fontname */
+        if (ctx->default_frame.fontname) {
+            ctx->current_frame->fontname = (char *)malloc(strlen(ctx->default_frame.fontname) + 1);
+            strcpy(ctx->current_frame->fontname, ctx->default_frame.fontname);
+        } else {
+            /* Set a default font name - EACH CONTEXT GETS ITS OWN COPY */
+            ctx->current_frame->fontname = (char *)malloc(strlen("HELVETICA") + 1);
+            strcpy(ctx->current_frame->fontname, "HELVETICA");
+        }
+        
         ctx->current_frame->parent = NULL;
+        /* Other initialization... */
         
-        /* Initialize other context members */
-        ctx->barwidth = 10.0;
-        ctx->img_preview = 0;
-        ctx->labeltick = 1;
-        ctx->bframe = NULL;
-        ctx->eframe = NULL;
-        
-        Tcl_SetAssocData(interp, CGRAPH_ASSOC_KEY, DeleteContextData, 
-                        (ClientData)ctx);
+        Tcl_SetAssocData(interp, CGRAPH_ASSOC_KEY,
+			 DeleteContextData, (ClientData)ctx);
     }
-    
     return ctx;
 }
 
@@ -249,7 +248,7 @@ static FRAME *GetCurrentFrame(void)
 {
     CgraphContext *ctx = GetCurrentContext();
     if (ctx && ctx->current_frame) {
-        contexp = ctx->current_frame;  /* Update global for compatibility */
+      //        contexp = ctx->current_frame;  /* Update global for compatibility */
         return ctx->current_frame;
     }
     return NULL;
@@ -290,16 +289,16 @@ FRAME *grestore()
    if (gbIsRecordingEnabled()) record_gattr(G_SAVE, -1);
    return(currentFrame);
 }
-
 FRAME *setstatus(FRAME *newframe)
 {
-  CgraphContext *ctx = GetCurrentContext();
-  if (!ctx) return NULL;
-  
-  FRAME *f = ctx->current_frame;
-  ctx->current_frame = newframe;
-  contexp = newframe;  /* Update global for compatibility */
-  return(f);
+    CgraphContext *ctx = GetCurrentContext();
+    if (!ctx) {
+      return NULL;
+    }
+    
+    FRAME *f = ctx->current_frame;
+    ctx->current_frame = newframe;
+    return f;
 }
 
 FRAME *setframe(FRAME *newframe)

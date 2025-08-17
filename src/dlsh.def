@@ -219,6 +219,8 @@ EXPORTS
 	gbSize
 	gbSetEmpty
 
+        Cgraph_InitInterp
+        Cgraph_SetInterp
 	getframe
 	setframe
 	setresol
