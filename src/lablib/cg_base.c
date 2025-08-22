@@ -19,6 +19,7 @@ CG_CMD_WRAPPER_DECL(cgDumpWindow)
 CG_CMD_WRAPPER_DECL(cgPlayback)
 CG_CMD_WRAPPER_DECL(gbSizeCmd)
 CG_CMD_WRAPPER_DECL(gbIsEmptyCmd)
+CG_CMD_WRAPPER_DECL(gbResetCmd)
 CG_CMD_WRAPPER_DECL(cgGetResol)
 CG_CMD_WRAPPER_DECL(cgGetFrame)
 CG_CMD_WRAPPER_DECL(cgGetXScale)
@@ -83,9 +84,8 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
   char *outfile = NULL;
-  static char *usage = "usage: dumpwin {printer|ascii|raw|postscript|pdf}";
+  static char *usage = "usage: dumpwin {printer|ascii|raw|postscript|pdf|string}";
   if (argc > 2) outfile = argv[2];
-
   if (argc < 2) {
     Tcl_SetResult(interp, usage, TCL_STATIC);
     return TCL_ERROR;
@@ -113,6 +113,32 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
   else if (!strcmp(argv[1],"pdf")) {
     gbWriteGevents(outfile,GBUF_PDF);
     return(TCL_OK);
+  }
+  else if (!strcmp(argv[1],"string")) {
+    char *result_string = gbuf_dump_ascii_to_string(GB_GBUF(gbGetGeventBuffer()), 
+                                                   GB_GBUFINDEX(gbGetGeventBuffer()));
+    if (!result_string) {
+      Tcl_SetResult(interp, "Error: Unable to convert graphics buffer to string", TCL_STATIC);
+      return TCL_ERROR;
+    }
+    
+    if (argc >= 3) {
+      /* Store result in variable and return byte count */
+      if (Tcl_SetVar(interp, argv[2], result_string, TCL_LEAVE_ERR_MSG) == NULL) {
+        free(result_string);
+        return TCL_ERROR;
+      }
+      /* Return the length of the string */
+      char length_str[32];
+      sprintf(length_str, "%d", (int)strlen(result_string));
+      Tcl_SetResult(interp, length_str, TCL_VOLATILE);
+      free(result_string);
+    } else {
+      /* Copy the string to Tcl-managed memory */
+      Tcl_SetResult(interp, result_string, TCL_VOLATILE);
+      free(result_string);
+    }
+    return TCL_OK;
   }
   else {
     Tcl_SetResult(interp, usage, TCL_STATIC);
@@ -153,6 +179,13 @@ static int gbIsEmptyCmd(ClientData clientData, Tcl_Interp *interp,
 		     int argc, char *argv[])
 {
   Tcl_SetObjResult(interp, Tcl_NewIntObj(gbIsEmpty()));
+  return TCL_OK;
+}
+
+static int gbResetCmd(ClientData clientData, Tcl_Interp *interp,
+		      int argc, char *argv[])
+{
+  gbResetCurrentBuffer();
   return TCL_OK;
 }
 
@@ -442,6 +475,24 @@ static int cgSetWindow(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[4], &y2) != TCL_OK) return TCL_ERROR;
   
   setwindow(x1, y1, x2, y2);
+  return TCL_OK;
+}
+
+static int cgSetResol(ClientData clientData, Tcl_Interp *interp,
+		      int argc, char *argv[])
+{
+  double w, h;
+
+  if (argc != 3) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " width height",
+    	(char *) NULL) ;
+    return TCL_ERROR;
+  }
+
+  if (Tcl_GetDouble(interp, argv[1], &w) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDouble(interp, argv[2], &h) != TCL_OK) return TCL_ERROR;
+  
+  setresol(w, h);
   return TCL_OK;
 }
 
@@ -1049,6 +1100,7 @@ CG_CMD_WRAPPER_IMPL(cgGetUAspect)
 CG_CMD_WRAPPER_IMPL(cgSetFViewport)
 CG_CMD_WRAPPER_IMPL(cgSetPViewport)
 CG_CMD_WRAPPER_IMPL(cgSetWindow)
+CG_CMD_WRAPPER_IMPL(cgSetResol)
 CG_CMD_WRAPPER_IMPL(cgSetPSPageOri)
 CG_CMD_WRAPPER_IMPL(cgSetPSPageFill)
 CG_CMD_WRAPPER_IMPL(cgGsave)
@@ -1165,6 +1217,9 @@ int Cgbase_Init(Tcl_Interp *interp)
   Tcl_CreateCommand(interp, "setpviewport", (Tcl_CmdProc *) cgSetPViewport,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "setresol", (Tcl_CmdProc *) cgSetResol,
+		    (ClientData) NULL,
+		    (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "setwindow", (Tcl_CmdProc *) cgSetWindow,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);
@@ -1278,6 +1333,10 @@ int Cgbase_Init(Tcl_Interp *interp)
   Tcl_CreateCommand(interp, "gbufisempty", (Tcl_CmdProc *) gbIsEmptyCmd,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "gbufreset", (Tcl_CmdProc *) gbResetCmd,
+		    (ClientData) NULL,
+		    (Tcl_CmdDeleteProc *) NULL);
+  
 
 
   return TCL_OK;

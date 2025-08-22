@@ -5,6 +5,7 @@
 #include <math.h>
 #include <time.h>
 #include <string.h>
+#include <stdarg.h>
 
 #if defined (QNX) || defined (LYNX) || defined (FREEBSD) || defined (LINUX) 
 #include <unistd.h>
@@ -2442,7 +2443,382 @@ void gbSetPageFill(int status)
   PS_FillPage = (status != 0);
 }
 
+/*************************************************************************/
+/*                           String Functions                            */
+/*************************************************************************/
 
+/* String buffer management functions */
+
+GBUF_STRING *gbuf_string_create(size_t initial_capacity)
+{
+    GBUF_STRING *str = (GBUF_STRING *)malloc(sizeof(GBUF_STRING));
+    if (!str) return NULL;
+    
+    if (initial_capacity == 0) initial_capacity = 1024; /* default 1KB */
+    
+    str->data = (char *)malloc(initial_capacity);
+    if (!str->data) {
+        free(str);
+        return NULL;
+    }
+    
+    str->data[0] = '\0';
+    str->size = initial_capacity;
+    str->length = 0;
+    str->capacity = initial_capacity;
+    
+    return str;
+}
+
+void gbuf_string_free(GBUF_STRING *str)
+{
+    if (str) {
+        if (str->data) free(str->data);
+        free(str);
+    }
+}
+
+static int gbuf_string_ensure_capacity(GBUF_STRING *str, size_t needed)
+{
+    if (str->length + needed + 1 <= str->size) return 1; /* enough space */
+    
+    size_t new_size = str->size;
+    while (new_size < str->length + needed + 1) {
+        new_size += str->capacity;
+    }
+    
+    char *new_data = (char *)realloc(str->data, new_size);
+    if (!new_data) return 0; /* allocation failed */
+    
+    str->data = new_data;
+    str->size = new_size;
+    return 1;
+}
+
+int gbuf_string_append(GBUF_STRING *str, const char *format, ...)
+{
+    va_list args;
+    int needed;
+    
+    /* First pass: determine how much space we need */
+    va_start(args, format);
+    needed = vsnprintf(NULL, 0, format, args);
+    va_end(args);
+    
+    if (needed < 0) return 0; /* formatting error */
+    
+    if (!gbuf_string_ensure_capacity(str, needed)) return 0;
+    
+    /* Second pass: actually format the string */
+    va_start(args, format);
+    int written = vsnprintf(str->data + str->length, needed + 1, format, args);
+    va_end(args);
+    
+    if (written > 0) {
+        str->length += written;
+    }
+    
+    return written > 0;
+}
+
+int gbuf_string_append_data(GBUF_STRING *str, const char *data, size_t len)
+{
+    if (!gbuf_string_ensure_capacity(str, len)) return 0;
+    
+    memcpy(str->data + str->length, data, len);
+    str->length += len;
+    str->data[str->length] = '\0';
+    
+    return 1;
+}
+
+char *gbuf_string_detach(GBUF_STRING *str)
+{
+    if (!str || !str->data) return NULL;
+    
+    char *result = str->data;
+    str->data = NULL;
+    str->size = 0;
+    str->length = 0;
+    
+    return result; /* caller must free */
+}
+
+void gbuf_string_reset(GBUF_STRING *str)
+{
+    if (str && str->data) {
+        str->data[0] = '\0';
+        str->length = 0;
+    }
+}
+
+/* High-level string output function */
+
+char *gbuf_dump_ascii_to_string(unsigned char *gbuf, int bufsize)
+{
+    GBUF_STRING *str = gbuf_string_create(bufsize * 2); /* rough estimate */
+    if (!str) return NULL;
+    
+    if (gbuf_dump_ascii_to_gbuf_string(gbuf, bufsize, str)) {
+        return gbuf_string_detach(str);
+    } else {
+        gbuf_string_free(str);
+        return NULL;
+    }
+}
+
+/* String versions of existing read functions */
+
+int gread_gheader_to_string(GHeader *hdr, GBUF_STRING *str)
+{
+    GHeader head, *header = &head;
+    memcpy(header, hdr, GHEADER_S);
+    
+    extern int FlipEvents;
+    extern float GB_Version;
+    
+    if (G_VERSION(header) != GB_Version) {
+        FlipEvents = 1;
+    } else { 
+        FlipEvents = 0;
+    }
+    
+    if (FlipEvents) flip_gheader(header);
+    
+    if (G_VERSION(header) != GB_Version) {
+        return 0; /* version mismatch */
+    }
+    
+    gbuf_string_append(str, "# GRAPHICS VERSION\t%3.1f\n", G_VERSION(header));
+    gbuf_string_append(str, "setwindow\t0\t0\t%6.2f\t%6.2f\n",
+                      G_WIDTH(header), G_HEIGHT(header));
+    
+    return GHEADER_S;
+}
+
+int gread_gline_to_string(char type, GLine *gln, GBUF_STRING *str)
+{
+    GLine gli, *gline = &gli;
+    memcpy(gline, gln, GLINE_S);
+    
+    extern int FlipEvents;
+    if (FlipEvents) flip_gline(gline);
+    
+    switch (type) {
+        case G_FILLEDRECT: gbuf_string_append(str, "filledrect\t"); break;
+        case G_LINE: gbuf_string_append(str, "line\t"); break;
+        case G_CLIP: gbuf_string_append(str, "setclipregion\t"); break;
+        case G_CIRCLE: 
+            if (GLINE_Y1(gline) == 0.0) 
+                gbuf_string_append(str, "circle\t"); 
+            else 
+                gbuf_string_append(str, "fcircle\t"); 
+            break;
+        case G_IMAGE: gbuf_string_append(str, "image\t"); break;
+    }
+    
+    gbuf_string_append(str, "%6.2f %6.2f %6.2f %6.2f\n",
+                      GLINE_X0(gline), GLINE_Y0(gline),
+                      GLINE_X1(gline), GLINE_Y1(gline));
+    
+    return GLINE_S;
+}
+
+int gread_gpoint_to_string(char type, GPoint *gpt, GBUF_STRING *str)
+{
+    GPoint gpnt, *gpoint = &gpnt;
+    memcpy(gpoint, gpt, GPOINT_S);
+    
+    extern int FlipEvents;
+    if (FlipEvents) flip_gpoint(gpoint);
+    
+    switch(type) {
+        case G_POINT: gbuf_string_append(str, "point\t"); break;
+        case G_LINETO: gbuf_string_append(str, "lineto\t"); break;
+        case G_MOVETO: gbuf_string_append(str, "moveto\t"); break;
+    }
+    
+    gbuf_string_append(str, "%6.2f %6.2f\n",
+                      GPOINT_X(gpoint), GPOINT_Y(gpoint));
+    
+    return GPOINT_S;
+}
+
+int gread_gpoly_to_string(char type, GPointList *gpl, GBUF_STRING *str)
+{
+    int i;
+    GPointList gplst, *gpointlist = &gplst;
+    memcpy(gpointlist, gpl, GPOINTLIST_S);
+    
+    extern int FlipEvents;
+    if (FlipEvents) flip_gpointlist(gpointlist);
+    
+    if (!(GPOINTLIST_PTS(gpointlist) = 
+          (float *) calloc(GPOINTLIST_N(gpointlist), sizeof(float)))) {
+        return 0; /* allocation failed */
+    }
+    
+    memcpy(GPOINTLIST_PTS(gpointlist), (char *)gpl+GPOINTLIST_S,
+           GPOINTLIST_N(gpointlist)*sizeof(float));
+    
+    if (FlipEvents) {
+        extern void flipfloats(int, float *);
+        flipfloats(GPOINTLIST_N(gpointlist), GPOINTLIST_PTS(gpointlist));
+    }
+    
+    switch(type) {
+        case G_POLY: gbuf_string_append(str, "poly"); break;
+        case G_FILLEDPOLY: gbuf_string_append(str, "fpoly"); break;
+    }
+    
+    for (i = 0; i < GPOINTLIST_N(gpointlist); i++) {
+        gbuf_string_append(str, " %6.2f", GPOINTLIST_PTS(gpointlist)[i]);
+    }
+    gbuf_string_append(str, "\n");
+    
+    free(GPOINTLIST_PTS(gpointlist));
+    
+    return GPOINTLIST_S + GPOINTLIST_N(gpointlist)*sizeof(float);
+}
+
+int gread_gtext_to_string(char type, GText *gtx, GBUF_STRING *str)
+{
+    int n;
+    GText gtxt, *gtext = &gtxt;
+    memcpy(gtext, gtx, GTEXT_S);
+    
+    extern int FlipEvents;
+    if (FlipEvents) flip_gtext(gtext);
+    
+    GTEXT_STRING(gtext) = (char *) ((char *)gtx+GTEXT_S);
+    
+    switch(type) {
+        case G_TEXT:
+            /* Check for characters that need escaping */
+            if ((n = strNumEscapes(GTEXT_STRING(gtext)))) {
+                char *newStr = (char *) malloc(strlen(GTEXT_STRING(gtext))+ n + 1);
+                if (newStr) {
+                    strEscapeString(GTEXT_STRING(gtext), newStr);
+                    gbuf_string_append(str, "drawtext\t\"%s\"\n", newStr);
+                    free(newStr);
+                }
+            } else {
+                gbuf_string_append(str, "drawtext\t\"%s\"\n", GTEXT_STRING(gtext));
+            }
+            break;
+        case G_FONT:
+            gbuf_string_append(str, "setfont\t%s\t%6.2f\n",
+                              GTEXT_STRING(gtext), GTEXT_X(gtext));
+            break;
+        case G_POSTSCRIPT:
+            gbuf_string_append(str, "postscript\t%s\t%6.2f\t%6.2f\n",
+                              GTEXT_STRING(gtext), GTEXT_X(gtext), GTEXT_Y(gtext));
+            break;
+    }
+    
+    return GTEXT_S + GTEXT_LENGTH(gtext);
+}
+
+int gread_gattr_to_string(char type, GAttr *gtr, GBUF_STRING *str)
+{
+    GAttr gatr, *gattr = &gatr;
+    memcpy(gattr, gtr, GATTR_S);
+    
+    extern int FlipEvents, TimeStamped;
+    if (FlipEvents) flip_gattr(gattr);
+    
+    switch (type) {
+        case G_GROUP:
+            gbuf_string_append(str, "group\t");
+            break;
+        case G_SAVE:
+            gbuf_string_append(str, "gsave\t");
+            break;
+        case G_ORIENTATION:
+            gbuf_string_append(str, "setorientation\t");
+            break;
+        case G_JUSTIFICATION:
+            gbuf_string_append(str, "setjust\t");
+            break;
+        case G_COLOR:
+            gbuf_string_append(str, "setcolor\t");
+            break;
+        case G_LSTYLE:
+            gbuf_string_append(str, "setlstyle\t");
+            break;
+        case G_LWIDTH:
+            gbuf_string_append(str, "setlwidth\t");
+            break;
+        case G_TIMESTAMP:
+            gbuf_string_append(str, "timestamp\t");
+            if (GATTR_VAL(gattr)) TimeStamped = 1;
+            else TimeStamped = 0;
+            break;
+    }
+    gbuf_string_append(str, "%5d\n", GATTR_VAL(gattr));
+    
+    return GATTR_S;
+}
+
+/* Main ASCII dump to string function */
+int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING *str)
+{
+    int c;
+    int i, advance_bytes = 0, *tptr;
+    extern int TimeStamped, CurrentTimeStamp;
+    
+    for (i = 0; i < bufsize; i += advance_bytes) {
+        c = gbuf[i++];
+        if (TimeStamped) {
+            tptr = (int *) &gbuf[i];
+            i += sizeof(int);
+            CurrentTimeStamp = *tptr;
+            gbuf_string_append(str, "[%d]\t", CurrentTimeStamp);
+        }
+        switch (c) {
+            case G_HEADER:
+                advance_bytes = gread_gheader_to_string((GHeader *) &gbuf[i], str);
+                break;
+            case G_CLIP:
+            case G_LINE:
+            case G_FILLEDRECT:
+            case G_CIRCLE:
+            case G_IMAGE:
+                advance_bytes = gread_gline_to_string(c, (GLine *) &gbuf[i], str);
+                break;
+            case G_LINETO:
+            case G_MOVETO:
+            case G_POINT:
+                advance_bytes = gread_gpoint_to_string(c, (GPoint *) &gbuf[i], str);
+                break;
+            case G_POLY:
+            case G_FILLEDPOLY:
+                advance_bytes = gread_gpoly_to_string(c, (GPointList *) &gbuf[i], str);
+                break;
+            case G_POSTSCRIPT:
+            case G_FONT:
+            case G_TEXT:
+                advance_bytes = gread_gtext_to_string(c, (GText *) &gbuf[i], str);
+                break;
+            case G_GROUP:
+            case G_SAVE:
+            case G_ORIENTATION:
+            case G_JUSTIFICATION:
+            case G_LSTYLE:
+            case G_LWIDTH:
+            case G_COLOR:
+            case G_TIMESTAMP:
+                advance_bytes = gread_gattr_to_string(c, (GAttr *) &gbuf[i], str);
+                break;
+            default:
+                gbuf_string_append(str, "unknown event type %d\n", c);
+                advance_bytes = 1; /* skip unknown byte */
+                break;
+        }
+        if (advance_bytes <= 0) break; /* prevent infinite loop */
+    }
+    return 1;
+}
 /*************************************************************************/
 /*                             PDF Functions                             */
 /*************************************************************************/

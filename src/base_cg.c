@@ -24,7 +24,7 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
   char *outfile = NULL;
-  static char *usage = "usage: dumpwin {printer|ascii|raw|postscript|pdf}";
+  static char *usage = "usage: dumpwin {printer|ascii|raw|postscript|pdf|string}";
   if (argc > 2) outfile = argv[2];
 
   if (argc < 2) {

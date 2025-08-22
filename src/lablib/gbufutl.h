@@ -1,5 +1,12 @@
 /* gbufutl.h - header fil for gevent reader */
 
+#ifndef _GBUF_STRING_H_
+#define _GBUF_STRING_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void gbuf_dump(char *buffer, int n, int type, FILE *fp);
 int gbuf_dump_ascii(unsigned char *gbuf, int bufsize, FILE *fp);
 int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP);
@@ -97,6 +104,36 @@ void add_ai3_trailer(FILE *fp);
 
 extern float GB_Version;
 
+/* String buffer structure for dynamic string building */
+typedef struct {
+    char *data;
+    size_t size;        /* current allocated size */
+    size_t length;      /* current string length (excluding null terminator) */
+    size_t capacity;    /* initial/increment size */
+} GBUF_STRING;
+
+/* String buffer management functions */
+GBUF_STRING *gbuf_string_create(size_t initial_capacity);
+void gbuf_string_free(GBUF_STRING *str);
+int gbuf_string_append(GBUF_STRING *str, const char *format, ...);
+int gbuf_string_append_data(GBUF_STRING *str, const char *data, size_t len);
+char *gbuf_string_detach(GBUF_STRING *str); /* Returns string, caller must free */
+void gbuf_string_reset(GBUF_STRING *str);   /* Clear content but keep buffer */
+
+/* String output functions - ASCII command output only */
+char *gbuf_dump_ascii_to_string(unsigned char *gbuf, int bufsize);
+
+/* Lower-level string output functions */
+int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING *str);
+
+/* String versions of read functions */
+int gread_gheader_to_string(GHeader *hdr, GBUF_STRING *str);
+int gread_gline_to_string(char type, GLine *gln, GBUF_STRING *str);
+int gread_gpoint_to_string(char type, GPoint *gpt, GBUF_STRING *str);
+int gread_gpoly_to_string(char type, GPointList *gpl, GBUF_STRING *str);
+int gread_gtext_to_string(char type, GText *gtx, GBUF_STRING *str);
+int gread_gattr_to_string(char type, GAttr *gtr, GBUF_STRING *str);
+
 int gbuf_dump_fig(unsigned char *gbuf, int bufsize, int type, FILE *OutFP);
 int gfile_to_fig(FILE *InFP, int type, FILE *OutFP);
 
@@ -113,4 +150,8 @@ void fig_lineto(int type, float x0, float y0, FILE *fp);
 void fig_text(int type, float x, float y, char *str, char *fontname,
 	float fontsize, int just, int orientation, FILE *fp);
 
+#ifdef __cplusplus
+}
+#endif
 
+#endif
