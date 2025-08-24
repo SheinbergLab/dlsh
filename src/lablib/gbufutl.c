@@ -21,6 +21,9 @@
 #include <setjmp.h>
 #include "hpdf.h"
 
+/* Jansson for JSON support */
+#include <jansson.h>
+
 #include "cgraph.h"
 #include "utilc.h"
 #include "gbuf.h"
@@ -1058,6 +1061,384 @@ flip_gpointlist(GPointList *gpointlist)
 {
   GPOINTLIST_N(gpointlist) = fliplong(GPOINTLIST_N(gpointlist));
 }
+
+/*************************************************************************/
+/*                          "Clean" Functions                            */
+/*************************************************************************/
+
+/* State tracking structure for optimization */
+typedef struct {
+    int current_color;
+    int current_lwidth;
+    int current_lstyle;
+    int current_orientation;
+    int current_justification;
+    float current_font_size;
+    char current_font[256];
+    float last_moveto_x, last_moveto_y;
+    int has_moveto_pending;
+    float clip_llx, clip_lly, clip_urx, clip_ury;
+    int timestamp_mode;
+} GBUF_STATE;
+
+static int is_drawing_command(unsigned char cmd) 
+{
+    switch (cmd) {
+        case G_LINE:
+        case G_LINETO:
+        case G_CIRCLE:
+        case G_FILLEDRECT:
+        case G_TEXT:
+        case G_POLY:
+        case G_FILLEDPOLY:
+        case G_IMAGE:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/**
+ * Clean a graphics buffer by removing redundant commands and optimizing the command stream
+ * 
+ * @param input_gbuf    Input graphics buffer
+ * @param input_size    Size of input buffer in bytes
+ * @param output_size   Pointer to store size of cleaned buffer
+ * @return              Pointer to cleaned buffer (caller must free), or NULL on error
+ */
+unsigned char *gbuf_clean(unsigned char *input_gbuf, int input_size, int *output_size)
+{
+    if (!input_gbuf || input_size <= 0 || !output_size) {
+        return NULL;
+    }
+    
+    /* Allocate output buffer (worst case same size as input) */
+    unsigned char *clean_gbuf = (unsigned char *)malloc(input_size);
+    if (!clean_gbuf) {
+        return NULL;
+    }
+    
+    GBUF_STATE state;
+    memset(&state, -1, sizeof(state)); /* Initialize all to -1 (invalid) */
+    state.has_moveto_pending = 0;
+    state.current_font[0] = '\0';
+    
+    int clean_pos = 0;
+    int i = 0;
+    
+    extern int TimeStamped;
+    
+    while (i < input_size) {
+        unsigned char cmd = input_gbuf[i];
+        int advance_bytes = 1; /* minimum advance */
+        int should_copy = 1;   /* default: copy command */
+        
+        /* Handle timestamps if present */
+        if (TimeStamped) {
+            /* Copy timestamp data */
+            memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], sizeof(int) + 1);
+            clean_pos += sizeof(int) + 1;
+            i += sizeof(int) + 1;
+            if (i >= input_size) break;
+            cmd = input_gbuf[i];
+        }
+        
+        switch (cmd) {
+            case G_HEADER: {
+                /* Always keep header */
+                memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GHEADER_S + 1);
+                clean_pos += GHEADER_S + 1;
+                advance_bytes = GHEADER_S + 1;
+                break;
+            }
+            
+            case G_COLOR: {
+                GAttr gattr;
+                memcpy(&gattr, &input_gbuf[i+1], GATTR_S);
+                if (FlipEvents) flip_gattr(&gattr);
+                
+                int new_color = GATTR_VAL(&gattr);
+                if (new_color != state.current_color) {
+                    memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GATTR_S + 1);
+                    clean_pos += GATTR_S + 1;
+                    state.current_color = new_color;
+                } else {
+                    should_copy = 0; /* Skip redundant color change */
+                }
+                advance_bytes = GATTR_S + 1;
+                break;
+            }
+            
+            case G_LWIDTH: {
+                GAttr gattr;
+                memcpy(&gattr, &input_gbuf[i+1], GATTR_S);
+                if (FlipEvents) flip_gattr(&gattr);
+                
+                int new_lwidth = GATTR_VAL(&gattr);
+                if (new_lwidth != state.current_lwidth) {
+                    memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GATTR_S + 1);
+                    clean_pos += GATTR_S + 1;
+                    state.current_lwidth = new_lwidth;
+                } else {
+                    should_copy = 0; /* Skip redundant line width change */
+                }
+                advance_bytes = GATTR_S + 1;
+                break;
+            }
+            
+            case G_LSTYLE: {
+                GAttr gattr;
+                memcpy(&gattr, &input_gbuf[i+1], GATTR_S);
+                if (FlipEvents) flip_gattr(&gattr);
+                
+                int new_lstyle = GATTR_VAL(&gattr);
+                if (new_lstyle != state.current_lstyle) {
+                    memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GATTR_S + 1);
+                    clean_pos += GATTR_S + 1;
+                    state.current_lstyle = new_lstyle;
+                } else {
+                    should_copy = 0; /* Skip redundant line style change */
+                }
+                advance_bytes = GATTR_S + 1;
+                break;
+            }
+            
+            case G_ORIENTATION: {
+                GAttr gattr;
+                memcpy(&gattr, &input_gbuf[i+1], GATTR_S);
+                if (FlipEvents) flip_gattr(&gattr);
+                
+                int new_orientation = GATTR_VAL(&gattr);
+                if (new_orientation != state.current_orientation) {
+                    memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GATTR_S + 1);
+                    clean_pos += GATTR_S + 1;
+                    state.current_orientation = new_orientation;
+                } else {
+                    should_copy = 0; /* Skip redundant orientation change */
+                }
+                advance_bytes = GATTR_S + 1;
+                break;
+            }
+            
+            case G_JUSTIFICATION: {
+                GAttr gattr;
+                memcpy(&gattr, &input_gbuf[i+1], GATTR_S);
+                if (FlipEvents) flip_gattr(&gattr);
+                
+                int new_justification = GATTR_VAL(&gattr);
+                if (new_justification != state.current_justification) {
+                    memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GATTR_S + 1);
+                    clean_pos += GATTR_S + 1;
+                    state.current_justification = new_justification;
+                } else {
+                    should_copy = 0; /* Skip redundant justification change */
+                }
+                advance_bytes = GATTR_S + 1;
+                break;
+            }
+            
+            case G_FONT: {
+                GText gtext;
+                memcpy(&gtext, &input_gbuf[i+1], GTEXT_S);
+                if (FlipEvents) flip_gtext(&gtext);
+                
+                char *font_name = (char *)&input_gbuf[i + 1 + GTEXT_S];
+                float font_size = GTEXT_X(&gtext);
+                
+                /* Check if font or size changed */
+                if (font_size != state.current_font_size || 
+                    strncmp(font_name, state.current_font, GTEXT_LENGTH(&gtext)) != 0) {
+                    
+                    memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GTEXT_S + 1 + GTEXT_LENGTH(&gtext));
+                    clean_pos += GTEXT_S + 1 + GTEXT_LENGTH(&gtext);
+                    state.current_font_size = font_size;
+                    strncpy(state.current_font, font_name, GTEXT_LENGTH(&gtext));
+                    state.current_font[GTEXT_LENGTH(&gtext)] = '\0';
+                } else {
+                    should_copy = 0; /* Skip redundant font change */
+                }
+                advance_bytes = GTEXT_S + 1 + GTEXT_LENGTH(&gtext);
+                break;
+            }
+            
+            case G_MOVETO: {
+                GPoint gpoint;
+                memcpy(&gpoint, &input_gbuf[i+1], GPOINT_S);
+                if (FlipEvents) flip_gpoint(&gpoint);
+                
+                float x = GPOINT_X(&gpoint);
+                float y = GPOINT_Y(&gpoint);
+                
+                /* Check if this moveto is the same as the last one */
+                if (x == state.last_moveto_x && y == state.last_moveto_y && state.has_moveto_pending) {
+                    should_copy = 0; /* Skip redundant moveto */
+                } else {
+                    /* Look ahead to see if this moveto is followed by a drawing command */
+                    int next_pos = i + GPOINT_S + 1;
+                    int useful_moveto = 0;
+                    
+                    /* Skip any intervening state-change commands */
+                    while (next_pos < input_size) {
+                        unsigned char next_cmd = input_gbuf[next_pos];
+                        if (is_drawing_command(next_cmd)) {
+                            useful_moveto = 1;
+                            break;
+                        } else if (next_cmd == G_MOVETO) {
+                            /* Another moveto follows, this one is redundant */
+                            break;
+                        } else if (next_cmd == G_COLOR || next_cmd == G_LWIDTH || 
+                                 next_cmd == G_LSTYLE || next_cmd == G_ORIENTATION || 
+                                 next_cmd == G_JUSTIFICATION) {
+                            /* Skip over state commands */
+                            next_pos += GATTR_S + 1;
+                        } else {
+                            /* Some other command, assume moveto is useful */
+                            useful_moveto = 1;
+                            break;
+                        }
+                    }
+                    
+                    if (useful_moveto) {
+                        memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GPOINT_S + 1);
+                        clean_pos += GPOINT_S + 1;
+                        state.last_moveto_x = x;
+                        state.last_moveto_y = y;
+                        state.has_moveto_pending = 1;
+                    } else {
+                        should_copy = 0; /* Skip useless moveto */
+                    }
+                }
+                advance_bytes = GPOINT_S + 1;
+                break;
+            }
+            
+            case G_LINETO: {
+                /* Always keep lineto commands */
+                memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GPOINT_S + 1);
+                clean_pos += GPOINT_S + 1;
+                state.has_moveto_pending = 0; /* consumed the pending moveto */
+                advance_bytes = GPOINT_S + 1;
+                break;
+            }
+            
+            case G_LINE:
+            case G_CIRCLE:
+            case G_FILLEDRECT:
+            case G_IMAGE: {
+                /* Always keep drawing commands */
+                memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GLINE_S + 1);
+                clean_pos += GLINE_S + 1;
+                state.has_moveto_pending = 0; /* any pending moveto was useful */
+                advance_bytes = GLINE_S + 1;
+                break;
+            }
+            
+            case G_CLIP: {
+                GLine gline;
+                memcpy(&gline, &input_gbuf[i+1], GLINE_S);
+                if (FlipEvents) flip_gline(&gline);
+                
+                float llx = GLINE_X0(&gline);
+                float lly = GLINE_Y0(&gline);
+                float urx = GLINE_X1(&gline);
+                float ury = GLINE_Y1(&gline);
+                
+                /* Check if clipping region changed */
+                if (llx != state.clip_llx || lly != state.clip_lly || 
+                    urx != state.clip_urx || ury != state.clip_ury) {
+                    
+                    memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GLINE_S + 1);
+                    clean_pos += GLINE_S + 1;
+                    state.clip_llx = llx;
+                    state.clip_lly = lly;
+                    state.clip_urx = urx;
+                    state.clip_ury = ury;
+                } else {
+                    should_copy = 0; /* Skip redundant clipping region */
+                }
+                advance_bytes = GLINE_S + 1;
+                break;
+            }
+            
+            case G_TEXT: {
+                /* Always keep text commands */
+                GText gtext;
+                memcpy(&gtext, &input_gbuf[i+1], GTEXT_S);
+                if (FlipEvents) flip_gtext(&gtext);
+                
+                memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GTEXT_S + 1 + GTEXT_LENGTH(&gtext));
+                clean_pos += GTEXT_S + 1 + GTEXT_LENGTH(&gtext);
+                state.has_moveto_pending = 0; /* text drawing consumed moveto */
+                advance_bytes = GTEXT_S + 1 + GTEXT_LENGTH(&gtext);
+                break;
+            }
+            
+            case G_POLY:
+            case G_FILLEDPOLY: {
+                /* Always keep polygon commands */
+                GPointList gpointlist;
+                memcpy(&gpointlist, &input_gbuf[i+1], GPOINTLIST_S);
+                if (FlipEvents) flip_gpointlist(&gpointlist);
+                
+                int poly_size = GPOINTLIST_S + 1 + GPOINTLIST_N(&gpointlist) * sizeof(float);
+                memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], poly_size);
+                clean_pos += poly_size;
+                state.has_moveto_pending = 0; /* polygon consumed moveto */
+                advance_bytes = poly_size;
+                break;
+            }
+            
+            case G_TIMESTAMP: {
+                GAttr gattr;
+                memcpy(&gattr, &input_gbuf[i+1], GATTR_S);
+                if (FlipEvents) flip_gattr(&gattr);
+                
+                memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GATTR_S + 1);
+                clean_pos += GATTR_S + 1;
+                advance_bytes = GATTR_S + 1;
+                break;
+            }
+            
+            case G_SAVE:
+            case G_GROUP: {
+                /* Always keep save/group commands */
+                memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GATTR_S + 1);
+                clean_pos += GATTR_S + 1;
+                advance_bytes = GATTR_S + 1;
+                break;
+            }
+            
+            case G_POSTSCRIPT: {
+                /* Always keep PostScript commands */
+                GText gtext;
+                memcpy(&gtext, &input_gbuf[i+1], GTEXT_S);
+                if (FlipEvents) flip_gtext(&gtext);
+                
+                memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GTEXT_S + 1 + GTEXT_LENGTH(&gtext));
+                clean_pos += GTEXT_S + 1 + GTEXT_LENGTH(&gtext);
+                advance_bytes = GTEXT_S + 1 + GTEXT_LENGTH(&gtext);
+                break;
+            }
+            
+            default: {
+                /* Unknown command - copy as-is with minimal advance */
+                clean_gbuf[clean_pos] = cmd;
+                clean_pos += 1;
+                advance_bytes = 1;
+                break;
+            }
+        }
+        
+        i += advance_bytes;
+    }
+    
+    /* Shrink buffer to actual size */
+    clean_gbuf = (unsigned char *)realloc(clean_gbuf, clean_pos);
+    *output_size = clean_pos;
+    
+    return clean_gbuf;
+}
+
 
 /*************************************************************************/
 /*                           Output Functions                            */
@@ -2819,6 +3200,374 @@ int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING
     }
     return 1;
 }
+
+/*************************************************************************/
+/*                            JSON Functions                             */
+/*************************************************************************/
+
+char *gbuf_dump_json_direct(unsigned char *gbuf, int bufsize) 
+{
+    json_t *root, *commands_array;
+    char *result_string;
+    int c, i, advance_bytes = 0, *tptr;
+    extern int TimeStamped, CurrentTimeStamp;
+    
+    /* Create root JSON object */
+    root = json_object();
+    commands_array = json_array();
+    
+    /* Set metadata */
+    json_object_set_new(root, "interpreter_id", json_string("gbuf"));
+    json_object_set_new(root, "timestamp", json_integer((json_int_t)time(NULL) * 1000));
+    json_object_set_new(root, "commands", commands_array);
+    
+    for (i = 0; i < bufsize; i += advance_bytes) {
+        c = gbuf[i++];
+        json_t *command_obj = json_object();
+        json_t *args_array = json_array();
+        
+        if (TimeStamped) {
+            tptr = (int *) &gbuf[i];
+            i += sizeof(int);
+            CurrentTimeStamp = *tptr;
+            json_object_set_new(command_obj, "timestamp", json_integer(CurrentTimeStamp));
+        }
+        
+        switch (c) {
+            case G_HEADER: {
+                GHeader head, *header = &head;
+                memcpy(header, &gbuf[i], GHEADER_S);
+                if (FlipEvents) flip_gheader(header);
+                
+                json_object_set_new(command_obj, "cmd", json_string("setwindow"));
+                json_array_append_new(args_array, json_integer(0));
+                json_array_append_new(args_array, json_integer(0));
+                json_array_append_new(args_array, json_real(G_WIDTH(header)));
+                json_array_append_new(args_array, json_real(G_HEIGHT(header)));
+                
+                advance_bytes = GHEADER_S;
+                break;
+            }
+            
+            case G_COLOR: {
+                GAttr gatr, *gattr = &gatr;
+                memcpy(gattr, &gbuf[i], GATTR_S);
+                if (FlipEvents) flip_gattr(gattr);
+                
+                json_object_set_new(command_obj, "cmd", json_string("setcolor"));
+                json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+                
+                advance_bytes = GATTR_S;
+                break;
+            }
+            
+            case G_LINE: {
+                GLine gli, *gline = &gli;
+                memcpy(gline, &gbuf[i], GLINE_S);
+                if (FlipEvents) flip_gline(gline);
+                
+                json_object_set_new(command_obj, "cmd", json_string("line"));
+                json_array_append_new(args_array, json_real(GLINE_X0(gline)));
+                json_array_append_new(args_array, json_real(GLINE_Y0(gline)));
+                json_array_append_new(args_array, json_real(GLINE_X1(gline)));
+                json_array_append_new(args_array, json_real(GLINE_Y1(gline)));
+                
+                advance_bytes = GLINE_S;
+                break;
+            }
+            
+            case G_CIRCLE: {
+                GLine gli, *gline = &gli;
+                memcpy(gline, &gbuf[i], GLINE_S);
+                if (FlipEvents) flip_gline(gline);
+                
+                const char *cmd = (GLINE_Y1(gline) == 0.0) ? "circle" : "fcircle";
+                json_object_set_new(command_obj, "cmd", json_string(cmd));
+                json_array_append_new(args_array, json_real(GLINE_X0(gline)));
+                json_array_append_new(args_array, json_real(GLINE_Y0(gline)));
+                json_array_append_new(args_array, json_real(GLINE_X1(gline)));
+                json_array_append_new(args_array, json_integer((int)GLINE_Y1(gline)));
+                
+                advance_bytes = GLINE_S;
+                break;
+            }
+            
+            case G_FILLEDRECT: {
+                GLine gli, *gline = &gli;
+                memcpy(gline, &gbuf[i], GLINE_S);
+                if (FlipEvents) flip_gline(gline);
+                
+                json_object_set_new(command_obj, "cmd", json_string("filledrect"));
+                json_array_append_new(args_array, json_real(GLINE_X0(gline)));
+                json_array_append_new(args_array, json_real(GLINE_Y0(gline)));
+                json_array_append_new(args_array, json_real(GLINE_X1(gline)));
+                json_array_append_new(args_array, json_real(GLINE_Y1(gline)));
+                
+                advance_bytes = GLINE_S;
+                break;
+            }
+            
+            case G_MOVETO: {
+                GPoint gpnt, *gpoint = &gpnt;
+                memcpy(gpoint, &gbuf[i], GPOINT_S);
+                if (FlipEvents) flip_gpoint(gpoint);
+                
+                json_object_set_new(command_obj, "cmd", json_string("moveto"));
+                json_array_append_new(args_array, json_real(GPOINT_X(gpoint)));
+                json_array_append_new(args_array, json_real(GPOINT_Y(gpoint)));
+                
+                advance_bytes = GPOINT_S;
+                break;
+            }
+            
+            case G_LINETO: {
+                GPoint gpnt, *gpoint = &gpnt;
+                memcpy(gpoint, &gbuf[i], GPOINT_S);
+                if (FlipEvents) flip_gpoint(gpoint);
+                
+                json_object_set_new(command_obj, "cmd", json_string("lineto"));
+                json_array_append_new(args_array, json_real(GPOINT_X(gpoint)));
+                json_array_append_new(args_array, json_real(GPOINT_Y(gpoint)));
+                
+                advance_bytes = GPOINT_S;
+                break;
+            }
+            
+            case G_TEXT: {
+                GText gtxt, *gtext = &gtxt;
+                memcpy(gtext, &gbuf[i], GTEXT_S);
+                if (FlipEvents) flip_gtext(gtext);
+                
+                char *textStr = (char *)(&gbuf[i] + GTEXT_S);
+                json_object_set_new(command_obj, "cmd", json_string("drawtext"));
+                json_array_append_new(args_array, json_string(textStr));
+                
+                advance_bytes = GTEXT_S + GTEXT_LENGTH(gtext);
+                break;
+            }
+            
+            case G_LSTYLE: {
+                GAttr gatr, *gattr = &gatr;
+                memcpy(gattr, &gbuf[i], GATTR_S);
+                if (FlipEvents) flip_gattr(gattr);
+                
+                json_object_set_new(command_obj, "cmd", json_string("setlstyle"));
+                json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+                
+                advance_bytes = GATTR_S;
+                break;
+            }
+            
+            case G_CLIP: {
+				GLine gli, *gline = &gli;
+				memcpy(gline, &gbuf[i], GLINE_S);
+				if (FlipEvents) flip_gline(gline);
+				
+				json_object_set_new(command_obj, "cmd", json_string("setclipregion"));
+				json_array_append_new(args_array, json_real(GLINE_X0(gline)));
+				json_array_append_new(args_array, json_real(GLINE_Y0(gline)));
+				json_array_append_new(args_array, json_real(GLINE_X1(gline)));
+				json_array_append_new(args_array, json_real(GLINE_Y1(gline)));
+				
+				advance_bytes = GLINE_S;
+				break;
+			}
+
+			case G_POINT: {
+				GPoint gpnt, *gpoint = &gpnt;
+				memcpy(gpoint, &gbuf[i], GPOINT_S);
+				if (FlipEvents) flip_gpoint(gpoint);
+				
+				json_object_set_new(command_obj, "cmd", json_string("point"));
+				json_array_append_new(args_array, json_real(GPOINT_X(gpoint)));
+				json_array_append_new(args_array, json_real(GPOINT_Y(gpoint)));
+				
+				advance_bytes = GPOINT_S;
+				break;
+			}
+			
+			case G_POLY: {
+				GPointList gplst, *gpointlist = &gplst;
+				memcpy(gpointlist, &gbuf[i], GPOINTLIST_S);
+				if (FlipEvents) flip_gpointlist(gpointlist);
+				
+				json_object_set_new(command_obj, "cmd", json_string("poly"));
+				
+				// Add all the points to args array
+				float *pts = (float *)(&gbuf[i] + GPOINTLIST_S);
+				for (int j = 0; j < GPOINTLIST_N(gpointlist); j++) {
+					float pt = pts[j];
+					if (FlipEvents) {
+						flipfloat(pt);
+					}
+					json_array_append_new(args_array, json_real(pt));
+				}
+				
+				advance_bytes = GPOINTLIST_S + GPOINTLIST_N(gpointlist) * sizeof(float);
+				break;
+			}
+			
+			case G_FILLEDPOLY: {
+				GPointList gplst, *gpointlist = &gplst;
+				memcpy(gpointlist, &gbuf[i], GPOINTLIST_S);
+				if (FlipEvents) flip_gpointlist(gpointlist);
+				
+				json_object_set_new(command_obj, "cmd", json_string("fpoly"));
+				
+				// Add all the points to args array
+				float *pts = (float *)(&gbuf[i] + GPOINTLIST_S);
+				for (int j = 0; j < GPOINTLIST_N(gpointlist); j++) {
+					float pt = pts[j];
+					if (FlipEvents) {
+						flipfloat(pt);
+					}
+					json_array_append_new(args_array, json_real(pt));
+				}
+				
+				advance_bytes = GPOINTLIST_S + GPOINTLIST_N(gpointlist) * sizeof(float);
+				break;
+			}
+
+            case G_LWIDTH: {
+                GAttr gatr, *gattr = &gatr;
+                memcpy(gattr, &gbuf[i], GATTR_S);
+                if (FlipEvents) flip_gattr(gattr);
+                
+                json_object_set_new(command_obj, "cmd", json_string("setlwidth"));
+                json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+                
+                advance_bytes = GATTR_S;
+                break;
+            }
+            
+            case G_FONT: {
+                GText gtxt, *gtext = &gtxt;
+                memcpy(gtext, &gbuf[i], GTEXT_S);
+                if (FlipEvents) flip_gtext(gtext);
+                
+                char *fontStr = (char *)(&gbuf[i] + GTEXT_S);
+                json_object_set_new(command_obj, "cmd", json_string("setfont"));
+                json_array_append_new(args_array, json_string(fontStr));
+                json_array_append_new(args_array, json_real(GTEXT_X(gtext)));
+                
+                advance_bytes = GTEXT_S + GTEXT_LENGTH(gtext);
+                break;
+            }
+            
+            case G_ORIENTATION: {
+                GAttr gatr, *gattr = &gatr;
+                memcpy(gattr, &gbuf[i], GATTR_S);
+                if (FlipEvents) flip_gattr(gattr);
+                
+                json_object_set_new(command_obj, "cmd", json_string("setorientation"));
+                json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+                
+                advance_bytes = GATTR_S;
+                break;
+            }
+            
+            case G_JUSTIFICATION: {
+                GAttr gatr, *gattr = &gatr;
+                memcpy(gattr, &gbuf[i], GATTR_S);
+                if (FlipEvents) flip_gattr(gattr);
+                
+                json_object_set_new(command_obj, "cmd", json_string("setjust"));
+                json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+                
+                advance_bytes = GATTR_S;
+                break;
+            }
+			
+			case G_POSTSCRIPT: {
+				GText gtxt, *gtext = &gtxt;
+				memcpy(gtext, &gbuf[i], GTEXT_S);
+				if (FlipEvents) flip_gtext(gtext);
+				
+				char *textStr = (char *)(&gbuf[i] + GTEXT_S);
+				json_object_set_new(command_obj, "cmd", json_string("postscript"));
+				json_array_append_new(args_array, json_string(textStr));
+				json_array_append_new(args_array, json_real(GTEXT_X(gtext)));
+				json_array_append_new(args_array, json_real(GTEXT_Y(gtext)));
+				
+				advance_bytes = GTEXT_S + GTEXT_LENGTH(gtext);
+				break;
+			}
+			
+			case G_GROUP: {
+				GAttr gatr, *gattr = &gatr;
+				memcpy(gattr, &gbuf[i], GATTR_S);
+				if (FlipEvents) flip_gattr(gattr);
+				
+				json_object_set_new(command_obj, "cmd", json_string("group"));
+				json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+				
+				advance_bytes = GATTR_S;
+				break;
+			}
+			
+			case G_SAVE: {
+				GAttr gatr, *gattr = &gatr;
+				memcpy(gattr, &gbuf[i], GATTR_S);
+				if (FlipEvents) flip_gattr(gattr);
+				
+				json_object_set_new(command_obj, "cmd", json_string("gsave"));
+				json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+				
+				advance_bytes = GATTR_S;
+				break;
+			}
+			
+			case G_TIMESTAMP: {
+				GAttr gatr, *gattr = &gatr;
+				memcpy(gattr, &gbuf[i], GATTR_S);
+				if (FlipEvents) flip_gattr(gattr);
+				
+				json_object_set_new(command_obj, "cmd", json_string("timestamp"));
+				json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+				
+				advance_bytes = GATTR_S;
+				break;
+			}
+			
+			case G_IMAGE: {
+				GLine gli, *gline = &gli;
+				memcpy(gline, &gbuf[i], GLINE_S);
+				if (FlipEvents) flip_gline(gline);
+				
+				json_object_set_new(command_obj, "cmd", json_string("image"));
+				json_array_append_new(args_array, json_real(GLINE_X0(gline)));
+				json_array_append_new(args_array, json_real(GLINE_Y0(gline)));
+				json_array_append_new(args_array, json_real(GLINE_X1(gline)));
+				json_array_append_new(args_array, json_real(GLINE_Y1(gline)));
+				
+				advance_bytes = GLINE_S;
+				break;
+			}            
+            default:
+                json_object_set_new(command_obj, "cmd", json_string("unknown"));
+                json_object_set_new(command_obj, "type", json_integer(c));
+                advance_bytes = 1;
+                break;
+        }
+        
+        /* Add args array to command object */
+        json_object_set_new(command_obj, "args", args_array);
+        
+        /* Add command to commands array */
+        json_array_append_new(commands_array, command_obj);
+        
+        if (advance_bytes <= 0) break; /* safety */
+    }
+    
+    /* Convert to string */
+    result_string = json_dumps(root, JSON_COMPACT);
+    
+    /* Clean up */
+    json_decref(root);
+    
+    return result_string; /* Caller must free() */
+}
+
 /*************************************************************************/
 /*                             PDF Functions                             */
 /*************************************************************************/

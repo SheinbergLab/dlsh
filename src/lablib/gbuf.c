@@ -517,6 +517,49 @@ void gbCloseGevents()
   }
 }
 
+/**
+ * Clean the current graphics buffer in-place
+ */
+int gbCleanCurrentBuffer(int *original_size, int *clean_size)
+{
+    return gbCleanGeventBuffer(curGB, original_size, clean_size);
+}
+
+/**
+ * Clean a specific graphics buffer in-place
+ */
+int gbCleanGeventBuffer(GBUF_DATA *gb, int *original_size, int *clean_size)
+{
+    unsigned char *cleaned_buffer;
+    int cleaned_size;
+    
+    if (!gb || !gb->gbuf) {
+        return -1; // Error: invalid buffer
+    }
+    
+    if (original_size) *original_size = gb->gbufindex;
+    
+    // Clean the buffer
+    cleaned_buffer = gbuf_clean(gb->gbuf, gb->gbufindex, &cleaned_size);
+    if (!cleaned_buffer) {
+        return -1; // Error: cleaning failed
+    }
+    
+    // Replace the buffer contents
+    if (gb->gbuf) {
+        free(gb->gbuf);
+    }
+    
+    gb->gbuf = cleaned_buffer;
+    gb->gbufindex = cleaned_size;
+    gb->gbufsize = cleaned_size;
+    gb->empty = (cleaned_size <= GHEADER_S + 1) ? 1 : 0;
+    
+    if (clean_size) *clean_size = cleaned_size;
+    
+    return 0; // Success
+}
+
 /*********************************************************************/
 /*                      Gevent Recording Funcs                       */
 /*********************************************************************/

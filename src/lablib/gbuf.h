@@ -172,6 +172,9 @@ void gbResetGevents();
 void gbCloseGevents();
 void gbRecordDefaults();
 
+int gbCleanCurrentBuffer(int *original_size, int *clean_size);
+int gbCleanGeventBuffer(GBUF_DATA *gb, int *original_size, int *clean_size);
+
 void gbEnableGeventBuffer(GBUF_DATA *gb);
 void gbDisableGeventBuffer(GBUF_DATA *gb);
 void gbEnableCurrentBuffer();

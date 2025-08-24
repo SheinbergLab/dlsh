@@ -8,6 +8,7 @@
 #endif
 
 #include <tcl.h>
+#include <jansson.h>
 #include "cgraph.h"
 #include "gbuf.h"
 #include "gbufutl.h"
@@ -20,6 +21,7 @@ CG_CMD_WRAPPER_DECL(cgPlayback)
 CG_CMD_WRAPPER_DECL(gbSizeCmd)
 CG_CMD_WRAPPER_DECL(gbIsEmptyCmd)
 CG_CMD_WRAPPER_DECL(gbResetCmd)
+CG_CMD_WRAPPER_DECL(gbCleanCmd)
 CG_CMD_WRAPPER_DECL(cgGetResol)
 CG_CMD_WRAPPER_DECL(cgGetFrame)
 CG_CMD_WRAPPER_DECL(cgGetXScale)
@@ -81,15 +83,16 @@ static int cgClearWindow(ClientData clientData, Tcl_Interp *interp,
 }
 
 static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
-		 int argc, char *argv[])
+         int argc, char *argv[])
 {
   char *outfile = NULL;
-  static char *usage = "usage: dumpwin {printer|ascii|raw|postscript|pdf|string}";
+  static char *usage = "usage: dumpwin {printer|ascii|raw|json|pdf|string}";
   if (argc > 2) outfile = argv[2];
   if (argc < 2) {
     Tcl_SetResult(interp, usage, TCL_STATIC);
     return TCL_ERROR;
   }
+  
   if (!strcmp(argv[1],"printer")) {
     gbPrintGevents();
     return TCL_OK;
@@ -106,35 +109,72 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
     gbWriteGevents(outfile,GBUF_ASCII);
     return(TCL_OK);
   }
-  else if (!strcmp(argv[1],"postscript")) {
-    gbWriteGevents(outfile,GBUF_PS);
-    return(TCL_OK);
-  }
   else if (!strcmp(argv[1],"pdf")) {
     gbWriteGevents(outfile,GBUF_PDF);
     return(TCL_OK);
   }
   else if (!strcmp(argv[1],"string")) {
-    char *result_string = gbuf_dump_ascii_to_string(GB_GBUF(gbGetGeventBuffer()), 
-                                                   GB_GBUFINDEX(gbGetGeventBuffer()));
+    int original_size, clean_size;
+    
+    // remove reduncancies
+    gbCleanCurrentBuffer(&original_size, &clean_size);
+    
+    char *result_string =
+      gbuf_dump_ascii_to_string(GB_GBUF(gbGetGeventBuffer()), 
+				GB_GBUFINDEX(gbGetGeventBuffer()));
     if (!result_string) {
-      Tcl_SetResult(interp, "Error: Unable to convert graphics buffer to string", TCL_STATIC);
+      Tcl_SetResult(interp,
+		    "Error: Unable to convert graphics buffer to string",
+		    TCL_STATIC);
       return TCL_ERROR;
     }
     
     if (argc >= 3) {
       /* Store result in variable and return byte count */
       if (Tcl_SetVar(interp, argv[2], result_string, TCL_LEAVE_ERR_MSG) == NULL) {
-        free(result_string);
-        return TCL_ERROR;
+	free(result_string);
+	return TCL_ERROR;
       }
-      /* Return the length of the string */
       char length_str[32];
       sprintf(length_str, "%d", (int)strlen(result_string));
       Tcl_SetResult(interp, length_str, TCL_VOLATILE);
       free(result_string);
     } else {
-      /* Copy the string to Tcl-managed memory */
+      /* ASCII string uses malloc - need to copy for Tcl */
+      Tcl_SetResult(interp, result_string, TCL_VOLATILE);
+      free(result_string);
+    }
+    return TCL_OK;
+  }
+  else if (!strcmp(argv[1], "json")) {
+    int original_size, clean_size;
+
+    // remove reduncancies
+    gbCleanCurrentBuffer(&original_size, &clean_size);
+
+    char *result_string =
+      gbuf_dump_json_direct(GB_GBUF(gbGetGeventBuffer()), 
+			    GB_GBUFINDEX(gbGetGeventBuffer()));
+    if (!result_string) {
+      Tcl_SetResult(interp,
+		    "Error: Unable to convert graphics buffer to JSON",
+		    TCL_STATIC);
+      return TCL_ERROR;
+    }
+    
+    if (argc >= 3) {
+      /* Store result in variable and return byte count */
+      if (Tcl_SetVar(interp, argv[2],
+		     result_string, TCL_LEAVE_ERR_MSG) == NULL) {
+	Tcl_Free(result_string);  // Use Tcl_Free for jansson memory
+	return TCL_ERROR;
+      }
+      char length_str[32];
+      sprintf(length_str, "%d", (int)strlen(result_string));
+      Tcl_SetResult(interp, length_str, TCL_VOLATILE);
+      Tcl_Free(result_string);
+    } else {
+      /* Let Tcl make its own copy, then free the jansson memory */
       Tcl_SetResult(interp, result_string, TCL_VOLATILE);
       free(result_string);
     }
@@ -145,7 +185,6 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 }
-
 static int cgPlayback(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
@@ -187,6 +226,25 @@ static int gbResetCmd(ClientData clientData, Tcl_Interp *interp,
 {
   gbResetCurrentBuffer();
   return TCL_OK;
+}
+
+static int gbCleanCmd(ClientData clientData, Tcl_Interp *interp, 
+                      int argc, char *argv[])
+{
+    int original_size, clean_size;
+    if (argc != 1) {
+        Tcl_SetResult(interp, "Usage: gbufclean", TCL_STATIC);
+        return TCL_ERROR;
+    }
+    
+    // Clean the current buffer
+    int result = gbCleanCurrentBuffer(&original_size, &clean_size);
+    
+    if (result != 0) {
+        Tcl_SetResult(interp, "Failed to clean graphics buffer", TCL_STATIC);
+        return TCL_ERROR;
+    }
+    return TCL_OK;
 }
 
 static int cgGetResol(ClientData clientData, Tcl_Interp *interp,
@@ -1150,7 +1208,7 @@ int Cgbase_Init(Tcl_Interp *interp)
   
     /* Initialize the interpreter context for cgraph */
   Cgraph_InitInterp(interp);
-  
+
   Tcl_CreateCommand(interp, "clearwin", (Tcl_CmdProc *) cgClearWindow,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);
@@ -1330,12 +1388,16 @@ int Cgbase_Init(Tcl_Interp *interp)
   Tcl_CreateCommand(interp, "gbufsize", (Tcl_CmdProc *) gbSizeCmd,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "gbufclean", (Tcl_CmdProc *) gbCleanCmd,
+		    (ClientData) NULL,
+		    (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "gbufisempty", (Tcl_CmdProc *) gbIsEmptyCmd,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "gbufreset", (Tcl_CmdProc *) gbResetCmd,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);
+		    
   
 
 
