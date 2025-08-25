@@ -9,9 +9,6 @@ project(dlsh VERSION ${PROJECT_VERSION} LANGUAGES C CXX)
 
 add_subdirectory( libdg )
 
-# Find required Arrow package
-find_package(Arrow REQUIRED CONFIG)
-
 set(CMAKE_BUILD_TYPE Release)
 if (WIN32)
     add_definitions(-DUSE_TCL_STUBS)
@@ -74,7 +71,6 @@ add_library(dlsh SHARED
     src/lablib/lodepng.c 
     src/lablib/lz4utils.c 
     src/lablib/dslog.c 
-    src/dgarrow.cpp
 )
 
 set_target_properties(dlsh PROPERTIES PUBLIC_HEADER "src/dfana.h;src/tcl_dl.h;src/lablib/cgraph.h;src/lablib/gbuf.h;src/lablib/utilc.h;")
@@ -113,7 +109,7 @@ else()
     set(PDFLIB hpdf)
 endif()
 
-target_link_libraries(dlsh PRIVATE ${LIBJANSSON} ${TCLLIB} ${PDFLIB} ${LZ4LIB} ${ZLIB} Arrow::arrow_static)
+target_link_libraries(dlsh PRIVATE ${LIBJANSSON} ${TCLLIB} ${PDFLIB} ${LZ4LIB} ${ZLIB} )
 
 set(CPACK_PACKAGE_NAME dlsh)
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Dynamic Lists and other TCL utilities.")
