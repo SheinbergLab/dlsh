@@ -21,7 +21,8 @@ jobs:
         run: |
           brew update
           brew install cmake autoconf lz4 tcl-tk@9 libpq postgresql@17 yajl
-
+          # Add Arrow installation
+          brew install apache-arrow
       - name: Check out our code
         uses: actions/checkout@v4
         with:
