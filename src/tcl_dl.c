@@ -1731,7 +1731,7 @@ static int tclDynGroupFromArrowData(ClientData data, Tcl_Interp * interp, int ob
   DYN_GROUP *dg;
   char *dgname;
   unsigned char *arrow_data;
-  int arrow_size;
+  Tcl_Size arrow_size;
   
   // dg_fromArrowData arrow_data_var dyngroup_name
   if (objc != 3) {
