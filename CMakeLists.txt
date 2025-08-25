@@ -7,22 +7,36 @@ project(dlsh VERSION ${PROJECT_VERSION} LANGUAGES C)
 
 add_subdirectory( libdg )
 
-# Use system MessagePack or manual installation
+# Use system MessagePack with better fallback handling
 find_package(PkgConfig QUIET)
+set(MSGPACK_FOUND FALSE)
+
 if(PkgConfig_FOUND)
-    pkg_check_modules(MSGPACK msgpack-c)
+    # Try both possible pkg-config names
+    pkg_check_modules(MSGPACK QUIET msgpack)
+    if(NOT MSGPACK_FOUND)
+        pkg_check_modules(MSGPACK QUIET msgpack-c)
+    endif()
+    if(MSGPACK_FOUND)
+        message(STATUS "Found MessagePack via pkg-config: ${MSGPACK_LIBRARIES}")
+    endif()
 endif()
 
 if(NOT MSGPACK_FOUND)
-    # Try find_path for manual installation
+    # Fallback: try to find manually
     find_path(MSGPACK_INCLUDE_DIR msgpack.h 
-        PATHS /usr/local/include /opt/homebrew/include)
-    find_library(MSGPACK_LIBRARIES NAMES msgpack-c msgpack
-        PATHS /usr/local/lib /opt/homebrew/lib)
+        PATHS /usr/include /usr/local/include /opt/homebrew/include)
+    find_library(MSGPACK_LIBRARY NAMES msgpackc msgpack-c msgpack
+        PATHS /usr/lib /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu 
+              /usr/local/lib /opt/homebrew/lib)
     
-    if(MSGPACK_INCLUDE_DIR AND MSGPACK_LIBRARIES)
+    if(MSGPACK_INCLUDE_DIR AND MSGPACK_LIBRARY)
         set(MSGPACK_FOUND TRUE)
         set(MSGPACK_INCLUDE_DIRS ${MSGPACK_INCLUDE_DIR})
+        set(MSGPACK_LIBRARIES ${MSGPACK_LIBRARY})
+        message(STATUS "Found MessagePack manually: ${MSGPACK_LIBRARY}")
+    else()
+        message(FATAL_ERROR "MessagePack not found. Please install libmsgpack-dev")
     endif()
 endif()
 
@@ -135,7 +149,7 @@ target_link_libraries(dlsh PRIVATE
     ${PDFLIB} 
     ${LZ4LIB} 
     ${ZLIB}
-    ${MSGPACK_LIBRARIES}  # Use found MessagePack library
+    ${MSGPACK_LIBRARIES}
 )
 
 set(CPACK_PACKAGE_NAME dlsh)
