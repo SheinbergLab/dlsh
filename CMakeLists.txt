@@ -1,16 +1,30 @@
-cmake_minimum_required(VERSION 3.15)
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+cmake_minimum_required(VERSION 3.20)
 
 if(NOT DEFINED PROJECT_VERSION)
   set(PROJECT_VERSION 0.0.0)
 endif()
-project(dlsh VERSION ${PROJECT_VERSION} LANGUAGES C CXX)
+project(dlsh VERSION ${PROJECT_VERSION} LANGUAGES C)
 
 add_subdirectory( libdg )
 
-# Find required Arrow package
-find_package(Arrow REQUIRED CONFIG)
+# Use system MessagePack or manual installation
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(MSGPACK msgpack-c)
+endif()
+
+if(NOT MSGPACK_FOUND)
+    # Try find_path for manual installation
+    find_path(MSGPACK_INCLUDE_DIR msgpack.h 
+        PATHS /usr/local/include /opt/homebrew/include)
+    find_library(MSGPACK_LIBRARIES NAMES msgpack-c msgpack
+        PATHS /usr/local/lib /opt/homebrew/lib)
+    
+    if(MSGPACK_INCLUDE_DIR AND MSGPACK_LIBRARIES)
+        set(MSGPACK_FOUND TRUE)
+        set(MSGPACK_INCLUDE_DIRS ${MSGPACK_INCLUDE_DIR})
+    endif()
+endif()
 
 set(CMAKE_BUILD_TYPE Release)
 if (WIN32)
@@ -24,7 +38,7 @@ if(WIN32)
     link_directories(c:/usr/local/lib/$ENV{VSCMD_ARG_TGT_ARCH})
 elseif(APPLE)
     add_definitions(-DMACOS -Dunix -DLINUX)
-    include_directories(src src/lablib /usr/local/include /opt/homebrew/include/ /opt/homebrew/include/tcl-tk)
+    include_directories(src src/lablib /usr/local/include /opt/homebrew/include/ /opt/homebrew/include/tcl-tk ${MSGPACK_INCLUDE_DIRS})
     link_directories(/usr/local/lib /opt/homebrew/lib)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "QNX")
     add_definitions(-DLINUX)
@@ -36,7 +50,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "QNX")
     set(ZLIB z)
 else()
     add_definitions(-DLINUX)
-    include_directories(src src/lablib ${APP_DIR} /usr/local/include)
+    include_directories(src src/lablib ${APP_DIR} /usr/local/include ${MSGPACK_INCLUDE_DIRS})
     link_directories(/usr/local/lib)
     set(LIBDL dl)
 endif()
@@ -57,6 +71,7 @@ add_library(dlsh SHARED
     src/dmana.c 
     src/tcl_dl.c 
     src/dgjson.c 
+    src/dgmsgpack.c              # Add your MessagePack implementation
     src/lablib/gbufutl.c 
     src/lablib/gbuf.c 
     src/lablib/cg_ps.c 
@@ -74,10 +89,10 @@ add_library(dlsh SHARED
     src/lablib/lodepng.c 
     src/lablib/lz4utils.c 
     src/lablib/dslog.c 
-    src/dgarrow.cpp
+    # Removed src/dgarrow.cpp - no more Arrow dependency!
 )
 
-set_target_properties(dlsh PROPERTIES PUBLIC_HEADER "src/dfana.h;src/tcl_dl.h;src/lablib/cgraph.h;src/lablib/gbuf.h;src/lablib/utilc.h;")
+set_target_properties(dlsh PROPERTIES PUBLIC_HEADER "src/dfana.h;src/tcl_dl.h;src/lablib/cgraph.h;src/lablib/gbuf.h;src/lablib/utilc.h;src/dgmsgpack.h")
 
 if(WIN32)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -113,7 +128,15 @@ else()
     set(PDFLIB hpdf)
 endif()
 
-target_link_libraries(dlsh PRIVATE ${LIBJANSSON} ${TCLLIB} ${PDFLIB} ${LZ4LIB} ${ZLIB} Arrow::arrow_shared)
+# Link with MessagePack instead of Arrow
+target_link_libraries(dlsh PRIVATE 
+    ${LIBJANSSON} 
+    ${TCLLIB} 
+    ${PDFLIB} 
+    ${LZ4LIB} 
+    ${ZLIB}
+    ${MSGPACK_LIBRARIES}  # Use found MessagePack library
+)
 
 set(CPACK_PACKAGE_NAME dlsh)
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Dynamic Lists and other TCL utilities.")
