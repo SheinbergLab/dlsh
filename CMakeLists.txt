@@ -1,11 +1,16 @@
 cmake_minimum_required(VERSION 3.15)
-
-add_subdirectory( libdg )
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT DEFINED PROJECT_VERSION)
   set(PROJECT_VERSION 0.0.0)
 endif()
-project(dlsh VERSION ${PROJECT_VERSION})
+project(dlsh VERSION ${PROJECT_VERSION} LANGUAGES C CXX)
+
+add_subdirectory( libdg )
+
+# Find required Arrow package
+find_package(Arrow REQUIRED CONFIG)
 
 set(CMAKE_BUILD_TYPE Release)
 if (WIN32)
@@ -36,12 +41,42 @@ else()
     set(LIBDL dl)
 endif()
 
-include_directories(${TCL_INCLUDE_DIR} src)
+include_directories(PRIVATE ${TCL_INCLUDE_DIR} src)
 
 ###############################
 # dlsh
 ###############################
-add_library(dlsh SHARED src/dfana.c src/tcl_dlg.c src/dfevt.c src/dlsh_pkg.c src/tcl_df.c src/tcl_dm.c src/dlarith.c src/dmana.c src/tcl_dl.c src/dgjson.c src/lablib/gbufutl.c src/lablib/gbuf.c src/lablib/cg_ps.c src/lablib/cg_base.c src/lablib/axes.c src/lablib/cgraph.c src/lablib/timer.c src/lablib/utilc_unix.c src/lablib/randvars.c src/lablib/prmutil.c src/lablib/dfutils.c src/lablib/df.c src/lablib/dynio.c src/lablib/rawapi.c src/lablib/lodepng.c src/lablib/lz4utils.c src/lablib/dslog.c )
+add_library(dlsh SHARED 
+    src/dfana.c 
+    src/tcl_dlg.c 
+    src/dfevt.c 
+    src/dlsh_pkg.c 
+    src/tcl_df.c 
+    src/tcl_dm.c 
+    src/dlarith.c 
+    src/dmana.c 
+    src/tcl_dl.c 
+    src/dgjson.c 
+    src/lablib/gbufutl.c 
+    src/lablib/gbuf.c 
+    src/lablib/cg_ps.c 
+    src/lablib/cg_base.c 
+    src/lablib/axes.c 
+    src/lablib/cgraph.c 
+    src/lablib/timer.c 
+    src/lablib/utilc_unix.c 
+    src/lablib/randvars.c 
+    src/lablib/prmutil.c 
+    src/lablib/dfutils.c 
+    src/lablib/df.c 
+    src/lablib/dynio.c 
+    src/lablib/rawapi.c 
+    src/lablib/lodepng.c 
+    src/lablib/lz4utils.c 
+    src/lablib/dslog.c 
+    src/dgarrow.cpp
+)
+
 set_target_properties(dlsh PROPERTIES PUBLIC_HEADER "src/dfana.h;src/tcl_dl.h;src/lablib/cgraph.h;src/lablib/gbuf.h;src/lablib/utilc.h;")
 
 if(WIN32)
@@ -61,7 +96,6 @@ elseif(APPLE)
     find_library(LIBJANSSON NAMES "libjansson.a")
     find_library(LZ4LIB NAMES "liblz4.a")
     set(BUNDLE_LOAD "-dynamiclib")
-    # set(CMAKE_EXE_MODULE_FLAGS "-arch arm64 -arch x86_64")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "QNX")
     set(LIBJANSSON jansson)
     set(LABLIB lab)
@@ -71,15 +105,15 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "QNX")
     set(ZLIB z)
 else()
     find_library(LIBJANSSON NAMES "libjansson.a")
-	set(LABLIB lab)
+    set(LABLIB lab)
     set(TCLLIB tclstub)
     find_library(PDFLIB NAMES "libhpdf.a")
-	set(LZ4LIB lz4)
-    set(ZLIB z)
     set(LZ4LIB lz4)
+    set(ZLIB z)
     set(PDFLIB hpdf)
 endif()
-target_link_libraries( dlsh ${LIBJANSSON} ${TCLLIB} ${PDFLIB} ${LZ4LIB} ${ZLIB} )
+
+target_link_libraries(dlsh PRIVATE ${LIBJANSSON} ${TCLLIB} ${PDFLIB} ${LZ4LIB} ${ZLIB} Arrow::arrow_static)
 
 set(CPACK_PACKAGE_NAME dlsh)
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Dynamic Lists and other TCL utilities.")
@@ -88,8 +122,11 @@ set(CPACK_PACKAGE_CONTACT SheinbergLab)
 add_subdirectory( pkgs )
 
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
-install(TARGETS dlsh PUBLIC_HEADER COMPONENT dlsh)
-install(TARGETS dlsh LIBRARY COMPONENT dlsh)
+install(TARGETS dlsh 
+    LIBRARY DESTINATION lib
+    PUBLIC_HEADER DESTINATION include
+    COMPONENT dlsh
+)
 
 include(InstallRequiredSystemLibraries)
 
@@ -97,7 +134,6 @@ if(WIN32)
     # TODO
 elseif(APPLE)
     if(DEFINED "CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM")
-        # Configure for apple code signing, notarization, and gatekeeper/entitlements.
         set(CMAKE_XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS "--strict --timestamp --options=runtime")
         set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_INJECT_BASE_ENTITLEMENTS "NO")
         set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Developer ID Application")
@@ -105,7 +141,6 @@ elseif(APPLE)
         set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0")
         set(CMAKE_SKIP_RPATH TRUE)
 
-        # Set up .pkg metadata.
         list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/macos)
         set(CPACK_PRODUCTBUILD_IDENTIFIER "org.sheinberglab")
         set(CPACK_RESOURCE_FILE_WELCOME ${CMAKE_SOURCE_DIR}/macos/welcome.txt)
