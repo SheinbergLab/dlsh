@@ -40,8 +40,6 @@ if(NOT MSGPACK_FOUND)
     endif()
 endif()
 
-find_package(nanoarrow REQUIRED)
-
 set(CMAKE_BUILD_TYPE Release)
 if (WIN32)
     add_definitions(-DUSE_TCL_STUBS)
@@ -143,7 +141,7 @@ else()
     set(PDFLIB hpdf)
 endif()
 
-# Link with MessagePack and Arrow
+# Link with MessagePack
 target_link_libraries(dlsh PRIVATE 
     ${LIBJANSSON} 
     ${TCLLIB} 
@@ -151,7 +149,6 @@ target_link_libraries(dlsh PRIVATE
     ${LZ4LIB} 
     ${ZLIB}
     ${MSGPACK_LIBRARIES}
-    nanoarrow::nanoarrow_ipc
 )
 
 set(CPACK_PACKAGE_NAME dlsh)
