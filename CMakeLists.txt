@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 if(NOT DEFINED PROJECT_VERSION)
   set(PROJECT_VERSION 0.0.0)
 endif()
-project(dlsh VERSION ${PROJECT_VERSION} LANGUAGES C)
+project(dlsh VERSION ${PROJECT_VERSION})
 
 add_subdirectory( libdg )
 
@@ -39,6 +39,8 @@ if(NOT MSGPACK_FOUND)
         message(FATAL_ERROR "MessagePack not found. Please install libmsgpack-dev")
     endif()
 endif()
+
+find_package(nanoarrow REQUIRED)
 
 set(CMAKE_BUILD_TYPE Release)
 if (WIN32)
@@ -85,7 +87,7 @@ add_library(dlsh SHARED
     src/dmana.c 
     src/tcl_dl.c 
     src/dgjson.c 
-    src/dgmsgpack.c              # Add your MessagePack implementation
+    src/dgmsgpack.c
     src/lablib/gbufutl.c 
     src/lablib/gbuf.c 
     src/lablib/cg_ps.c 
@@ -103,7 +105,6 @@ add_library(dlsh SHARED
     src/lablib/lodepng.c 
     src/lablib/lz4utils.c 
     src/lablib/dslog.c 
-    # Removed src/dgarrow.cpp - no more Arrow dependency!
 )
 
 set_target_properties(dlsh PROPERTIES PUBLIC_HEADER "src/dfana.h;src/tcl_dl.h;src/lablib/cgraph.h;src/lablib/gbuf.h;src/lablib/utilc.h;src/dgmsgpack.h")
@@ -142,7 +143,7 @@ else()
     set(PDFLIB hpdf)
 endif()
 
-# Link with MessagePack instead of Arrow
+# Link with MessagePack and Arrow
 target_link_libraries(dlsh PRIVATE 
     ${LIBJANSSON} 
     ${TCLLIB} 
@@ -150,6 +151,7 @@ target_link_libraries(dlsh PRIVATE
     ${LZ4LIB} 
     ${ZLIB}
     ${MSGPACK_LIBRARIES}
+    nanoarrow::nanoarrow_ipc
 )
 
 set(CPACK_PACKAGE_NAME dlsh)

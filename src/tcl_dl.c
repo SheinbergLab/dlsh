@@ -163,8 +163,9 @@ enum DL_SCANNERS      { DL_SCAN_INT, DL_SCAN_FLOAT, DL_SCAN_BINARY,
 			DL_SCAN_OCTAL, DL_SCAN_HEX };
 
 enum DG_DELETERS     { DG_DELETE_NORMAL, DG_DELETE_TEMPS };
-enum DG_TOFROMSTRING { DG_TOFROM_BINARY, DG_TOFROM_BASE64, DG_TOFROM_JSON, DG_TOFROM_JSON_HYBRID,   DG_TOFROM_MSGPACK_FILE, DG_TOFROM_MSGPACK_DATA,
-DG_TOFROM_MSGPACK_HYBRID_FILE, DG_TOFROM_MSGPACK_HYBRID_DATA };
+enum DG_TOFROMSTRING { DG_TOFROM_BINARY, DG_TOFROM_BASE64, DG_TOFROM_JSON, DG_TOFROM_JSON_HYBRID,
+		       DG_TOFROM_MSGPACK_FILE, DG_TOFROM_MSGPACK_DATA,
+		       DG_TOFROM_MSGPACK_HYBRID_FILE, DG_TOFROM_MSGPACK_HYBRID_DATA };
 enum DL_TOFROMSTRING { DL_TOFROM_BINARY, DL_TOFROM_BASE64, DL_TOFROM_JSON };
 /*****************************************************************************
  *                           TCL Bound Functions 
@@ -781,7 +782,6 @@ static int tclDynListFromString(ClientData data, Tcl_Interp * interp, int objc,
 				Tcl_Obj * const objv[]);
 static int tclDynGroupToMsgpack(ClientData data, Tcl_Interp * interp, int objc,
 			      Tcl_Obj * const objv[]);
-
 static int tclRegexpList(ClientData data, Tcl_Interp * interp, int objc,
 			 Tcl_Obj * const objv[]);
 static int tclScanList(ClientData data, Tcl_Interp * interp, int objc,
@@ -893,13 +893,11 @@ int Dl_Init(Tcl_Interp *interp)
                        (ClientData)DG_TOFROM_MSGPACK_FILE, NULL);
   Tcl_CreateObjCommand(interp, "dg_toHybridMsgpackFile", tclDynGroupToMsgpack, 
                        (ClientData)DG_TOFROM_MSGPACK_HYBRID_FILE, NULL);
-  
   Tcl_CreateObjCommand(interp, "dg_toMsgpackData", tclDynGroupToMsgpack, 
                        (ClientData)DG_TOFROM_MSGPACK_DATA, NULL);
   Tcl_CreateObjCommand(interp, "dg_toHybridMsgpackData", tclDynGroupToMsgpack, 
                        (ClientData)DG_TOFROM_MSGPACK_HYBRID_DATA, NULL);
 
-		       
   Tcl_CreateObjCommand(interp, "dl_fromString", tclDynListFromString, 
 		       (ClientData) DL_TOFROM_BINARY, NULL);
   Tcl_CreateObjCommand(interp, "dl_fromString64", tclDynListFromString, 
@@ -1631,6 +1629,7 @@ static int base64decode (char *in, unsigned int inLen, unsigned char *out, unsig
   *outLen = len; /* modify to reflect the actual output size */
   return 0;
 }
+
 static int tclDynGroupToMsgpack(ClientData data, Tcl_Interp * interp, int objc,
                                 Tcl_Obj * const objv[])
 {
