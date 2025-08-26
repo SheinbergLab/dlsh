@@ -38,6 +38,7 @@
 #include <labtcl.h>
 #include "tcl_dl.h"
 #include "dgmsgpack.h"
+#include "dgarrow.h"
 #include <jansson.h>
 
 #include <zlib.h>
@@ -165,7 +166,8 @@ enum DL_SCANNERS      { DL_SCAN_INT, DL_SCAN_FLOAT, DL_SCAN_BINARY,
 enum DG_DELETERS     { DG_DELETE_NORMAL, DG_DELETE_TEMPS };
 enum DG_TOFROMSTRING { DG_TOFROM_BINARY, DG_TOFROM_BASE64, DG_TOFROM_JSON, DG_TOFROM_JSON_HYBRID,
 		       DG_TOFROM_MSGPACK_FILE, DG_TOFROM_MSGPACK_DATA,
-		       DG_TOFROM_MSGPACK_HYBRID_FILE, DG_TOFROM_MSGPACK_HYBRID_DATA };
+		       DG_TOFROM_MSGPACK_HYBRID_FILE, DG_TOFROM_MSGPACK_HYBRID_DATA,
+   	           DG_TOFROM_ARROW_FILE, DG_TOFROM_ARROW_DATA  };
 enum DL_TOFROMSTRING { DL_TOFROM_BINARY, DL_TOFROM_BASE64, DL_TOFROM_JSON };
 /*****************************************************************************
  *                           TCL Bound Functions 
@@ -782,6 +784,14 @@ static int tclDynListFromString(ClientData data, Tcl_Interp * interp, int objc,
 				Tcl_Obj * const objv[]);
 static int tclDynGroupToMsgpack(ClientData data, Tcl_Interp * interp, int objc,
 			      Tcl_Obj * const objv[]);
+
+static int tclDynGroupToArrow(ClientData data, Tcl_Interp * interp, int objc,
+			      Tcl_Obj * const objv[]);
+static int tclDynGroupFromArrow(ClientData data, Tcl_Interp * interp, int objc,
+			      Tcl_Obj * const objv[]);
+static int tclDynGroupFromArrowData(ClientData data, Tcl_Interp * interp, int objc,
+			      Tcl_Obj * const objv[]);
+
 static int tclRegexpList(ClientData data, Tcl_Interp * interp, int objc,
 			 Tcl_Obj * const objv[]);
 static int tclScanList(ClientData data, Tcl_Interp * interp, int objc,
@@ -898,6 +908,15 @@ int Dl_Init(Tcl_Interp *interp)
   Tcl_CreateObjCommand(interp, "dg_toHybridMsgpackData", tclDynGroupToMsgpack, 
                        (ClientData)DG_TOFROM_MSGPACK_HYBRID_DATA, NULL);
 
+  Tcl_CreateObjCommand(interp, "dg_toArrowFile", tclDynGroupToArrow, 
+                       (ClientData) DG_TOFROM_ARROW_FILE, NULL); 
+  Tcl_CreateObjCommand(interp, "dg_toArrow", tclDynGroupToArrow, 
+                       (ClientData) DG_TOFROM_ARROW_DATA, NULL);
+  Tcl_CreateObjCommand(interp, "dg_fromArrowFile", tclDynGroupFromArrow, 
+                       (ClientData) 0, NULL);
+  Tcl_CreateObjCommand(interp, "dg_fromArrow", tclDynGroupFromArrowData, 
+                       (ClientData) 0, NULL);
+	
   Tcl_CreateObjCommand(interp, "dl_fromString", tclDynListFromString, 
 		       (ClientData) DL_TOFROM_BINARY, NULL);
   Tcl_CreateObjCommand(interp, "dl_fromString64", tclDynListFromString, 
@@ -1629,6 +1648,131 @@ static int base64decode (char *in, unsigned int inLen, unsigned char *out, unsig
   *outLen = len; /* modify to reflect the actual output size */
   return 0;
 }
+
+static int tclDynGroupToArrow(ClientData data, Tcl_Interp * interp, int objc,
+                              Tcl_Obj * const objv[])
+{
+  DYN_GROUP *dg;
+  char *dgname;
+  int mode = (Tcl_Size) data;
+  
+  if (mode == DG_TOFROM_ARROW_FILE) {
+    // dg_toArrowFile dyngroup filename
+    if (objc != 3) {
+      Tcl_WrongNumArgs(interp, 1, objv, "dyngroup filename");
+      return TCL_ERROR;
+    }
+    
+    dgname = Tcl_GetStringFromObj(objv[1], NULL);
+    if (tclFindDynGroup(interp, dgname, &dg) != TCL_OK) return TCL_ERROR;
+    
+    char *filename = Tcl_GetStringFromObj(objv[2], NULL);
+    
+    if (dg_to_arrow_file(dg, filename) != 0) {
+      Tcl_AppendResult(interp, "dg_toArrowFile: error writing Arrow file", NULL);
+      return TCL_ERROR;
+    }
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(1)); // Success
+    return TCL_OK;
+  }
+  
+  else if (mode == DG_TOFROM_ARROW_DATA) {
+    // dg_toArrowData dyngroup varname
+    if (objc != 3) {
+      Tcl_WrongNumArgs(interp, 1, objv, "dyngroup varname");
+      return TCL_ERROR;
+    }
+    
+    dgname = Tcl_GetStringFromObj(objv[1], NULL);
+    if (tclFindDynGroup(interp, dgname, &dg) != TCL_OK) return TCL_ERROR;
+    
+    uint8_t *arrow_data;
+    size_t arrow_size;
+    
+    if (dg_to_arrow_buffer(dg, &arrow_data, &arrow_size) != 0) {
+      Tcl_AppendResult(interp, "dg_toArrowData: error serializing to Arrow format", NULL);
+      return TCL_ERROR;
+    }
+    
+    // Create Tcl byte array object
+    Tcl_Obj *o = Tcl_NewByteArrayObj(arrow_data, arrow_size);
+    free(arrow_data); // Free the allocated data
+    
+    // Set the variable
+    if (Tcl_ObjSetVar2(interp, objv[2], NULL, o, TCL_LEAVE_ERR_MSG) == NULL) {
+      return TCL_ERROR;
+    }
+    
+    // Return the size
+    Tcl_SetObjResult(interp, Tcl_NewIntObj((int)arrow_size));
+    return TCL_OK;
+  }
+  
+  Tcl_AppendResult(interp, "Invalid Arrow conversion mode", NULL);
+  return TCL_ERROR;
+}
+
+// For reading Arrow files back to DYN_GROUP
+static int tclDynGroupFromArrow(ClientData data, Tcl_Interp * interp, int objc,
+                                Tcl_Obj * const objv[])
+{
+  DYN_GROUP *dg;
+  char *filename;
+  char *dgname;
+  
+  // dg_fromArrowFile filename dyngroup_name
+  if (objc != 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "filename dyngroup_name");
+    return TCL_ERROR;
+  }
+  
+  filename = Tcl_GetStringFromObj(objv[1], NULL);
+  dgname = Tcl_GetStringFromObj(objv[2], NULL);
+  
+  dg = arrow_file_to_dg(filename, dgname);
+  if (!dg) {
+    Tcl_AppendResult(interp, "dg_fromArrowFile: error reading Arrow file", NULL);
+    return TCL_ERROR;
+  }
+  
+  return (tclPutGroup(interp, dg));
+}
+
+// For reading Arrow data from byte array
+static int tclDynGroupFromArrowData(ClientData data, Tcl_Interp * interp, int objc,
+                                    Tcl_Obj * const objv[])
+{
+  DYN_GROUP *dg;
+  char *dgname;
+  unsigned char *arrow_data;
+  Tcl_Size arrow_size;
+  
+  // dg_fromArrowData arrow_data_var dyngroup_name
+  if (objc != 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "arrow_data_var dyngroup_name");
+    return TCL_ERROR;
+  }
+  
+  dgname = Tcl_GetStringFromObj(objv[2], NULL);
+  
+  // Get the byte array from the Tcl variable
+  arrow_data = Tcl_GetByteArrayFromObj(objv[1], &arrow_size);
+  if (!arrow_data) {
+    Tcl_AppendResult(interp, "dg_fromArrowData: invalid arrow data", NULL);
+    return TCL_ERROR;
+  }
+  
+  dg = arrow_buffer_to_dg(arrow_data, (size_t)arrow_size, dgname);
+  if (!dg) {
+    Tcl_AppendResult(interp,
+		     "dg_fromArrowData: error deserializing Arrow data", NULL);
+    return TCL_ERROR;
+  }
+  
+  return (tclPutGroup(interp, dg));
+}
+
 
 static int tclDynGroupToMsgpack(ClientData data, Tcl_Interp * interp, int objc,
                                 Tcl_Obj * const objv[])

@@ -7,6 +7,26 @@ project(dlsh VERSION ${PROJECT_VERSION})
 
 add_subdirectory( libdg )
 
+# Fetch nanoarrow as a dependency
+include(FetchContent)
+
+FetchContent_Declare(
+    nanoarrow
+    GIT_REPOSITORY https://github.com/apache/arrow-nanoarrow.git
+    GIT_TAG        apache-arrow-nanoarrow-0.6.0  # Use a specific release tag
+    GIT_SHALLOW    TRUE
+)
+
+# Set options for nanoarrow build
+set(NANOARROW_BUILD_TESTS OFF CACHE INTERNAL "")
+set(NANOARROW_BUILD_INTEGRATION_TESTS OFF CACHE INTERNAL "")
+set(NANOARROW_BUILD_BENCHMARKS OFF CACHE INTERNAL "")
+set(NANOARROW_IPC ON CACHE INTERNAL "")  # Enable IPC support
+set(NANOARROW_FLATCC ON CACHE INTERNAL "")  # Enable flatcc for IPC
+set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "")  # Build static libs
+
+FetchContent_MakeAvailable(nanoarrow)
+
 # Use system MessagePack with better fallback handling
 find_package(PkgConfig QUIET)
 set(MSGPACK_FOUND FALSE)
@@ -86,6 +106,7 @@ add_library(dlsh SHARED
     src/tcl_dl.c 
     src/dgjson.c 
     src/dgmsgpack.c
+    src/dgarrow.c
     src/lablib/gbufutl.c 
     src/lablib/gbuf.c 
     src/lablib/cg_ps.c 
@@ -141,7 +162,7 @@ else()
     set(PDFLIB hpdf)
 endif()
 
-# Link with MessagePack
+# Link with MessagePack and nanoarrow (static)
 target_link_libraries(dlsh PRIVATE 
     ${LIBJANSSON} 
     ${TCLLIB} 
@@ -149,6 +170,14 @@ target_link_libraries(dlsh PRIVATE
     ${LZ4LIB} 
     ${ZLIB}
     ${MSGPACK_LIBRARIES}
+    nanoarrow_ipc
+    nanoarrow
+)
+
+# Include nanoarrow headers
+target_include_directories(dlsh PRIVATE 
+    ${nanoarrow_SOURCE_DIR}/src/nanoarrow
+    ${nanoarrow_SOURCE_DIR}/src/nanoarrow_ipc
 )
 
 set(CPACK_PACKAGE_NAME dlsh)
