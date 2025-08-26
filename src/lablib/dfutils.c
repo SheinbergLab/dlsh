@@ -2964,7 +2964,7 @@ DYN_LIST *dfuCreateNamedDynListWithVals(char *name, int t, int n, void *vals)
 {
   DYN_LIST *dynlist;
 
-  if (!n) return NULL;
+//  if (!n) return NULL;
 
   dynlist = (DYN_LIST *) calloc(1, sizeof(DYN_LIST));
   if (!dynlist) {
@@ -2975,8 +2975,9 @@ DYN_LIST *dfuCreateNamedDynListWithVals(char *name, int t, int n, void *vals)
   if (name != DYN_LIST_NAME(dynlist))
     strncpy(DYN_LIST_NAME(dynlist), name, DYN_LIST_NAME_SIZE-1);
 
-  /* Don't allow zero length allocs */
-  if (!n) n++;
+  if (!n) {
+	return dfuCreateNamedDynList(name, t, 10);
+  }
 
   DYN_LIST_FLAGS(dynlist) = 0;
   DYN_LIST_INCREMENT(dynlist) = n > 1024 ? n / 2 : n;
