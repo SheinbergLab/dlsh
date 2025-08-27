@@ -1638,7 +1638,7 @@ void linerel(float dxarg, float dyarg)
 void lineto(float xarg, float yarg)
 {
    FRAME *f = GetCurrentFrame();
-	
+   
    if (f->mode)
       WINDOW(f, xarg, yarg);
    linutl(xarg, yarg);

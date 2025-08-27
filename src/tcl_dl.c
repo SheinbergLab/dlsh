@@ -31,6 +31,7 @@
   #include <unix.h>
 #endif
 
+#include <stdint.h>
 #include <tcl.h>
 #include <df.h>
 #include <dynio.h>
