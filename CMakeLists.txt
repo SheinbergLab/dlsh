@@ -25,7 +25,18 @@ set(NANOARROW_IPC ON CACHE INTERNAL "")  # Enable IPC support
 set(NANOARROW_FLATCC ON CACHE INTERNAL "")  # Enable flatcc for IPC
 set(BUILD_SHARED_LIBS OFF CACHE INTERNAL "")  # Build static libs
 
+# Force position-independent code for all targets (needed for static libs in shared lib on Linux)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 FetchContent_MakeAvailable(nanoarrow)
+
+# Ensure flatcc is also built with -fPIC
+if(TARGET flatccrt)
+    set_property(TARGET flatccrt PROPERTY POSITION_INDEPENDENT_CODE ON)
+endif()
+if(TARGET flatcc)
+    set_property(TARGET flatcc PROPERTY POSITION_INDEPENDENT_CODE ON)
+endif()
 
 # Use system MessagePack with better fallback handling
 find_package(PkgConfig QUIET)
