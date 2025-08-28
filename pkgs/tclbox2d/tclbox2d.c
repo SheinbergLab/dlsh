@@ -323,6 +323,7 @@ static int Box2DCreateWorldCmd(ClientData clientData, Tcl_Interp *interp,
   /* b2CreateWorld() is not thread safe! */
   Tcl_MutexLock(&Box2D_Mutex);
   b2WorldId worldId = b2CreateWorld(&worldDef);
+  snprintf(worldname, sizeof(worldname), "box2d%d", b2info->Box2DCount++);
   Tcl_MutexUnlock(&Box2D_Mutex);
   
   bw->worldId = worldId;
@@ -332,7 +333,6 @@ static int Box2DCreateWorldCmd(ClientData clientData, Tcl_Interp *interp,
   Tcl_InitHashTable(&bw->bodyTable, TCL_STRING_KEYS);
   Tcl_InitHashTable(&bw->jointTable, TCL_STRING_KEYS);
   
-  snprintf(worldname, sizeof(worldname), "box2d%d", b2info->Box2DCount++);
   return Box2DAddWorld(interp, bw, worldname);
 }
 
