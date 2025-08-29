@@ -54,27 +54,30 @@ static FRAME default_frame_template = {0.0,0.0,640.0,480.0,0.0,0.0,1000.0,1000.0
 
 /* Complete per-interpreter context */
 typedef struct CgraphContext {
-    FRAME *current_frame;           /* Current frame */
-    FRAME default_frame;            /* Default frame template */
-    
-    /* Global handlers */
-    HANDLER bframe;
-    HANDLER eframe;
-    
-    /* Drawing state */
-    float barwidth;
-    int img_preview;
-    
-    /* Viewport stack */
-    VW_STACK *viewport_stack;
-    
-    /* Static buffers and state */
-    char draw_buffer[80];           /* For drawnum, drawfnum, drawf */
-    char old_fontname[64];          /* For setfont */
-    int labeltick;                  /* For tck() */
-    
-    /* Temporary variables */
-    float temp_float;               /* For SWAP macro */
+  FRAME *current_frame;           /* Current frame */
+  FRAME default_frame;            /* Default frame template */
+  
+  /* Global handlers */
+  HANDLER bframe;
+  HANDLER eframe;
+  
+  GBUF_DATA *gbuf_data; 
+  int gbuf_initialized;       // Track initialization
+  
+  /* Drawing state */
+  float barwidth;
+  int img_preview;
+  
+  /* Viewport stack */
+  VW_STACK *viewport_stack;
+  
+  /* Static buffers and state */
+  char draw_buffer[80];           /* For drawnum, drawfnum, drawf */
+  char old_fontname[64];          /* For setfont */
+  int labeltick;                  /* For tck() */
+  
+  /* Temporary variables */
+  float temp_float;               /* For SWAP macro */
 } CgraphContext;
 
 /* Thread-local context storage */
@@ -121,8 +124,9 @@ static void CgraphInterpDeleteProc(ClientData clientData, Tcl_Interp *interp)
                                                        sizeof(ThreadData));
     if (data) {
         /* Get the context for this interpreter */
-        CgraphContext *ctx = (CgraphContext *)Tcl_GetAssocData(interp, 
-                                                               CGRAPH_ASSOC_KEY, NULL);
+        CgraphContext *ctx =
+	  (CgraphContext *)Tcl_GetAssocData(interp, 
+					    CGRAPH_ASSOC_KEY, NULL);
         
         /* Clear thread-local pointers if they match */
         if (data->current_context == ctx) {
@@ -144,6 +148,10 @@ static void DeleteContextData(ClientData clientData, Tcl_Interp *interp)
     
     // Clear global first
     contexp = NULL;
+
+    // Clean up gbuf
+    gbCleanupGeventBuffer(ctx->gbuf_data);
+    free(ctx->gbuf_data);
     
     // Clean up frames
     FRAME *frame = ctx->current_frame;
@@ -163,7 +171,16 @@ static void DeleteContextData(ClientData clientData, Tcl_Interp *interp)
 void Cgraph_InitInterp(Tcl_Interp *interp)
 {
     SetCurrentInterp(interp);
+
+    CgraphContext *ctx =
+      (CgraphContext *)Tcl_GetAssocData(interp, 
+					CGRAPH_ASSOC_KEY, NULL);
     
+    
+    ctx->gbuf_data = (GBUF_DATA *) calloc(1, sizeof(GBUF_DATA));
+    gbInitGeventBuffer(ctx->gbuf_data);
+    ctx->gbuf_initialized = 1;	
+
     /* Register cleanup callback for when interpreter is deleted */
     Tcl_CallWhenDeleted(interp, CgraphInterpDeleteProc, NULL);
 }
@@ -189,23 +206,24 @@ static CgraphContext *GetContextForInterp(Tcl_Interp *interp)
         /* Initialize with defaults */
         memcpy(&ctx->default_frame, &default_frame_template, sizeof(FRAME));
         
-        /* CRITICAL: Create a completely new, independent frame */
+        /* Create a completely new, independent frame */
         ctx->current_frame = (FRAME *)malloc(sizeof(FRAME));
         memcpy(ctx->current_frame, &ctx->default_frame, sizeof(FRAME));
         
-        /* IMPORTANT: Create independent fontname */
+        /* Create independent fontname */
         if (ctx->default_frame.fontname) {
-            ctx->current_frame->fontname = (char *)malloc(strlen(ctx->default_frame.fontname) + 1);
+            ctx->current_frame->fontname =
+	      (char *)malloc(strlen(ctx->default_frame.fontname) + 1);
             strcpy(ctx->current_frame->fontname, ctx->default_frame.fontname);
         } else {
             /* Set a default font name - EACH CONTEXT GETS ITS OWN COPY */
-            ctx->current_frame->fontname = (char *)malloc(strlen("HELVETICA") + 1);
-            strcpy(ctx->current_frame->fontname, "HELVETICA");
+            ctx->current_frame->fontname =
+	      (char *)malloc(strlen("HELVETICA") + 1);
+            strcpy(ctx->current_frame->fontname, "Helvetica");
         }
         
         ctx->current_frame->parent = NULL;
-        /* Other initialization... */
-        
+
         Tcl_SetAssocData(interp, CGRAPH_ASSOC_KEY,
 			 DeleteContextData, (ClientData)ctx);
     }
@@ -221,7 +239,8 @@ static void SetCurrentInterp(Tcl_Interp *interp)
     if (interp) {
         data->current_context = GetContextForInterp(interp);
         if (data->current_context && data->current_context->current_frame) {
-            contexp = data->current_context->current_frame;  /* Update global for compatibility */
+	  /* Update global for compatibility */
+	  contexp = data->current_context->current_frame; 
         }
     }
 }
