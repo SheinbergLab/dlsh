@@ -263,6 +263,7 @@ extern int replace_image(int ref, int w, int h, int d, unsigned char *data);
 extern int setimgpreview(int);
 extern void group(void);
 extern void ungroup(void);
+extern int  setbackgroundcolor(int);
 extern int  setcolor(int);
 extern int  getcolor(void);
 extern void clearscreen(void);

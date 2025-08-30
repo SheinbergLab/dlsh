@@ -840,6 +840,9 @@ int setbackgroundcolor(int color)
    FRAME *currentFrame = GetCurrentFrame();
    int oldcolor = currentFrame->background_color;
    currentFrame->background_color = color;
+   
+   if (gbIsRecordingEnabled()) record_gattr(G_BACKGROUND, color);
+   
    if (currentFrame->dsetbg)
    	currentFrame->dsetbg(color) ;
    return(oldcolor);

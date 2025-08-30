@@ -64,6 +64,7 @@ CG_CMD_WRAPPER_DECL(cgSetlwidth)
 CG_CMD_WRAPPER_DECL(cgRGBcolor)
 CG_CMD_WRAPPER_DECL(cgGetcolor)
 CG_CMD_WRAPPER_DECL(cgSetcolor)
+CG_CMD_WRAPPER_DECL(cgSetBackgroundColor)
 CG_CMD_WRAPPER_DECL(cgSetfont)
 CG_CMD_WRAPPER_DECL(cgSetsfont)
 CG_CMD_WRAPPER_DECL(cgPostscript)
@@ -963,6 +964,19 @@ static int cgSetcolor(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+static int cgSetBackgroundColor(ClientData clientData, Tcl_Interp *interp,
+                                int argc, char *argv[])
+{
+  int color, oldcolor;
+  if (argc != 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " color", NULL);
+    return TCL_ERROR;
+  }
+  if (Tcl_GetInt(interp, argv[1], &color) != TCL_OK) return TCL_ERROR;
+  oldcolor = setbackgroundcolor(color);
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(oldcolor));
+  return TCL_OK;
+}
 
 static int cgSetfont(ClientData clientData, Tcl_Interp *interp,
 		     int argc, char *argv[])
@@ -1184,6 +1198,7 @@ CG_CMD_WRAPPER_IMPL(cgSetlwidth)
 CG_CMD_WRAPPER_IMPL(cgRGBcolor)
 CG_CMD_WRAPPER_IMPL(cgGetcolor)
 CG_CMD_WRAPPER_IMPL(cgSetcolor)
+CG_CMD_WRAPPER_IMPL(cgSetBackgroundColor)
 CG_CMD_WRAPPER_IMPL(cgSetfont)
 CG_CMD_WRAPPER_IMPL(cgSetsfont)
 CG_CMD_WRAPPER_IMPL(cgPostscript)
@@ -1372,6 +1387,9 @@ int Cgbase_Init(Tcl_Interp *interp)
   Tcl_CreateCommand(interp, "setcolor", (Tcl_CmdProc *) cgSetcolor,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "setbackground", (Tcl_CmdProc *) cgSetBackgroundColor,
+            (ClientData) NULL, 
+            (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "getcolor", (Tcl_CmdProc *) cgGetcolor,
 		    (ClientData) NULL,
 		    (Tcl_CmdDeleteProc *) NULL);

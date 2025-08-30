@@ -351,6 +351,9 @@ read_gattr(char type, FILE *InFP, FILE *OutFP)
      case G_COLOR:
 	fprintf(OutFP, "setcolor\t");
 	break;
+     case G_BACKGROUND:
+	fprintf(OutFP, "setbackground\t");
+	break;
      case G_LSTYLE:
 	fprintf(OutFP, "setlstyle\t");
 	break;
@@ -548,6 +551,9 @@ gread_gattr(char type, GAttr *gtr, FILE *OutFP)
      case G_COLOR:
 	fprintf(OutFP, "setcolor\t");
 	break;
+     case G_BACKGROUND:
+	fprintf(OutFP, "setbackground\t");
+	break;	
      case G_LSTYLE:
 	fprintf(OutFP, "setlstyle\t");
 	break;
@@ -1073,6 +1079,7 @@ typedef struct {
     int current_lstyle;
     int current_orientation;
     int current_justification;
+    int current_background;
     float current_font_size;
     char current_font[256];
     float last_moveto_x, last_moveto_y;
@@ -1169,6 +1176,23 @@ unsigned char *gbuf_clean(unsigned char *input_gbuf, int input_size, int *output
                 break;
             }
             
+            case G_BACKGROUND: {
+				GAttr gattr;
+				memcpy(&gattr, &input_gbuf[i+1], GATTR_S);
+				if (FlipEvents) flip_gattr(&gattr);
+				
+				int new_background = GATTR_VAL(&gattr);
+				if (new_background != state.current_background) {
+					memcpy(&clean_gbuf[clean_pos], &input_gbuf[i], GATTR_S + 1);
+					clean_pos += GATTR_S + 1;
+					state.current_background = new_background;
+				} else {
+					should_copy = 0; /* Skip redundant background change */
+				}
+				advance_bytes = GATTR_S + 1;
+				break;
+			}
+
             case G_LWIDTH: {
                 GAttr gattr;
                 memcpy(&gattr, &input_gbuf[i+1], GATTR_S);
@@ -1542,6 +1566,7 @@ int gbuf_dump_pdf(char *gbuf, int bufsize, char *filename)
   {
     int c, n;
     int orientation = 0, lstyle = 0, color = 1, just = 0, lwidth = 1;
+    int backgroundcolor = 0;
     float w, h;
     float x0, y0, x1, y1, *points;
     int length, save, group;
@@ -1561,6 +1586,7 @@ int gbuf_dump_pdf(char *gbuf, int bufsize, char *filename)
 	case G_ORIENTATION:
 	case G_JUSTIFICATION:
 	case G_COLOR:
+	case G_BACKGROUND:
 	case G_LSTYLE:
 	case G_LWIDTH:
 	  break;
@@ -1704,6 +1730,12 @@ int gbuf_dump_pdf(char *gbuf, int bufsize, char *filename)
 	advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &color);
 	pdf_setcolor(page, color);
 	break;
+	 case G_BACKGROUND:
+	pdf_check_path(page);
+	advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &backgroundcolor);
+	// TO DO: could try to implement, ignore for now
+	//pdf_setcolor(page, color);
+	break;
       case G_TIMESTAMP:
 	advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &TimeStamped);
 	break;
@@ -1716,6 +1748,7 @@ int gbuf_dump_pdf(char *gbuf, int bufsize, char *filename)
       case G_ORIENTATION:
       case G_JUSTIFICATION:
       case G_COLOR:
+      case G_BACKGROUND:
       case G_LSTYLE:
       case G_LWIDTH:
       case G_GROUP:
@@ -1786,6 +1819,7 @@ int gbuf_dump_ascii(unsigned char *gbuf, int bufsize, FILE *fp)
     case G_LSTYLE:
     case G_LWIDTH:
     case G_COLOR:
+    case G_BACKGROUND:
       advance_bytes = gread_gattr(c, (GAttr *) &gbuf[i], fp);
       break;
     case G_TIMESTAMP:
@@ -1842,6 +1876,7 @@ gfile_to_ascii(FILE *InFP, FILE *OutFP)
     case G_LSTYLE:
     case G_LWIDTH:
     case G_COLOR:
+    case G_BACKGROUND:
       read_gattr(c, InFP, OutFP);
       break;
     case G_TIMESTAMP:
@@ -1870,6 +1905,7 @@ int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, lwidth = 1;
+  int backgroundcolor = 0;
   float w, h;
   float x0, y0, x1, y1, *points;
   int length, save, group;
@@ -1889,6 +1925,7 @@ int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
       case G_ORIENTATION:
       case G_JUSTIFICATION:
       case G_COLOR:
+      case G_BACKGROUND:
       case G_LSTYLE:
       case G_LWIDTH:
 	break;
@@ -2029,6 +2066,11 @@ int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &color);
       ps_setcolor(type, color, OutFP);
       break;
+    case G_BACKGROUND:
+      ps_check_path(type, OutFP);
+      advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &backgroundcolor);
+//      ps_setcolor(type, color, OutFP);
+      break;      
     case G_TIMESTAMP:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &TimeStamped);
       break;
@@ -2041,6 +2083,7 @@ int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
     case G_ORIENTATION:
     case G_JUSTIFICATION:
     case G_COLOR:
+    case G_BACKGROUND:
     case G_LSTYLE:
     case G_LWIDTH:
     case G_GROUP:
@@ -2060,6 +2103,7 @@ gfile_to_ps(FILE *InFP, int type, FILE *OutFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, save, lwidth = 1;
+  int backgroundcolor = 0;
   float w, h;
   float x0, y0, x1, y1, *points;
   int length, group;
@@ -2074,6 +2118,7 @@ gfile_to_ps(FILE *InFP, int type, FILE *OutFP)
       case G_ORIENTATION:
       case G_JUSTIFICATION:
       case G_COLOR:
+      case G_BACKGROUND:
       case G_LSTYLE:
       case G_LWIDTH:
 	break;
@@ -2205,6 +2250,11 @@ gfile_to_ps(FILE *InFP, int type, FILE *OutFP)
       get_gattr(c, InFP, &color);
       ps_setcolor(type, color, OutFP);
       break;
+    case G_BACKGROUND:
+      ps_check_path(type, OutFP);
+      get_gattr(c, InFP, &backgroundcolor);
+      //ps_setcolor(type, color, OutFP);
+      break;
     case G_TIMESTAMP:
       get_gattr(c, InFP, &TimeStamped);
       break;
@@ -2217,6 +2267,7 @@ gfile_to_ps(FILE *InFP, int type, FILE *OutFP)
     case G_ORIENTATION:
     case G_JUSTIFICATION:
     case G_COLOR:
+    case G_BACKGROUND:
     case G_LSTYLE:
     case G_LWIDTH:
     case G_GROUP:
@@ -2257,6 +2308,7 @@ int gbuf_dump_fig(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, lwidth = 1;
+  int backgroundcolor = 0;
   float w, h;
   float x0, y0, x1, y1, *points;
   int length, save, group;
@@ -2378,6 +2430,10 @@ int gbuf_dump_fig(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
       fig_check_path(type, &Fig_Filling, &Fig_Stroking, OutFP);
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &color);
       break;
+    case G_BACKGROUND:
+      fig_check_path(type, &Fig_Filling, &Fig_Stroking, OutFP);
+      advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &backgroundcolor);
+      break;      
     case G_TIMESTAMP:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &TimeStamped);
       break;
@@ -2406,6 +2462,7 @@ int gfile_to_fig(FILE *InFP, int type, FILE *OutFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, save, lwidth;
+  int backgroundcolor = 0;
   float w, h;
   float x0, y0, x1, y1, *points;
   int length, group;
@@ -2512,6 +2569,9 @@ int gfile_to_fig(FILE *InFP, int type, FILE *OutFP)
     case G_COLOR:
       fig_check_path(type, &Fig_Filling, &Fig_Stroking, OutFP);
       get_gattr(c, InFP, &color);
+    case G_BACKGROUND:
+      fig_check_path(type, &Fig_Filling, &Fig_Stroking, OutFP);
+      get_gattr(c, InFP, &backgroundcolor);
       break;
     case G_TIMESTAMP:
       get_gattr(c, InFP, &TimeStamped);
@@ -2540,6 +2600,7 @@ void playback_gfile(FILE *InFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, save, lwidth = 1;
+  int backgroundcolor = 0;
   float w, h;
   float x0, y0, x1, y1, *points;
   int length, group;
@@ -2650,6 +2711,10 @@ void playback_gfile(FILE *InFP)
       get_gattr(c, InFP, &color);
       setcolor(color);
       break;
+    case G_BACKGROUND:
+      get_gattr(c, InFP, &backgroundcolor);
+      setbackgroundcolor(backgroundcolor);
+      break;
     case G_GROUP:
       get_gattr(c, InFP, &group);
       break;
@@ -2675,6 +2740,7 @@ void playback_gbuf(unsigned char *gbuf, int bufsize)
   int i, advance_bytes = 0;
   int start_time = 0, current_time, elapsed_time; /* in msec */
   int orientation = 0, lstyle = 0, color = 1, just = 0, group, lwidth = 1;
+  int backgroundcolor = 0;
   float fontsize = 12.0;
    
   for (i = 0; i < bufsize; i+=advance_bytes) {
@@ -2786,6 +2852,10 @@ void playback_gbuf(unsigned char *gbuf, int bufsize)
     case G_COLOR:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &color);
       setcolor(color);
+      break;
+    case G_BACKGROUND:
+      advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &backgroundcolor);
+      setbackgroundcolor(backgroundcolor);
       break;
     case G_GROUP:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &group);
@@ -3124,6 +3194,9 @@ int gread_gattr_to_string(char type, GAttr *gtr, GBUF_STRING *str)
         case G_COLOR:
             gbuf_string_append(str, "setcolor\t");
             break;
+        case G_BACKGROUND:
+            gbuf_string_append(str, "setbackground\t");
+            break;            
         case G_LSTYLE:
             gbuf_string_append(str, "setlstyle\t");
             break;
@@ -3188,6 +3261,7 @@ int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING
             case G_LSTYLE:
             case G_LWIDTH:
             case G_COLOR:
+            case G_BACKGROUND:
             case G_TIMESTAMP:
                 advance_bytes = gread_gattr_to_string(c, (GAttr *) &gbuf[i], str);
                 break;
@@ -3255,6 +3329,18 @@ char *gbuf_dump_json_direct(unsigned char *gbuf, int bufsize)
                 if (FlipEvents) flip_gattr(gattr);
                 
                 json_object_set_new(command_obj, "cmd", json_string("setcolor"));
+                json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+                
+                advance_bytes = GATTR_S;
+                break;
+            }
+            
+            case G_BACKGROUND: {
+                GAttr gatr, *gattr = &gatr;
+                memcpy(gattr, &gbuf[i], GATTR_S);
+                if (FlipEvents) flip_gattr(gattr);
+                
+                json_object_set_new(command_obj, "cmd", json_string("setbackground"));
                 json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
                 
                 advance_bytes = GATTR_S;

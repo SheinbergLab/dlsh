@@ -644,6 +644,7 @@ static void send_event(char type, unsigned char *data)
     push(data, GTEXT_S, 1);
     break;
   case G_COLOR:
+  case G_BACKGROUND:
   case G_LSTYLE:
   case G_LWIDTH:
   case G_ORIENTATION:

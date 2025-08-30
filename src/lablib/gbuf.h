@@ -84,6 +84,7 @@ extern char PS_Orientation;
 #define G_LWIDTH      (1+G_POLY)
 #define G_POSTSCRIPT  (1+G_LWIDTH)
 #define G_IMAGE       (1+G_POSTSCRIPT)
+#define G_BACKGROUND  (1+G_IMAGE)
 
 typedef struct _g_header {
   float version;
