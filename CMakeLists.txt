@@ -120,7 +120,6 @@ add_library(dlsh SHARED
     src/dgarrow.c
     src/lablib/gbufutl.c 
     src/lablib/gbuf.c 
-    src/lablib/cg_ps.c 
     src/lablib/cg_base.c 
     src/lablib/axes.c 
     src/lablib/cgraph.c 

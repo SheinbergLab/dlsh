@@ -3,9 +3,6 @@
  */
 
 
-extern float PSColorTableVals[][4];
-extern int NColorVals;
-
 #define C_BLACK 0
 #define C_BLUE 1
 #define C_GREEN 2

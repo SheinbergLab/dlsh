@@ -12,80 +12,30 @@
 #include "cgraph.h"
 #include "gbuf.h"
 #include "gbufutl.h"
-#include "cg_base_wrapper.h"
-
-/* Define wrapper functions for all commands */
-CG_CMD_WRAPPER_DECL(cgClearWindow)
-CG_CMD_WRAPPER_DECL(cgDumpWindow)
-CG_CMD_WRAPPER_DECL(cgPlayback)
-CG_CMD_WRAPPER_DECL(gbSizeCmd)
-CG_CMD_WRAPPER_DECL(gbIsEmptyCmd)
-CG_CMD_WRAPPER_DECL(gbResetCmd)
-CG_CMD_WRAPPER_DECL(gbCleanCmd)
-CG_CMD_WRAPPER_DECL(cgGetResol)
-CG_CMD_WRAPPER_DECL(cgGetFrame)
-CG_CMD_WRAPPER_DECL(cgGetXScale)
-CG_CMD_WRAPPER_DECL(cgGetYScale)
-CG_CMD_WRAPPER_DECL(cgWindowToScreen)
-CG_CMD_WRAPPER_DECL(cgScreenToWindow)
-CG_CMD_WRAPPER_DECL(cgPushViewport)
-CG_CMD_WRAPPER_DECL(cgPopViewport)
-CG_CMD_WRAPPER_DECL(cgSetViewport)
-CG_CMD_WRAPPER_DECL(cgGetViewport)
-CG_CMD_WRAPPER_DECL(cgGetFViewport)
-CG_CMD_WRAPPER_DECL(cgGetWindow)
-CG_CMD_WRAPPER_DECL(cgGetAspect)
-CG_CMD_WRAPPER_DECL(cgGetUAspect)
-CG_CMD_WRAPPER_DECL(cgSetFViewport)
-CG_CMD_WRAPPER_DECL(cgSetPViewport)
-CG_CMD_WRAPPER_DECL(cgSetWindow)
-CG_CMD_WRAPPER_DECL(cgSetPSPageOri)
-CG_CMD_WRAPPER_DECL(cgSetPSPageFill)
-CG_CMD_WRAPPER_DECL(cgGsave)
-CG_CMD_WRAPPER_DECL(cgGrestore)
-CG_CMD_WRAPPER_DECL(cgGroup)
-CG_CMD_WRAPPER_DECL(cgUngroup)
-CG_CMD_WRAPPER_DECL(cgFrame)
-CG_CMD_WRAPPER_DECL(cgMoveto)
-CG_CMD_WRAPPER_DECL(cgLineto)
-CG_CMD_WRAPPER_DECL(cgDotAt)
-CG_CMD_WRAPPER_DECL(cgSquare)
-CG_CMD_WRAPPER_DECL(cgFsquare)
-CG_CMD_WRAPPER_DECL(cgPoly)
-CG_CMD_WRAPPER_DECL(cgFpoly)
-CG_CMD_WRAPPER_DECL(cgCircle)
-CG_CMD_WRAPPER_DECL(cgFcircle)
-CG_CMD_WRAPPER_DECL(cgFilledRect)
-CG_CMD_WRAPPER_DECL(cgRect)
-CG_CMD_WRAPPER_DECL(cgSetorientation)
-CG_CMD_WRAPPER_DECL(cgSetjust)
-CG_CMD_WRAPPER_DECL(cgSetlstyle)
-CG_CMD_WRAPPER_DECL(cgSetlwidth)
-CG_CMD_WRAPPER_DECL(cgRGBcolor)
-CG_CMD_WRAPPER_DECL(cgGetcolor)
-CG_CMD_WRAPPER_DECL(cgSetcolor)
-CG_CMD_WRAPPER_DECL(cgSetBackgroundColor)
-CG_CMD_WRAPPER_DECL(cgSetfont)
-CG_CMD_WRAPPER_DECL(cgSetsfont)
-CG_CMD_WRAPPER_DECL(cgPostscript)
-CG_CMD_WRAPPER_DECL(cgSetImagePreview)
-CG_CMD_WRAPPER_DECL(cgDrawtext)
-CG_CMD_WRAPPER_DECL(cgSetclip)
-CG_CMD_WRAPPER_DECL(cgSetClipRegion)
-CG_CMD_WRAPPER_DECL(cgLYaxis)
-CG_CMD_WRAPPER_DECL(cgLXaxis)
 
 static int cgClearWindow(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
-  setfviewport(0,0,1,1);
-  clearscreen();
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  setfviewport(ctx, 0,0,1,1);
+  clearscreen(ctx);
   return TCL_OK;
 }
 
 static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
          int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   char *outfile = NULL;
   static char *usage = "usage: dumpwin {printer|ascii|raw|pdf|string|json}";
   if (argc > 2) outfile = argv[2];
@@ -95,7 +45,7 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
   }
   
   if (!strcmp(argv[1],"printer")) {
-    gbPrintGevents();
+    gbPrintGevents(ctx);
     return TCL_OK;
   }
   else if (!strcmp(argv[1],"raw")) {
@@ -103,26 +53,31 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
       Tcl_SetResult(interp, "usage: dumpwin raw filename", TCL_STATIC);
       return TCL_ERROR;
     }
-    gbWriteGevents(outfile,GBUF_RAW);
+    gbWriteGevents(ctx, outfile, GBUF_RAW);
     return(TCL_OK);
   }
   else if (!strcmp(argv[1],"ascii")) {
-    gbWriteGevents(outfile,GBUF_ASCII);
+    gbWriteGevents(ctx, outfile, GBUF_ASCII);
     return(TCL_OK);
   }
   else if (!strcmp(argv[1],"pdf")) {
-    gbWriteGevents(outfile,GBUF_PDF);
+    gbWriteGevents(ctx, outfile, GBUF_PDF);
     return(TCL_OK);
   }
   else if (!strcmp(argv[1],"string")) {
     int original_size, clean_size;
     
-    // remove reduncancies
-    gbCleanCurrentBuffer(&original_size, &clean_size);
+    // Use gbuf_clean function with context data
+    unsigned char *clean_buffer = gbuf_clean(GB_GBUF(ctx), GB_GBUFINDEX(ctx), &clean_size);
+    if (!clean_buffer) {
+      Tcl_SetResult(interp, "Error: Unable to clean graphics buffer", TCL_STATIC);
+      return TCL_ERROR;
+    }
     
-    char *result_string =
-      gbuf_dump_ascii_to_string(GB_GBUF(gbGetGeventBuffer()), 
-				GB_GBUFINDEX(gbGetGeventBuffer()));
+    // Use cleaned buffer for string conversion
+    char *result_string = gbuf_dump_ascii_to_string(clean_buffer, clean_size);
+    free(clean_buffer); // Clean up the temporary cleaned buffer
+    
     if (!result_string) {
       Tcl_SetResult(interp,
 		    "Error: Unable to convert graphics buffer to string",
@@ -149,13 +104,18 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
   }
   else if (!strcmp(argv[1], "json")) {
     int original_size, clean_size;
-
-    // remove reduncancies
-    gbCleanCurrentBuffer(&original_size, &clean_size);
-
-    char *result_string =
-      gbuf_dump_json_direct(GB_GBUF(gbGetGeventBuffer()), 
-			    GB_GBUFINDEX(gbGetGeventBuffer()));
+    
+    // Use gbuf_clean function with context data
+    unsigned char *clean_buffer = gbuf_clean(GB_GBUF(ctx), GB_GBUFINDEX(ctx), &clean_size);
+    if (!clean_buffer) {
+      Tcl_SetResult(interp, "Error: Unable to clean graphics buffer", TCL_STATIC);
+      return TCL_ERROR;
+    }
+    
+    // Use cleaned buffer for JSON conversion
+    char *result_string = gbuf_dump_json_direct(clean_buffer, clean_size);
+    free(clean_buffer); // Clean up the temporary cleaned buffer
+    
     if (!result_string) {
       Tcl_SetResult(interp,
 		    "Error: Unable to convert graphics buffer to JSON",
@@ -167,13 +127,13 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
       /* Store result in variable and return byte count */
       if (Tcl_SetVar(interp, argv[2],
 		     result_string, TCL_LEAVE_ERR_MSG) == NULL) {
-	Tcl_Free(result_string);  // Use Tcl_Free for jansson memory
+	free(result_string);  // jansson uses free()
 	return TCL_ERROR;
       }
       char length_str[32];
       sprintf(length_str, "%d", (int)strlen(result_string));
       Tcl_SetResult(interp, length_str, TCL_VOLATILE);
-      Tcl_Free(result_string);
+      free(result_string);
     } else {
       /* Let Tcl make its own copy, then free the jansson memory */
       Tcl_SetResult(interp, result_string, TCL_VOLATILE);
@@ -186,9 +146,16 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 }
+
 static int cgPlayback(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   FILE *fp;
   if (argc < 2) {
     Tcl_SetResult(interp, "usage: gbufplay filename", TCL_STATIC);
@@ -199,60 +166,88 @@ static int cgPlayback(ClientData clientData, Tcl_Interp *interp,
     Tcl_AppendResult(interp, argv[0], ": unable to open file ", argv[1], NULL);
     return TCL_ERROR;
   }
-  playback_gfile(fp);
+  playback_gfile(ctx, fp);
   
   fclose(fp);
   
   return(TCL_OK);
 }
 
-
 static int gbSizeCmd(ClientData clientData, Tcl_Interp *interp,
 		  int argc, char *argv[])
 {
-  extern int gbSize(void);
-  Tcl_SetObjResult(interp, Tcl_NewIntObj(gbSize()));
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(gbSize(ctx)));
   return TCL_OK;
 }
 
 static int gbIsEmptyCmd(ClientData clientData, Tcl_Interp *interp,
 		     int argc, char *argv[])
 {
-  Tcl_SetObjResult(interp, Tcl_NewIntObj(gbIsEmpty()));
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(gbIsEmpty(ctx)));
   return TCL_OK;
 }
 
 static int gbResetCmd(ClientData clientData, Tcl_Interp *interp,
 		      int argc, char *argv[])
 {
-  gbResetCurrentBuffer();
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  gbResetGeventBuffer(ctx);
   return TCL_OK;
 }
 
 static int gbCleanCmd(ClientData clientData, Tcl_Interp *interp, 
                       int argc, char *argv[])
 {
-    int original_size, clean_size;
-    if (argc != 1) {
-        Tcl_SetResult(interp, "Usage: gbufclean", TCL_STATIC);
-        return TCL_ERROR;
-    }
-    
-    // Clean the current buffer
-    int result = gbCleanCurrentBuffer(&original_size, &clean_size);
-    
-    if (result != 0) {
-        Tcl_SetResult(interp, "Failed to clean graphics buffer", TCL_STATIC);
-        return TCL_ERROR;
-    }
-    return TCL_OK;
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  int original_size, clean_size;
+  if (argc != 1) {
+      Tcl_SetResult(interp, "Usage: gbufclean", TCL_STATIC);
+      return TCL_ERROR;
+  }
+  
+  // Clean the current buffer
+  int result = gbCleanGeventBuffer(ctx);
+  
+  if (result != 0) {
+      Tcl_SetResult(interp, "Failed to clean graphics buffer", TCL_STATIC);
+      return TCL_ERROR;
+  }
+  return TCL_OK;
 }
 
 static int cgGetResol(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   float x, y;
-  getresol(&x, &y);
+  getresol(ctx, &x, &y);
 
   Tcl_Obj *listPtr = Tcl_NewListObj(0, NULL);
   Tcl_ListObjAppendElement(interp, listPtr, Tcl_NewDoubleObj(x));
@@ -265,8 +260,14 @@ static int cgGetResol(ClientData clientData, Tcl_Interp *interp,
 static int cgGetFrame(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   char resultstr[32];
-  snprintf(resultstr, sizeof(resultstr), "%p", getframe());
+  snprintf(resultstr, sizeof(resultstr), "%p", getframe(ctx));
   Tcl_AppendResult(interp, resultstr, NULL);
   return TCL_OK;
 }
@@ -274,20 +275,38 @@ static int cgGetFrame(ClientData clientData, Tcl_Interp *interp,
 static int cgGetXScale(ClientData clientData, Tcl_Interp *interp,
 		       int argc, char *argv[])
 {
-  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(getxscale()));
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(getxscale(ctx)));
   return TCL_OK;
 }
 
 static int cgGetYScale(ClientData clientData, Tcl_Interp *interp,
 		       int argc, char *argv[])
 {
-  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(getyscale()));
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(getyscale(ctx)));
   return TCL_OK;
 }
 
 static int cgWindowToScreen(ClientData clientData, Tcl_Interp *interp,
 			    int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x0, y0;
   int x, y;
   if (argc != 3) {
@@ -296,7 +315,7 @@ static int cgWindowToScreen(ClientData clientData, Tcl_Interp *interp,
   }
   if (Tcl_GetDouble(interp, argv[1], &x0) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[2], &y0) != TCL_OK) return TCL_ERROR;
-  window_to_screen(x0, y0, &x, &y);
+  window_to_screen(ctx, x0, y0, &x, &y);
 
   Tcl_Obj *listPtr = Tcl_NewListObj(0, NULL);
   Tcl_ListObjAppendElement(interp, listPtr, Tcl_NewIntObj(x));
@@ -309,6 +328,12 @@ static int cgWindowToScreen(ClientData clientData, Tcl_Interp *interp,
 static int cgScreenToWindow(ClientData clientData, Tcl_Interp *interp,
 			    int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int x0, y0;
   float x, y;
   if (argc != 3) {
@@ -317,7 +342,7 @@ static int cgScreenToWindow(ClientData clientData, Tcl_Interp *interp,
   }
   if (Tcl_GetInt(interp, argv[1], &x0) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetInt(interp, argv[2], &y0) != TCL_OK) return TCL_ERROR;
-  screen_to_window(x0, y0, &x, &y);
+  screen_to_window(ctx, x0, y0, &x, &y);
 
   Tcl_Obj *listPtr = Tcl_NewListObj(0, NULL);
   Tcl_ListObjAppendElement(interp, listPtr, Tcl_NewDoubleObj(x));
@@ -327,10 +352,15 @@ static int cgScreenToWindow(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-
 static int cgPushViewport(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   if (!strcmp(argv[0],"pushpviewport")) {
     double x0, y0, x1, y1;
     if (argc != 5 && argc != 1) {
@@ -344,22 +374,28 @@ static int cgPushViewport(ClientData clientData, Tcl_Interp *interp,
       if (Tcl_GetDouble(interp, argv[3], &x1) != TCL_OK) return TCL_ERROR;
       if (Tcl_GetDouble(interp, argv[4], &y1) != TCL_OK) return TCL_ERROR;
     }
-    pushviewport();
-    if (argc == 5) setpviewport(x0, y0, x1, y1);
+    pushviewport(ctx);
+    if (argc == 5) setpviewport(ctx, x0, y0, x1, y1);
     return TCL_OK;
   }
-  pushviewport();
+  pushviewport(ctx);
   return TCL_OK;
 }
 
 static int cgPopViewport(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   if (argc > 1) {
-    while (popviewport());
+    while (popviewport(ctx));
     return TCL_OK;
   }
-  if (popviewport()) return TCL_OK;
+  if (popviewport(ctx)) return TCL_OK;
   else {
     Tcl_AppendResult(interp, argv[0], ": popped empty stack", NULL);
     return TCL_ERROR;
@@ -369,6 +405,12 @@ static int cgPopViewport(ClientData clientData, Tcl_Interp *interp,
 static int cgSetViewport(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x1, y1, x2, y2;
 
   if (argc != 5) {
@@ -381,14 +423,19 @@ static int cgSetViewport(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[3], &x2) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[4], &y2) != TCL_OK) return TCL_ERROR;
   
-  setviewport(x1, y1, x2, y2);
+  setviewport(ctx, x1, y1, x2, y2);
   return TCL_OK;
 }
-
 
 static int cgGetViewport(ClientData clientData, Tcl_Interp *interp,
 		  int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   float x1, y1, x2, y2;
 
   if (argc != 1) {
@@ -396,7 +443,7 @@ static int cgGetViewport(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  getviewport(&x1, &y1, &x2, &y2);
+  getviewport(ctx, &x1, &y1, &x2, &y2);
 
   Tcl_Obj *listPtr = Tcl_NewListObj(0, NULL);
   Tcl_ListObjAppendElement(interp, listPtr, Tcl_NewDoubleObj(x1));
@@ -411,6 +458,12 @@ static int cgGetViewport(ClientData clientData, Tcl_Interp *interp,
 static int cgGetFViewport(ClientData clientData, Tcl_Interp *interp,
 		  int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   float x1, y1, x2, y2;
   float w, h;
 
@@ -419,8 +472,8 @@ static int cgGetFViewport(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  getviewport(&x1, &y1, &x2, &y2);
-  getresol(&w, &h);
+  getviewport(ctx, &x1, &y1, &x2, &y2);
+  getresol(ctx, &w, &h);
 
   Tcl_Obj *listPtr = Tcl_NewListObj(0, NULL);
   Tcl_ListObjAppendElement(interp, listPtr, Tcl_NewDoubleObj(x1/w));
@@ -432,10 +485,15 @@ static int cgGetFViewport(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;  
 }
 
-
 static int cgGetWindow(ClientData clientData, Tcl_Interp *interp,
 		  int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   float x1, y1, x2, y2;
 
   if (argc != 1) {
@@ -443,7 +501,7 @@ static int cgGetWindow(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  getwindow(&x1, &y1, &x2, &y2);
+  getwindow(ctx, &x1, &y1, &x2, &y2);
 
   Tcl_Obj *listPtr = Tcl_NewListObj(0, NULL);
   Tcl_ListObjAppendElement(interp, listPtr, Tcl_NewDoubleObj(x1));
@@ -458,6 +516,12 @@ static int cgGetWindow(ClientData clientData, Tcl_Interp *interp,
 static int cgGetAspect(ClientData clientData, Tcl_Interp *interp,
 		  int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   float x1, y1, x2, y2;
 
   if (argc != 1) {
@@ -465,7 +529,7 @@ static int cgGetAspect(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  getviewport(&x1, &y1, &x2, &y2);
+  getviewport(ctx, &x1, &y1, &x2, &y2);
   Tcl_SetObjResult(interp, Tcl_NewDoubleObj((x2-x1)/(y2-y1)));
   return TCL_OK;
 }
@@ -473,14 +537,25 @@ static int cgGetAspect(ClientData clientData, Tcl_Interp *interp,
 static int cgGetUAspect(ClientData clientData, Tcl_Interp *interp,
 			int argc, char *argv[])
 {
-  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(getuaspect()));
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(getuaspect(ctx)));
   return TCL_OK;
 }
-
 
 static int cgSetFViewport(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x1, y1, x2, y2;
 
   if (argc != 5) {
@@ -493,13 +568,19 @@ static int cgSetFViewport(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[3], &x2) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[4], &y2) != TCL_OK) return TCL_ERROR;
   
-  setfviewport(x1, y1, x2, y2);
+  setfviewport(ctx, x1, y1, x2, y2);
   return TCL_OK;
 }
 
 static int cgSetPViewport(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x1, y1, x2, y2;
 
   if (argc != 5) {
@@ -512,14 +593,19 @@ static int cgSetPViewport(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[3], &x2) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[4], &y2) != TCL_OK) return TCL_ERROR;
   
-  setpviewport(x1, y1, x2, y2);
+  setpviewport(ctx, x1, y1, x2, y2);
   return TCL_OK;
 }
-
 
 static int cgSetWindow(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x1, y1, x2, y2;
 
   if (argc != 5) {
@@ -533,13 +619,19 @@ static int cgSetWindow(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[3], &x2) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[4], &y2) != TCL_OK) return TCL_ERROR;
   
-  setwindow(x1, y1, x2, y2);
+  setwindow(ctx, x1, y1, x2, y2);
   return TCL_OK;
 }
 
 static int cgSetResol(ClientData clientData, Tcl_Interp *interp,
 		      int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double w, h;
 
   if (argc != 3) {
@@ -551,13 +643,19 @@ static int cgSetResol(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[1], &w) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[2], &h) != TCL_OK) return TCL_ERROR;
   
-  setresol(w, h);
+  setresol(ctx, w, h);
   return TCL_OK;
 }
 
 static int cgSetPSPageOri(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   static char *usage_message = "usage: setpageori {landscape|portrait}";
 
   if (argc != 2) {
@@ -565,9 +663,9 @@ static int cgSetPSPageOri(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
   }
   if (!strcmp(argv[1],"landscape") || !strcmp(argv[1],"LANDSCAPE"))
-    gbSetPageOrientation(PS_LANDSCAPE);
+    gbSetPageOrientation(ctx, PS_LANDSCAPE);
   else if (!strcmp(argv[1],"portrait") || !strcmp(argv[1],"PORTRAIT"))
-    gbSetPageOrientation(PS_PORTRAIT);
+    gbSetPageOrientation(ctx, PS_PORTRAIT);
   else {
     Tcl_SetResult(interp, usage_message, TCL_STATIC);
     return TCL_ERROR;
@@ -578,6 +676,12 @@ static int cgSetPSPageOri(ClientData clientData, Tcl_Interp *interp,
 static int cgSetPSPageFill(ClientData clientData, Tcl_Interp *interp,
 			   int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   static char *usage_message = "usage: setpagefill {0|1}";
   int status = 0;
 
@@ -587,7 +691,7 @@ static int cgSetPSPageFill(ClientData clientData, Tcl_Interp *interp,
   }
   
   if (Tcl_GetInt(interp, argv[1], &status) != TCL_OK) return TCL_ERROR;
-  gbSetPageFill(status);
+  gbSetPageFill(ctx, status);
 
   return TCL_OK;
 }
@@ -595,14 +699,26 @@ static int cgSetPSPageFill(ClientData clientData, Tcl_Interp *interp,
 static int cgGsave(ClientData clientData, Tcl_Interp *interp,
 		   int argc, char *argv[])
 {
-  gsave();
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  gsave(ctx);
   return TCL_OK;
 }
 
 static int cgGrestore(ClientData clientData, Tcl_Interp *interp,
 		   int argc, char *argv[])
 {
-  if (grestore()) return TCL_OK;
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  if (grestore(ctx)) return TCL_OK;
   else {
     Tcl_SetResult(interp, "grestore: popped empty stack", TCL_STATIC);
     return TCL_ERROR;
@@ -612,27 +728,51 @@ static int cgGrestore(ClientData clientData, Tcl_Interp *interp,
 static int cgGroup(ClientData clientData, Tcl_Interp *interp,
 		   int argc, char *argv[])
 {
-  group();
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  group(ctx);
   return TCL_OK;
 }
 
 static int cgUngroup(ClientData clientData, Tcl_Interp *interp,
 		   int argc, char *argv[])
 {
-  ungroup();
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  ungroup(ctx);
   return TCL_OK;
 }
 
 static int cgFrame(ClientData clientData, Tcl_Interp *interp,
 	    int argc, char *argv[])
 {
-  frame();
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  frame(ctx);
   return TCL_OK;
 }
 
 static int cgMoveto(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x, y;
 
   if (argc != 3) {
@@ -643,13 +783,19 @@ static int cgMoveto(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[1], &x) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[2], &y) != TCL_OK) return TCL_ERROR;
   
-  moveto(x, y);
+  moveto(ctx, x, y);
   return TCL_OK;
 }
 
 static int cgLineto(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x, y;
 
   if (argc != 3) {
@@ -660,13 +806,19 @@ static int cgLineto(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[1], &x) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[2], &y) != TCL_OK) return TCL_ERROR;
   
-  lineto(x, y);
+  lineto(ctx, x, y);
   return TCL_OK;
 }
 
 static int cgDotAt(ClientData clientData, Tcl_Interp *interp,
 	     int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x, y;
 
   if (argc < 3) {
@@ -677,14 +829,19 @@ static int cgDotAt(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[1], &x) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[2], &y) != TCL_OK) return TCL_ERROR;
   
-  dotat(x, y);
+  dotat(ctx, x, y);
   return TCL_OK;
 }
-
 
 static int cgSquare(ClientData clientData, Tcl_Interp *interp,
 	     int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x, y, scale = 3.0;
 
   if (argc < 3) {
@@ -699,14 +856,19 @@ static int cgSquare(ClientData clientData, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[3], &scale) != TCL_OK) return TCL_ERROR;
   }
 
-  square(x, y, scale);
+  square(ctx, x, y, scale);
   return TCL_OK;
 }
-
 
 static int cgFsquare(ClientData clientData, Tcl_Interp *interp,
 	     int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x, y, scale = 3.0;
 
   if (argc < 3) {
@@ -721,13 +883,19 @@ static int cgFsquare(ClientData clientData, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[3], &scale) != TCL_OK) return TCL_ERROR;
   }
 
-  fsquare(x, y, scale);
+  fsquare(ctx, x, y, scale);
   return TCL_OK;
 }
 
 static int cgPoly(ClientData clientData, Tcl_Interp *interp,
 	    int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int i, n = argc-1;
   float *verts;
   double vert;
@@ -745,7 +913,7 @@ static int cgPoly(ClientData clientData, Tcl_Interp *interp,
     verts[i] = vert;
   }
   
-  polyline(n/2, verts);
+  polyline(ctx, n/2, verts);
   
   free(verts);
   return TCL_OK;
@@ -754,6 +922,12 @@ static int cgPoly(ClientData clientData, Tcl_Interp *interp,
 static int cgFpoly(ClientData clientData, Tcl_Interp *interp,
 	    int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int i, n = argc-1;
   float *verts;
   double vert;
@@ -771,16 +945,21 @@ static int cgFpoly(ClientData clientData, Tcl_Interp *interp,
     verts[i] = vert;
   }
   
-  filledpoly(n/2, verts);
+  filledpoly(ctx, n/2, verts);
   
   free(verts);
   return TCL_OK;
 }
 
-
 static int cgCircle(ClientData clientData, Tcl_Interp *interp,
 	     int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x, y, scale = 3.0;
 
   if (argc < 3) {
@@ -795,14 +974,19 @@ static int cgCircle(ClientData clientData, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[3], &scale) != TCL_OK) return TCL_ERROR;
   }
   
-  circle(x, y, scale);
+  circle(ctx, x, y, scale);
   return TCL_OK;
 }
-
 
 static int cgFcircle(ClientData clientData, Tcl_Interp *interp,
 	      int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x, y, scale = 3.0;
   
   if (argc < 3) {
@@ -817,14 +1001,19 @@ static int cgFcircle(ClientData clientData, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[3], &scale) != TCL_OK) return TCL_ERROR;
   }
 
-  fcircle(x, y, scale);
+  fcircle(ctx, x, y, scale);
   return TCL_OK;
 }
-
 
 static int cgFilledRect(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x1, y1, x2, y2;
 
   if (argc != 5) {
@@ -837,13 +1026,19 @@ static int cgFilledRect(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[3], &x2) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[4], &y2) != TCL_OK) return TCL_ERROR;
   
-  filledrect(x1, y1, x2, y2);
+  filledrect(ctx, x1, y1, x2, y2);
   return TCL_OK;
 }
 
 static int cgRect(ClientData clientData, Tcl_Interp *interp,
 		  int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x1, y1, x2, y2;
 
   if (argc != 5) {
@@ -856,20 +1051,26 @@ static int cgRect(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[3], &x2) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[4], &y2) != TCL_OK) return TCL_ERROR;
   
-  rect(x1, y1, x2, y2);
+  rect(ctx, x1, y1, x2, y2);
   return TCL_OK;
 }
 
 static int cgSetorientation(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int orient, oldori;
   if (argc != 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " {0|1}", NULL); 
     return TCL_ERROR;
   }
   if (Tcl_GetInt(interp, argv[1], &orient) != TCL_OK) return TCL_ERROR;
-  oldori = setorientation(orient);
+  oldori = setorientation(ctx, orient);
   Tcl_SetObjResult(interp, Tcl_NewIntObj(oldori));
   return TCL_OK;
 }
@@ -877,13 +1078,19 @@ static int cgSetorientation(ClientData clientData, Tcl_Interp *interp,
 static int cgSetjust(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int just, oldjust;
   if (argc != 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " {-1|0|1}", NULL); 
     return TCL_ERROR;
   }
   if (Tcl_GetInt(interp, argv[1], &just) != TCL_OK) return TCL_ERROR;
-  oldjust = setjust(just);
+  oldjust = setjust(ctx, just);
   Tcl_SetObjResult(interp, Tcl_NewIntObj(oldjust));
   return TCL_OK;
 }
@@ -891,27 +1098,39 @@ static int cgSetjust(ClientData clientData, Tcl_Interp *interp,
 static int cgSetlstyle(ClientData clientData, Tcl_Interp *interp,
 		 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int lstyle, oldlstyle;
   if (argc != 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " {0-8}", NULL); 
     return TCL_ERROR;
   }
   if (Tcl_GetInt(interp, argv[1], &lstyle) != TCL_OK) return TCL_ERROR;
-  oldlstyle = setlstyle(lstyle);
-  Tcl_SetObjResult(interp, Tcl_NewIntObj(lstyle));
+  oldlstyle = setlstyle(ctx, lstyle);
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(oldlstyle));
   return TCL_OK;
 }
 
 static int cgSetlwidth(ClientData clientData, Tcl_Interp *interp,
 	    int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int lwidth, oldlwidth;
   if (argc != 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " points*100", NULL); 
     return TCL_ERROR;
   }
   if (Tcl_GetInt(interp, argv[1], &lwidth) != TCL_OK) return TCL_ERROR;
-  oldlwidth = setlwidth(lwidth);
+  oldlwidth = setlwidth(ctx, lwidth);
   Tcl_SetObjResult(interp, Tcl_NewIntObj(oldlwidth));
   return TCL_OK;
 }
@@ -945,7 +1164,13 @@ static int cgRGBcolor(ClientData clientData, Tcl_Interp *interp,
 static int cgGetcolor(ClientData clientData, Tcl_Interp *interp,
 		      int argc, char *argv[])
 {
-  int oldcolor = getcolor();
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  int oldcolor = getcolor(ctx);
   Tcl_SetObjResult(interp, Tcl_NewIntObj(oldcolor));
   return TCL_OK;
 }
@@ -953,13 +1178,19 @@ static int cgGetcolor(ClientData clientData, Tcl_Interp *interp,
 static int cgSetcolor(ClientData clientData, Tcl_Interp *interp,
 		      int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int color, oldcolor;
   if (argc != 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " color", NULL);
     return TCL_ERROR;
   }
   if (Tcl_GetInt(interp, argv[1], &color) != TCL_OK) return TCL_ERROR;
-  oldcolor = setcolor(color);
+  oldcolor = setcolor(ctx, color);
   Tcl_SetObjResult(interp, Tcl_NewIntObj(oldcolor));
   return TCL_OK;
 }
@@ -967,13 +1198,19 @@ static int cgSetcolor(ClientData clientData, Tcl_Interp *interp,
 static int cgSetBackgroundColor(ClientData clientData, Tcl_Interp *interp,
                                 int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int color, oldcolor;
   if (argc != 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " color", NULL);
     return TCL_ERROR;
   }
   if (Tcl_GetInt(interp, argv[1], &color) != TCL_OK) return TCL_ERROR;
-  oldcolor = setbackgroundcolor(color);
+  oldcolor = setbackgroundcolor(ctx, color);
   Tcl_SetObjResult(interp, Tcl_NewIntObj(oldcolor));
   return TCL_OK;
 }
@@ -981,6 +1218,12 @@ static int cgSetBackgroundColor(ClientData clientData, Tcl_Interp *interp,
 static int cgSetfont(ClientData clientData, Tcl_Interp *interp,
 		     int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double size;
   if (argc != 3) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " fontname pointsize", NULL);
@@ -988,13 +1231,19 @@ static int cgSetfont(ClientData clientData, Tcl_Interp *interp,
   }
 
   if (Tcl_GetDouble(interp, argv[2], &size) != TCL_OK) return TCL_ERROR;
-  setfont(argv[1], size);
+  setfont(ctx, argv[1], size);
   return TCL_OK;
 }
 
 static int cgSetsfont(ClientData clientData, Tcl_Interp *interp,
 		      int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double size, newsize;
   if (argc != 3) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " fontname pointsize", NULL);
@@ -1003,7 +1252,7 @@ static int cgSetsfont(ClientData clientData, Tcl_Interp *interp,
   
   if (Tcl_GetDouble(interp, argv[2], &size) != TCL_OK) return TCL_ERROR;
     
-  newsize = setsfont(argv[1], size);
+  newsize = setsfont(ctx, argv[1], size);
   Tcl_SetObjResult(interp, Tcl_NewDoubleObj(newsize));
   return TCL_OK;
 }
@@ -1011,6 +1260,12 @@ static int cgSetsfont(ClientData clientData, Tcl_Interp *interp,
 static int cgPostscript(ClientData clientData, Tcl_Interp *interp,
 			int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x, y;
   if (argc != 4) {
     Tcl_AppendResult(interp, "usage: ", argv[0],
@@ -1019,53 +1274,75 @@ static int cgPostscript(ClientData clientData, Tcl_Interp *interp,
   }
   if (Tcl_GetDouble(interp, argv[2], &x) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[3], &y) != TCL_OK) return TCL_ERROR;
-  postscript(argv[1], x, y);
+  postscript(ctx, argv[1], x, y);
   return TCL_OK;
 }
-
 
 static int cgSetImagePreview(ClientData clientData, Tcl_Interp *interp,
 			     int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int val;
   if (argc != 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " 0|1", NULL);
     return TCL_ERROR;
   }
   if (Tcl_GetInt(interp, argv[1], &val) != TCL_OK) return TCL_ERROR;
-  Tcl_SetObjResult(interp, Tcl_NewIntObj(val));
+  int old_val = setimgpreview(ctx, val);
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(old_val));
   return TCL_OK;
 }
-
 
 static int cgDrawtext(ClientData clientData, Tcl_Interp *interp,
 		      int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   if (argc != 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " text", NULL);
     return TCL_ERROR;
   }
 
-  drawtext(argv[1]);
+  drawtext(ctx, argv[1]);
   return TCL_OK;
 }
 
 static int cgSetclip(ClientData clientData, Tcl_Interp *interp,
 		     int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   int clip;
   if (argc > 1) {
     if (Tcl_GetInt(interp, argv[1], &clip) != TCL_OK) return TCL_ERROR;
-    setclip(clip);
+    setclip(ctx, clip);
   }
-  Tcl_SetObjResult(interp, Tcl_NewIntObj(getclip()));
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(getclip(ctx)));
   return TCL_OK;
 }
-
 
 static int cgSetClipRegion(ClientData clientData, Tcl_Interp *interp,
 			   int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double x1, y1, x2, y2;
 
   if (argc != 5) {
@@ -1079,14 +1356,19 @@ static int cgSetClipRegion(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[3], &x2) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[4], &y2) != TCL_OK) return TCL_ERROR;
   
-  setclipregion(x1, y1, x2, y2);
+  setclipregion(ctx, x1, y1, x2, y2);
   return TCL_OK;
 }
-
 
 static int cgLYaxis(ClientData clientData, Tcl_Interp *interp,
 		    int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double pos, tic;
   int interval;
   char *title = NULL;
@@ -1107,26 +1389,32 @@ static int cgLYaxis(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
   }
   
-  if (Tcl_GetInt(interp, argv[3], &interval)) {
+  if (Tcl_GetInt(interp, argv[3], &interval) != TCL_OK) {
     Tcl_AppendResult(interp, argv[0], ": bad label interval specified", NULL);
     return TCL_ERROR;
   }
   
   if (argc > 4) title = argv[4];
-  lyaxis(pos, tic, interval, title);
+  lyaxis(ctx, pos, tic, interval, title);
   return TCL_OK;
 }
 
 static int cgLXaxis(ClientData clientData, Tcl_Interp *interp,
 		    int argc, char *argv[])
 {
+  CgraphContext *ctx = (CgraphContext *) clientData;
+  if (!ctx) {
+    Tcl_SetResult(interp, "Failed to get graphics context", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
   double pos, tic;
   int interval;
   char *title = NULL;
   
   if (argc < 4) {
     Tcl_AppendResult(interp, "usage: ", argv[0],
-		     "xpos tick_interval label_interval [title]", NULL);
+		     "ypos tick_interval label_interval [title]", NULL);
     return TCL_ERROR;
   }
   
@@ -1146,278 +1434,97 @@ static int cgLXaxis(ClientData clientData, Tcl_Interp *interp,
   }
   
   if (argc > 4) title = argv[4];
-  lxaxis(pos, tic, interval, title);
+  lxaxis(ctx, pos, tic, interval, title);
   return TCL_OK;
 }
 
-CG_CMD_WRAPPER_IMPL(cgClearWindow)
-CG_CMD_WRAPPER_IMPL(cgDumpWindow)
-CG_CMD_WRAPPER_IMPL(cgPlayback)
-CG_CMD_WRAPPER_IMPL(gbSizeCmd)
-CG_CMD_WRAPPER_IMPL(gbIsEmptyCmd)
-CG_CMD_WRAPPER_IMPL(cgGetResol)
-CG_CMD_WRAPPER_IMPL(cgGetFrame)
-CG_CMD_WRAPPER_IMPL(cgGetXScale)
-CG_CMD_WRAPPER_IMPL(cgGetYScale)
-CG_CMD_WRAPPER_IMPL(cgWindowToScreen)
-CG_CMD_WRAPPER_IMPL(cgScreenToWindow)
-CG_CMD_WRAPPER_IMPL(cgPushViewport)
-CG_CMD_WRAPPER_IMPL(cgPopViewport)
-CG_CMD_WRAPPER_IMPL(cgSetViewport)
-CG_CMD_WRAPPER_IMPL(cgGetViewport)
-CG_CMD_WRAPPER_IMPL(cgGetFViewport)
-CG_CMD_WRAPPER_IMPL(cgGetWindow)
-CG_CMD_WRAPPER_IMPL(cgGetAspect)
-CG_CMD_WRAPPER_IMPL(cgGetUAspect)
-CG_CMD_WRAPPER_IMPL(cgSetFViewport)
-CG_CMD_WRAPPER_IMPL(cgSetPViewport)
-CG_CMD_WRAPPER_IMPL(cgSetWindow)
-CG_CMD_WRAPPER_IMPL(cgSetResol)
-CG_CMD_WRAPPER_IMPL(cgSetPSPageOri)
-CG_CMD_WRAPPER_IMPL(cgSetPSPageFill)
-CG_CMD_WRAPPER_IMPL(cgGsave)
-CG_CMD_WRAPPER_IMPL(cgGrestore)
-CG_CMD_WRAPPER_IMPL(cgGroup)
-CG_CMD_WRAPPER_IMPL(cgUngroup)
-CG_CMD_WRAPPER_IMPL(cgFrame)
-CG_CMD_WRAPPER_IMPL(cgMoveto)
-CG_CMD_WRAPPER_IMPL(cgLineto)
-CG_CMD_WRAPPER_IMPL(cgDotAt)
-CG_CMD_WRAPPER_IMPL(cgSquare)
-CG_CMD_WRAPPER_IMPL(cgFsquare)
-CG_CMD_WRAPPER_IMPL(cgPoly)
-CG_CMD_WRAPPER_IMPL(cgFpoly)
-CG_CMD_WRAPPER_IMPL(cgCircle)
-CG_CMD_WRAPPER_IMPL(cgFcircle)
-CG_CMD_WRAPPER_IMPL(cgFilledRect)
-CG_CMD_WRAPPER_IMPL(cgRect)
-CG_CMD_WRAPPER_IMPL(cgSetorientation)
-CG_CMD_WRAPPER_IMPL(cgSetjust)
-CG_CMD_WRAPPER_IMPL(cgSetlstyle)
-CG_CMD_WRAPPER_IMPL(cgSetlwidth)
-CG_CMD_WRAPPER_IMPL(cgRGBcolor)
-CG_CMD_WRAPPER_IMPL(cgGetcolor)
-CG_CMD_WRAPPER_IMPL(cgSetcolor)
-CG_CMD_WRAPPER_IMPL(cgSetBackgroundColor)
-CG_CMD_WRAPPER_IMPL(cgSetfont)
-CG_CMD_WRAPPER_IMPL(cgSetsfont)
-CG_CMD_WRAPPER_IMPL(cgPostscript)
-CG_CMD_WRAPPER_IMPL(cgSetImagePreview)
-CG_CMD_WRAPPER_IMPL(cgDrawtext)
-CG_CMD_WRAPPER_IMPL(cgSetclip)
-CG_CMD_WRAPPER_IMPL(cgSetClipRegion)
-CG_CMD_WRAPPER_IMPL(cgLYaxis)
-CG_CMD_WRAPPER_IMPL(cgLXaxis)
+/* Clean initialization in cg_base.c */
 
 int Cgbase_Init(Tcl_Interp *interp)
 {
-  if (
+    if (
 #ifdef USE_TCL_STUBS
-      Tcl_InitStubs(interp, "8.6-", 0)
+        Tcl_InitStubs(interp, "8.6-", 0)
 #else
-      Tcl_PkgRequire(interp, "Tcl", "8.6-", 0)
+        Tcl_PkgRequire(interp, "Tcl", "8.6-", 0)
 #endif
-      == NULL) {
-    return TCL_ERROR;
-  }
-  
-    /* Initialize the interpreter context for cgraph */
-  Cgraph_InitInterp(interp);
-
-  Tcl_CreateCommand(interp, "clearwin", (Tcl_CmdProc *) cgClearWindow,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getresol", (Tcl_CmdProc *) cgGetResol,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getxscale", (Tcl_CmdProc *) cgGetXScale,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getyscale", (Tcl_CmdProc *) cgGetYScale,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-
-  Tcl_CreateCommand(interp, "getframe", (Tcl_CmdProc *) cgGetFrame,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-
-  Tcl_CreateCommand(interp, "wintoscreen", (Tcl_CmdProc *) cgWindowToScreen,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "screentowin", (Tcl_CmdProc *) cgScreenToWindow,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-
-  Tcl_CreateCommand(interp, "dumpwin", (Tcl_CmdProc *) cgDumpWindow,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "gbufplay", (Tcl_CmdProc *) cgPlayback,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "pushviewport", (Tcl_CmdProc *) cgPushViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "pushpviewport", (Tcl_CmdProc *) cgPushViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "popviewport", (Tcl_CmdProc *) cgPopViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "poppviewport", (Tcl_CmdProc *) cgPopViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setviewport", (Tcl_CmdProc *) cgSetViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getviewport", (Tcl_CmdProc *) cgGetViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getwindow", (Tcl_CmdProc *) cgGetWindow,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getfviewport", (Tcl_CmdProc *) cgGetFViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getaspect", (Tcl_CmdProc *) cgGetAspect,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getuaspect", (Tcl_CmdProc *) cgGetUAspect,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setfviewport", (Tcl_CmdProc *) cgSetFViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setpviewport", (Tcl_CmdProc *) cgSetPViewport,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setresol", (Tcl_CmdProc *) cgSetResol,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setwindow", (Tcl_CmdProc *) cgSetWindow,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setpageori", (Tcl_CmdProc *) cgSetPSPageOri,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setpagefill", (Tcl_CmdProc *) cgSetPSPageFill,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "postscript", (Tcl_CmdProc *)  cgPostscript,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setimgpreview", (Tcl_CmdProc *)  cgSetImagePreview,
-		    
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "group", (Tcl_CmdProc *)  cgGroup,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "ungroup", (Tcl_CmdProc *) cgUngroup,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "gsave", (Tcl_CmdProc *)  cgGsave,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "grestore", (Tcl_CmdProc *) cgGrestore,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "cgframe", (Tcl_CmdProc *) cgFrame,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "moveto", (Tcl_CmdProc *) cgMoveto,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "lineto", (Tcl_CmdProc *) cgLineto,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "poly", (Tcl_CmdProc *) cgPoly,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "fpoly", (Tcl_CmdProc *) cgFpoly,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "fsquare", (Tcl_CmdProc *) cgFsquare,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "square", (Tcl_CmdProc *) cgSquare,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "fcircle", (Tcl_CmdProc *) cgFcircle,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "circle", (Tcl_CmdProc *) cgCircle,
-		    (ClientData) NULL,
- 		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "point", (Tcl_CmdProc *) cgDotAt,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "rect", (Tcl_CmdProc *) cgRect,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "filledrect", (Tcl_CmdProc *) cgFilledRect,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setfont", (Tcl_CmdProc *) cgSetfont,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setsfont", (Tcl_CmdProc *) cgSetsfont,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "drawtext", (Tcl_CmdProc *) cgDrawtext,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setjust", (Tcl_CmdProc *) cgSetjust,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setclip", (Tcl_CmdProc *) cgSetclip,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setclipregion", (Tcl_CmdProc *) cgSetClipRegion,
-		    
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setorientation", (Tcl_CmdProc *) cgSetorientation,
-		    
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setlstyle", (Tcl_CmdProc *) cgSetlstyle,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setlwidth", (Tcl_CmdProc *) cgSetlwidth,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setcolor", (Tcl_CmdProc *) cgSetcolor,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "setbackground", (Tcl_CmdProc *) cgSetBackgroundColor,
-            (ClientData) NULL, 
-            (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "getcolor", (Tcl_CmdProc *) cgGetcolor,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "rgbcolor", (Tcl_CmdProc *) cgRGBcolor,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "lxaxis", (Tcl_CmdProc *) cgLXaxis,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "lyaxis", (Tcl_CmdProc *) cgLYaxis,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-
-  Tcl_CreateCommand(interp, "gbufsize", (Tcl_CmdProc *) gbSizeCmd,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "gbufclean", (Tcl_CmdProc *) gbCleanCmd,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "gbufisempty", (Tcl_CmdProc *) gbIsEmptyCmd,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "gbufreset", (Tcl_CmdProc *) gbResetCmd,
-		    (ClientData) NULL,
-		    (Tcl_CmdDeleteProc *) NULL);
-		    
-  
-
-
-  return TCL_OK;
+        == NULL) {
+        return TCL_ERROR;
+    }
+    
+    /* Create and initialize the graphics context for this interpreter */
+    CgraphContext *ctx = CgraphCreateContext(interp);
+    if (!ctx) {
+        Tcl_SetResult(interp, "Failed to create graphics context", TCL_STATIC);
+        return TCL_ERROR;
+    }
+    
+    /* Register all Tcl commands with the context as ClientData */
+    Tcl_CreateCommand(interp, "clearwin", (Tcl_CmdProc *) cgClearWindow, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getresol", (Tcl_CmdProc *) cgGetResol, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getxscale", (Tcl_CmdProc *) cgGetXScale, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getyscale", (Tcl_CmdProc *) cgGetYScale, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getframe", (Tcl_CmdProc *) cgGetFrame, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "wintoscreen", (Tcl_CmdProc *) cgWindowToScreen, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "screentowin", (Tcl_CmdProc *) cgScreenToWindow, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "dumpwin", (Tcl_CmdProc *) cgDumpWindow, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "gbufplay", (Tcl_CmdProc *) cgPlayback, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "pushviewport", (Tcl_CmdProc *) cgPushViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "pushpviewport", (Tcl_CmdProc *) cgPushViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "popviewport", (Tcl_CmdProc *) cgPopViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "poppviewport", (Tcl_CmdProc *) cgPopViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setviewport", (Tcl_CmdProc *) cgSetViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getviewport", (Tcl_CmdProc *) cgGetViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getwindow", (Tcl_CmdProc *) cgGetWindow, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getfviewport", (Tcl_CmdProc *) cgGetFViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getaspect", (Tcl_CmdProc *) cgGetAspect, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getuaspect", (Tcl_CmdProc *) cgGetUAspect, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setfviewport", (Tcl_CmdProc *) cgSetFViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setpviewport", (Tcl_CmdProc *) cgSetPViewport, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setresol", (Tcl_CmdProc *) cgSetResol, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setwindow", (Tcl_CmdProc *) cgSetWindow, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setpageori", (Tcl_CmdProc *) cgSetPSPageOri, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setpagefill", (Tcl_CmdProc *) cgSetPSPageFill, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "postscript", (Tcl_CmdProc *) cgPostscript, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setimgpreview", (Tcl_CmdProc *) cgSetImagePreview, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "group", (Tcl_CmdProc *) cgGroup, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "ungroup", (Tcl_CmdProc *) cgUngroup, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "gsave", (Tcl_CmdProc *) cgGsave, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "grestore", (Tcl_CmdProc *) cgGrestore, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "cgframe", (Tcl_CmdProc *) cgFrame, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "moveto", (Tcl_CmdProc *) cgMoveto, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "lineto", (Tcl_CmdProc *) cgLineto, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "poly", (Tcl_CmdProc *) cgPoly, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "fpoly", (Tcl_CmdProc *) cgFpoly, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "fsquare", (Tcl_CmdProc *) cgFsquare, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "square", (Tcl_CmdProc *) cgSquare, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "fcircle", (Tcl_CmdProc *) cgFcircle, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "circle", (Tcl_CmdProc *) cgCircle, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "point", (Tcl_CmdProc *) cgDotAt, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "rect", (Tcl_CmdProc *) cgRect, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "filledrect", (Tcl_CmdProc *) cgFilledRect, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setfont", (Tcl_CmdProc *) cgSetfont, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setsfont", (Tcl_CmdProc *) cgSetsfont, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "drawtext", (Tcl_CmdProc *) cgDrawtext, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setjust", (Tcl_CmdProc *) cgSetjust, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setclip", (Tcl_CmdProc *) cgSetclip, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setclipregion",
+		      (Tcl_CmdProc *) cgSetClipRegion, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setorientation",
+		      (Tcl_CmdProc *) cgSetorientation, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setlstyle", (Tcl_CmdProc *) cgSetlstyle, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setlwidth", (Tcl_CmdProc *) cgSetlwidth, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setcolor", (Tcl_CmdProc *) cgSetcolor, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "setbackground", (Tcl_CmdProc *) cgSetBackgroundColor,
+		      (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "getcolor", (Tcl_CmdProc *) cgGetcolor, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "rgbcolor", (Tcl_CmdProc *) cgRGBcolor, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "lxaxis", (Tcl_CmdProc *) cgLXaxis, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "lyaxis", (Tcl_CmdProc *) cgLYaxis, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "gbufsize", (Tcl_CmdProc *) gbSizeCmd, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "gbufclean", (Tcl_CmdProc *) gbCleanCmd, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "gbufisempty", (Tcl_CmdProc *) gbIsEmptyCmd, (ClientData)ctx, NULL);
+    Tcl_CreateCommand(interp, "gbufreset", (Tcl_CmdProc *) gbResetCmd, (ClientData)ctx, NULL);
+    
+    return TCL_OK;
 }

@@ -2,6 +2,7 @@
       axes.c - axis drawing utilities                                        
       Nikos K. Logothetis
       Modified David A. Leopold 14-APR-94
+      Refactored for thread-safety with explicit context passing
       NOTE: lxaxis() and lyaxis() are now changed in that they no longer
             include their fifth argument, the justification. Instead, to
             make things more compatible with the postscript drawing, the
@@ -9,84 +10,92 @@
             centering work is done by setting a justification flag.
 *************************************************************************/
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <cgraph.h>
 #include <lablib.h>
 
-extern FRAME *contexp;
+void x_tic_label(CgraphContext *ctx, FRAME *, float, float, float, int);
+void drawxtic(CgraphContext *ctx, FRAME *, float , float , float);
+void y_tic_label(CgraphContext *ctx, FRAME *, float, float, float, int);
+void drawytic(CgraphContext *ctx, FRAME *, float , float , float);
 
-void x_tic_label(FRAME *, float, float, float, int);
-void drawxtic(FRAME *, float , float , float);
-void y_tic_label(FRAME *, float, float, float, int);
-void drawytic(FRAME *, float , float , float);
-
-void axes (char *xlabel, char *ylabel)
+void axes(CgraphContext *ctx, char *xlabel, char *ylabel)
 {
-   xaxis (xlabel);
-   yaxis (ylabel);
+   xaxis(ctx, xlabel);
+   yaxis(ctx, ylabel);
 }
 
-void uboxaxes (void)
+void uboxaxes(CgraphContext *ctx)
 {
+   if (!ctx) return;
+   FRAME *f = ctx->current_frame;
    float tic;
 
-   tic = contexp->xus / 10.0;
-   lxaxis (contexp->yub, -tic, 0, NULL);
-   tic = contexp->yus / 10.0;
-   lyaxis (contexp->xul, -tic, 0, NULL);
-   up_xaxis (NULL);
-   right_yaxis (NULL);
+   tic = f->xus / 10.0;
+   lxaxis(ctx, f->yub, -tic, 0, NULL);
+   tic = f->yus / 10.0;
+   lyaxis(ctx, f->xul, -tic, 0, NULL);
+   up_xaxis(ctx, NULL);
+   right_yaxis(ctx, NULL);
 }
 
-void boxaxes (char *xlabel, char *ylabel)
+void boxaxes(CgraphContext *ctx, char *xlabel, char *ylabel)
 {
-   xaxis (xlabel);
-   yaxis (ylabel);
-   up_xaxis (NULL);
-   right_yaxis (NULL);
+   xaxis(ctx, xlabel);
+   yaxis(ctx, ylabel);
+   up_xaxis(ctx, NULL);
+   right_yaxis(ctx, NULL);
 }
 
-void xaxis (char *label)
+void xaxis(CgraphContext *ctx, char *label)
 {
-   float tic;
-   
-   tic = contexp->xus / 10.0;
-   lxaxis (contexp->yub, -tic, 2, label);
-}
-
-void yaxis (char *label)
-{
+   if (!ctx) return;
+   FRAME *f = ctx->current_frame;
    float tic;
    
-   tic = contexp->yus / 10.0;
-   lyaxis (contexp->xul, -tic, 2, label);
+   tic = f->xus / 10.0;
+   lxaxis(ctx, f->yub, -tic, 2, label);
 }
 
-void up_xaxis (char *label)
+void yaxis(CgraphContext *ctx, char *label)
 {
+   if (!ctx) return;
+   FRAME *f = ctx->current_frame;
    float tic;
    
-   tic = contexp->xus / 10.0;
-   lxaxis (contexp->yut, -tic, 0, label);
+   tic = f->yus / 10.0;
+   lyaxis(ctx, f->xul, -tic, 2, label);
 }
 
-void right_yaxis (char *label)
+void up_xaxis(CgraphContext *ctx, char *label)
 {
+   if (!ctx) return;
+   FRAME *f = ctx->current_frame;
+   float tic;
+   
+   tic = f->xus / 10.0;
+   lxaxis(ctx, f->yut, -tic, 0, label);
+}
+
+void right_yaxis(CgraphContext *ctx, char *label)
+{
+   if (!ctx) return;
+   FRAME *f = ctx->current_frame;
    float tic;
 
-   tic = contexp->yus / 10.0;
-   lyaxis (contexp->xur, -tic, 0, label);
+   tic = f->yus / 10.0;
+   lyaxis(ctx, f->xur, -tic, 0, label);
 }
 
-int lxaxis (float y, float tic, int ltic, char *label)
+int lxaxis(CgraphContext *ctx, float y, float tic, int ltic, char *label)
 {
+  if (!ctx) return 0;
+  
   static FRAME localf;              /* local frame */
   FRAME *fp = &localf;              /* local pointer */
   FRAME *oldframe;
-  extern FRAME *setstatus();
   float x, low, high;
   float yoffset;           /* to align text */
   float log_tic;
@@ -102,32 +111,33 @@ int lxaxis (float y, float tic, int ltic, char *label)
    */
   
   if (tic == 0.0) log_tic = 0.0;
-  log_tic = (float) log10((double) fabs(tic));
+  else log_tic = (float) log10((double) fabs(tic));
   if (log_tic > 1.0) dec_points = 0;
   else if (log_tic > 0.0) dec_points = 1;
   else dec_points = (int) fabs(log_tic) + 1;
   
-  copyframe(contexp, fp);
-  oldframe = setstatus(fp);
-  user();                           /* draw axis */
-  setclip(0);
-  moveto(fp->xul,y);
-  lineto(fp->xur,y);
+  copyframe(ctx->current_frame, fp);
+  oldframe = setstatus(ctx, fp);
+  user(ctx);                           /* draw axis */
+  setclip(ctx, 0);
+  moveto(ctx, fp->xul, y);
+  lineto(ctx, fp->xur, y);
 
   if (label) {                            /* label x axis */
-    oldj = setjust(CENTER_JUST);
-    moveto((fp->xul + fp->xur) / 2.0, y);
-    screen();
+    oldj = setjust(ctx, CENTER_JUST);
+    moveto(ctx, (fp->xul + fp->xur) / 2.0, y);
+    screen(ctx);
 
     yoffset = 2.0*fp->linsiz; 
-    moverel(0.0, -yoffset);
+    moverel(ctx, 0.0, -yoffset);
 
     if (ltic)
-      moverel(0.0, -4.0 * fp->linsiz / 2.0);
-    drawtext(label);
+      moverel(ctx, 0.0, -4.0 * fp->linsiz / 2.0);
+    drawtext(ctx, label);
+    setjust(ctx, oldj);
   }
   if (tic == 0.0) {
-    setstatus(oldframe);
+    setstatus(ctx, oldframe);
     return(1);
   }
   
@@ -135,45 +145,45 @@ int lxaxis (float y, float tic, int ltic, char *label)
   high = MAX(fp->xul,fp->xur);
 
   if((low <= 0.0) && (high >= 0.0)) {
-    for (x = 0.0; x >= low; x -= fabs(tic)) drawxtic(fp,x,y,tic);
-    for (x = 0.0; x <= high; x += fabs(tic)) drawxtic(fp,x,y,tic);
+    for (x = 0.0; x >= low; x -= fabs(tic)) drawxtic(ctx, fp, x, y, tic);
+    for (x = 0.0; x <= high; x += fabs(tic)) drawxtic(ctx, fp, x, y, tic);
   }
   else if (high < 0.0 || low > 0.0)  
-      for (x = low; x <= high; x += fabs(tic)) drawxtic(fp,x,y,tic);
-	
+      for (x = low; x <= high; x += fabs(tic)) drawxtic(ctx, fp, x, y, tic);
+    
   if (ltic) {  
     tic*=abs(ltic);
     if(low <= 0.0 && high >= 0.0) {
       if(low) {
-	for (x = 0; x >= low; x -= fabs(tic)) 
-	  x_tic_label(fp,x,y,tic,dec_points);
-	for (x = 0; x <= high; x += fabs(tic)) 
-	  x_tic_label(fp,x,y,tic,dec_points);
+        for (x = 0; x >= low; x -= fabs(tic)) 
+          x_tic_label(ctx, fp, x, y, tic, dec_points);
+        for (x = 0; x <= high; x += fabs(tic)) 
+          x_tic_label(ctx, fp, x, y, tic, dec_points);
       } else {
-	for (x = 0.0; x <= high; x += fabs(tic)) 
-	  x_tic_label(fp,x,y,tic,dec_points);
+        for (x = 0.0; x <= high; x += fabs(tic)) 
+          x_tic_label(ctx, fp, x, y, tic, dec_points);
       } 
     } else {
-	for (x = low; x <= high; x += fabs(tic)) 
-	  x_tic_label(fp,x,y,tic,dec_points);
+        for (x = low; x <= high; x += fabs(tic)) 
+          x_tic_label(ctx, fp, x, y, tic, dec_points);
     }
   }
-  setstatus(oldframe);
+  setstatus(ctx, oldframe);
   return(1);
 }
 
-
-int lyaxis (float x, float tic, int ltic, char *label)
+int lyaxis(CgraphContext *ctx, float x, float tic, int ltic, char *label)
 {
-  static FRAME localf;		/* local frame */
-  FRAME *fp = &localf;		/* local pointer */
+  if (!ctx) return 0;
+  
+  static FRAME localf;        /* local frame */
+  FRAME *fp = &localf;        /* local pointer */
   FRAME *oldframe;
-  extern FRAME *setstatus();
   float y, low, high;
   float xoffset;
   float log_tic;
   int dec_points;
-  int tic_label_chars;		/* Number of chars in tic label */
+  int tic_label_chars;        /* Number of chars in tic label */
   int oldj, oldo;
   
   /*
@@ -190,34 +200,34 @@ int lyaxis (float x, float tic, int ltic, char *label)
   else if (log_tic > 0.0) dec_points = 1;
   else dec_points = (int) fabs(log_tic) + 1;
   
-  copyframe(contexp, fp);
-  oldframe = setstatus(fp);
-  user();                           /* draw axis */
-  setclip(0);
-  moveto(x,fp->yub);
-  lineto(x,fp->yut);
+  copyframe(ctx->current_frame, fp);
+  oldframe = setstatus(ctx, fp);
+  user(ctx);                           /* draw axis */
+  setclip(ctx, 0);
+  moveto(ctx, x, fp->yub);
+  lineto(ctx, x, fp->yut);
 
   /* figure out the MAX # of chars used for tic labels */
   if (fp->yus < 10.0) tic_label_chars = 2+dec_points;
   else tic_label_chars = (int) log10(fabs(fp->yus)) + (1+dec_points);
   
   if (label) {                            /* label y axis */
-    moveto(x, (fp->yut + fp->yub) / 2.0);
-    screen();
+    moveto(ctx, x, (fp->yut + fp->yub) / 2.0);
+    screen(ctx);
 
     /* move the label #chars + space + ticsize over to the left */
     
     xoffset = (tic_label_chars+1.5+1.5)*fp->colsiz;
-    moverel(-xoffset, 0.0);
+    moverel(ctx, -xoffset, 0.0);
 
-    oldj = setjust(CENTER_JUST);
-    oldo = setorientation(1);
-    drawtext(label);
-    setjust(oldj);
-    setorientation(oldo);
+    oldj = setjust(ctx, CENTER_JUST);
+    oldo = setorientation(ctx, 1);
+    drawtext(ctx, label);
+    setjust(ctx, oldj);
+    setorientation(ctx, oldo);
   }
   if (tic == 0.0) {
-    setstatus(oldframe);
+    setstatus(ctx, oldframe);
     return(1);
   }
   
@@ -225,103 +235,101 @@ int lyaxis (float x, float tic, int ltic, char *label)
   high = MAX(fp->yub,fp->yut);
 
   if((low <= 0.0) && (high >= 0.0)) {
-    for (y = 0.0; y >= low; y -= fabs(tic)) drawytic(fp,x,y,tic);
-    for (y = 0.0; y <= high; y += fabs(tic)) drawytic(fp,x,y,tic);
+    for (y = 0.0; y >= low; y -= fabs(tic)) drawytic(ctx, fp, x, y, tic);
+    for (y = 0.0; y <= high; y += fabs(tic)) drawytic(ctx, fp, x, y, tic);
   } else if (high < 0.0 || low > 0.0)  
-    for (y = low; y <= high; y += fabs(tic)) drawytic(fp,x,y,tic);
-
+    for (y = low; y <= high; y += fabs(tic)) drawytic(ctx, fp, x, y, tic);
 
   if (ltic) {  
     tic *= abs(ltic);
     if(low <= 0.0 && high >= 0.0) {
       if(low) {
-	for (y = 0; y >= low; y -= fabs(tic)) 
-	  y_tic_label(fp,x,y,tic,dec_points);
-	for (y = 0; y <= high; y += fabs(tic)) 
-	  y_tic_label(fp,x,y,tic,dec_points);
+        for (y = 0; y >= low; y -= fabs(tic)) 
+          y_tic_label(ctx, fp, x, y, tic, dec_points);
+        for (y = 0; y <= high; y += fabs(tic)) 
+          y_tic_label(ctx, fp, x, y, tic, dec_points);
       } else {
-	for (y = 0.0; y <= high; y += fabs(tic)) 
-	  y_tic_label(fp,x,y,tic,dec_points);
+        for (y = 0.0; y <= high; y += fabs(tic)) 
+          y_tic_label(ctx, fp, x, y, tic, dec_points);
       } 
     } else {
-	for (y = low; y <= high; y += fabs(tic)) 
-	  y_tic_label(fp,x,y,tic,dec_points);
+        for (y = low; y <= high; y += fabs(tic)) 
+          y_tic_label(ctx, fp, x, y, tic, dec_points);
     }
   }
-  setstatus(oldframe);
+  setstatus(ctx, oldframe);
 
   return(1);
 }
 
-
-
-
-void drawxtic(FRAME *fp, float x, float y, float tic)
+void drawxtic(CgraphContext *ctx, FRAME *fp, float x, float y, float tic)
 {
-    user();
-    moveto(x,y);
-    screen();
+    if (!ctx) return;
+    user(ctx);
+    moveto(ctx, x, y);
+    screen(ctx);
     if (tic < 0.0)
-      linerel(0.0, -fp->linsiz / 2.0);
+      linerel(ctx, 0.0, -fp->linsiz / 2.0);
     else {
-      moverel(0.0, fp->linsiz / 2.0);
-      linerel(0.0, -fp->linsiz);
+      moverel(ctx, 0.0, fp->linsiz / 2.0);
+      linerel(ctx, 0.0, -fp->linsiz);
     }
 }  
 
-void x_tic_label(FRAME *fp, float x, float y, float tic, int dp)
+void x_tic_label(CgraphContext *ctx, FRAME *fp, float x, float y, float tic, int dp)
 {
+  if (!ctx) return;
   int oldo, oldj;
   
-  user();
-  moveto(x,y);
-  screen();
-  setorientation(0);
-  oldj = setjust(CENTER_JUST);
-  oldo = setorientation(0);
+  user(ctx);
+  moveto(ctx, x, y);
+  screen(ctx);
+  oldj = setjust(ctx, CENTER_JUST);
+  oldo = setorientation(ctx, 0);
   if (tic < 0.0)
-    linerel(0.0, -fp->linsiz );
+    linerel(ctx, 0.0, -fp->linsiz);
   else {
-    moverel(0.0, fp->linsiz);
-    linerel(0.0, -2.0*fp->linsiz);
+    moverel(ctx, 0.0, fp->linsiz);
+    linerel(ctx, 0.0, -2.0*fp->linsiz);
   }
-  moverel(0.0, fp->linsiz);
+  moverel(ctx, 0.0, fp->linsiz);
 
-  moverel(0.0, -2.0*fp->linsiz);
-  drawfnum(dp,x);
-  setjust(oldj);
-  setorientation(oldo);
+  moverel(ctx, 0.0, -2.0*fp->linsiz);
+  drawfnum(ctx, dp, x);
+  setjust(ctx, oldj);
+  setorientation(ctx, oldo);
 } 
 
-void drawytic(FRAME *fp, float x, float y, float tic)
+void drawytic(CgraphContext *ctx, FRAME *fp, float x, float y, float tic)
 {
-    user();
-    moveto(x,y);
-    screen();
+    if (!ctx) return;
+    user(ctx);
+    moveto(ctx, x, y);
+    screen(ctx);
     if (tic < 0.0)
-      linerel(-fp->colsiz/2.0, 0.0);
+      linerel(ctx, -fp->colsiz/2.0, 0.0);
     else {
-      moverel(fp->colsiz / 2.0, 0.0);
-      linerel(-fp->colsiz, 0.0);
+      moverel(ctx, fp->colsiz / 2.0, 0.0);
+      linerel(ctx, -fp->colsiz, 0.0);
     }
 }  
 
-void y_tic_label(FRAME *fp, float x, float y, float tic, int dp)
+void y_tic_label(CgraphContext *ctx, FRAME *fp, float x, float y, float tic, int dp)
 {
-  int oldj = setjust(RIGHT_JUST);
-  user();
-  moveto(x,y);
-  screen();
+  if (!ctx) return;
+  int oldj = setjust(ctx, RIGHT_JUST);
+  user(ctx);
+  moveto(ctx, x, y);
+  screen(ctx);
   if (tic < 0.0)
-    linerel(-fp->colsiz,0.0 );
+    linerel(ctx, -fp->colsiz, 0.0);
   else {
-    moverel(fp->colsiz, 0.0);
-    linerel(-2.0*fp->colsiz, 0.0);
+    moverel(ctx, fp->colsiz, 0.0);
+    linerel(ctx, -2.0*fp->colsiz, 0.0);
   }
-  moverel(fp->colsiz, 0.0);
+  moverel(ctx, fp->colsiz, 0.0);
 
-  moverel(-2.0*fp->colsiz, 0.0);
-  drawfnum(dp,y);
-  setjust(oldj);
-} 
-
+  moverel(ctx, -2.0*fp->colsiz, 0.0);
+  drawfnum(ctx, dp, y);
+  setjust(ctx, oldj);
+}

@@ -22,6 +22,7 @@
 /*   using the gbSetGeventBuffer, it is possible to keep track of more    */
 /*   than one window.                                                     */
 /*                                                                        */
+/*   9/25 Refactored for thread safety - all functions now per-context    */
 /**************************************************************************/
 
 #include <stdio.h>
@@ -34,662 +35,700 @@
 #include <memory.h>
 #endif
 #include "cgraph.h"
-
 #include "gbuf.h"
 #include "gbufutl.h"
 
 #define VERSION_NUMBER (2.0)
-
 #define EVENT_BUFFER_SIZE 64000
 
-char RecordGEvents = 0;		/* are graphic events recorded */
-char AppendGEventTimes = 0;	/* are times being recorded?   */
-int  GEventTime = 0;		/* current gevent time         */
-
-static GBUF_DATA DefaultGB;	/* Default graphics buf        */
-static GBUF_DATA *curGB = &DefaultGB;
-
-static void send_time(int);
-static void send_event(char type, unsigned char *data);
-static void send_bytes(int n, unsigned char *data);
-static void push(unsigned char *data, int, int);
-
+/* Forward declarations - updated to take CgraphContext parameter */
+static void send_time(CgraphContext *ctx, int time);
+static void send_event(CgraphContext *ctx, char type, unsigned char *data);
+static void send_bytes(CgraphContext *ctx, int n, unsigned char *data);
+static void push(CgraphContext *ctx, unsigned char *data, int size, int count);
 
 /**************************************************************************/
 /*                      Initialization Routines                           */
 /**************************************************************************/
 
-GBUF_DATA *gbInitGeventBuffer(GBUF_DATA *gb)
+/* Initialize graphics buffer within context */
+void gbInitGeventBuffer(CgraphContext *ctx)
 {
-  GBUF_DATA *oldgb = curGB;
-  curGB = gb;
-  GB_IMAGES(gb).nimages = 0;
-  GB_RECORD_EVENTS(gb) = 1;
-  gbInitGevents();
-  return(oldgb);
+    GHeader header;
+    GBUF_DATA *gb;
+    
+    if (!ctx) return;
+    gb = &ctx->gbuf_data;
+    
+    /* Initialize buffer structure */
+    gb->gbufsize = EVENT_BUFFER_SIZE;
+    gb->gbuf = (unsigned char *)calloc(gb->gbufsize, sizeof(unsigned char));
+    if (!gb->gbuf) {
+        fprintf(stderr, "Unable to allocate event buffer\n");
+        exit(-1);
+    }
+    
+    /* Initialize images */
+    gb->images.nimages = 0;
+    gb->images.maximages = 16;
+    gb->images.allocinc = 16;
+    gb->images.images = (GBUF_IMAGE *)calloc(gb->images.maximages, sizeof(GBUF_IMAGE));
+    
+    /* Initialize state */
+    gb->gbufindex = 0;
+    gb->empty = 1;
+    gb->record_events = 1;
+    gb->append_times = 0;
+    gb->event_time = 0;
+    
+    /* Write header - now we have context for getresol! */
+    G_VERSION(&header) = VERSION_NUMBER;
+    getresol(ctx, &G_WIDTH(&header), &G_HEIGHT(&header));
+    
+    send_event(ctx, G_HEADER, (unsigned char *)&header);
+    
+    /* Record initial defaults */
+    gbRecordDefaults(ctx);
 }
 
-
-GBUF_DATA *gbSetGeventBuffer(GBUF_DATA *gb)
+/* Reset graphics buffer to initial state */
+void gbResetGeventBuffer(CgraphContext *ctx)
 {
-  GBUF_DATA *oldgb = curGB;
-  curGB = gb;
-  return(oldgb);
+    GHeader header;
+    GBUF_DATA *gb;
+    
+    if (!ctx) return;
+    gb = &ctx->gbuf_data;
+    
+    /* Reset buffer index */
+    gb->gbufindex = 0;
+    gb->empty = 1;
+    
+    /* Write new header */
+    G_VERSION(&header) = VERSION_NUMBER;
+    getresol(ctx, &G_WIDTH(&header), &G_HEIGHT(&header));
+    
+    send_event(ctx, G_HEADER, (unsigned char *)&header);
+    
+    /* Clean up images and record defaults */
+    gbFreeImagesBuffer(ctx);
+    gbRecordDefaults(ctx);
 }
 
-GBUF_DATA *gbGetGeventBuffer()
+/* Clean up and free all resources in graphics buffer */
+void gbCleanupGeventBuffer(CgraphContext *ctx)
 {
-  return(curGB);
+    GBUF_DATA *gb;
+    
+    if (!ctx) return;
+    gb = &ctx->gbuf_data;
+    
+    /* Disable recording */
+    gb->record_events = 0;
+    
+    /* Free images */
+    gbFreeImagesBuffer(ctx);
+    if (gb->images.images) {
+        free(gb->images.images);
+        gb->images.images = NULL;
+    }
+    
+    /* Free buffer data */
+    if (gb->gbuf) {
+        free(gb->gbuf);
+        gb->gbuf = NULL;
+    }
+    
+    /* Reset counters */
+    gb->gbufindex = 0;
+    gb->gbufsize = 0;
+    gb->empty = 1;
+    gb->images.nimages = 0;
+    gb->images.maximages = 0;
 }
 
-void gbEnableGeventBuffer(GBUF_DATA *gb)
+/**************************************************************************/
+/*                      Recording Control Functions                       */
+/**************************************************************************/
+
+void gbEnableGeventBuffer(CgraphContext *ctx)
 {
-   if (gb) GB_RECORD_EVENTS(gb) = 1;
+    if (ctx) ctx->gbuf_data.record_events = 1;
 }
 
-void gbDisableGeventBuffer(GBUF_DATA *gb)  
+void gbDisableGeventBuffer(CgraphContext *ctx)
 {
-   if (gb) GB_RECORD_EVENTS(gb) = 0;
+    if (ctx) ctx->gbuf_data.record_events = 0;
 }
 
-// Convenience functions for current buffer
-void gbEnableCurrentBuffer(void)
+int gbIsRecordingEnabled(CgraphContext *ctx)
 {
-   GB_RECORD_EVENTS(curGB) = 1;
+    return ctx ? ctx->gbuf_data.record_events : 0;
 }
 
-void gbDisableCurrentBuffer(void)
+/**************************************************************************/
+/*                      Buffer State Functions                            */
+/**************************************************************************/
+
+int gbIsEmpty(CgraphContext *ctx)
 {
-   GB_RECORD_EVENTS(curGB) = 0;
+    return ctx ? ctx->gbuf_data.empty : 1;
 }
 
-void gbResetCurrentBuffer(void)
+int gbSize(CgraphContext *ctx)
 {
-  gbResetGeventBuffer(curGB);
+    return ctx ? ctx->gbuf_data.gbufindex : 0;
 }
 
-int gbIsRecordingEnabled(void)
+int gbSetEmpty(CgraphContext *ctx, int empty)
 {
-  return GB_RECORD_EVENTS(curGB);
-}
-  
-/*
- * gbAddImage(w, h, d, data, x0, y0, x1, y1) - add image to local storage
- */
-int gbAddImage(int w, int h, int d, unsigned char *data,
-	       float x0, float y0, float x1, float y1)
-{
-  GBUF_IMAGES *images = &GB_IMAGES(curGB);
-  GBUF_IMAGE *img;
-  int retval;
-  int nbytes = w*h*d;
-  if ((retval = images->nimages) == images->maximages) {
-    images->maximages += images->allocinc;
-    images->images = (GBUF_IMAGE *) realloc(images->images,
-			 sizeof(GBUF_IMAGE) * images->maximages);
-  }
-  
-  /* Now put in actual data for new images */
-  img = &images->images[images->nimages];
-  img->w = w;
-  img->h = h;
-  img->d = d;
-  img->x0 = x0;
-  img->y0 = y0;
-  img->x1 = x1;
-  img->y1 = y1;
-  img->data = (unsigned char *) calloc(nbytes, sizeof(char));
-  
-  memcpy(img->data, data, nbytes);
-  
-  images->nimages++;
-  
-  return retval;
+    if (!ctx) return 0;
+    int old = ctx->gbuf_data.empty;
+    ctx->gbuf_data.empty = empty;
+    return old;
 }
 
-/*
- * gbFindImage(int ref) - retrieve image reference
- */
-GBUF_IMAGE *gbFindImage(int ref)
+/**************************************************************************/
+/*                      Timing Functions (kept for compatibility)         */
+/**************************************************************************/
+
+void gbEnableGeventTimes(CgraphContext *ctx)
 {
-  GBUF_IMAGES *images = &GB_IMAGES(curGB);
-  if (!images) return NULL;
-  
-  if (ref >= images->nimages) return NULL;
-  return(&images->images[ref]);
+    if (!ctx) return;
+    record_gattr(ctx, G_TIMESTAMP, 1);
+    ctx->gbuf_data.append_times = 1;
 }
 
-
-/*
- * gbReplaceImage(int ref) - replace image reference
- */
-int gbReplaceImage(int ref, int w, int h, int d, unsigned char *data)
+void gbDisableGeventTimes(CgraphContext *ctx)
 {
-  GBUF_IMAGE *gimg;
-  GBUF_IMAGES *images = &GB_IMAGES(curGB);
-  int nbytes = w*h*d;
-  if (!images) return 0;
-  
-  if (ref >= images->nimages) return 0;
-  gimg = &images->images[ref];
-
-  /* Easy case -- same size just overwrite data */
-  if (gimg->w == w && gimg->h == h && gimg->d == d) {
-    memcpy(gimg->data, data, nbytes);
-  }
-  else {			/* reallocate */
-    gimg->data = (unsigned char *) realloc(gimg->data, nbytes);
-    gimg->w = w;
-    gimg->h = h;
-    gimg->d = d;
-    memcpy(gimg->data, data, nbytes);
-  }
-  return 1;
+    if (!ctx) return;
+    record_gattr(ctx, G_TIMESTAMP, 0);
+    ctx->gbuf_data.append_times = 0;
 }
 
+int gbSetTime(CgraphContext *ctx, int time)
+{
+    if (!ctx) return 0;
+    int oldtime = ctx->gbuf_data.event_time;
+    ctx->gbuf_data.event_time = time;
+    return oldtime;
+}
 
-/*
- * gbFreeImage() - free individual images
- */
+int gbIncTime(CgraphContext *ctx, int time)
+{
+    if (!ctx) return 0;
+    int oldtime = ctx->gbuf_data.event_time;
+    ctx->gbuf_data.event_time += time;
+    return oldtime;
+}
+
+/**************************************************************************/
+/*                      Image Management Functions                        */
+/**************************************************************************/
+
+int gbAddImage(CgraphContext *ctx, int w, int h, int d, unsigned char *data,
+               float x0, float y0, float x1, float y1)
+{
+    GBUF_IMAGES *images;
+    GBUF_IMAGE *img;
+    int retval;
+    int nbytes = w*h*d;
+    
+    if (!ctx) return -1;
+    images = &ctx->gbuf_data.images;
+    
+    if ((retval = images->nimages) == images->maximages) {
+        images->maximages += images->allocinc;
+        images->images = (GBUF_IMAGE *) realloc(images->images,
+                             sizeof(GBUF_IMAGE) * images->maximages);
+    }
+    
+    /* Now put in actual data for new images */
+    img = &images->images[images->nimages];
+    img->w = w;
+    img->h = h;
+    img->d = d;
+    img->x0 = x0;
+    img->y0 = y0;
+    img->x1 = x1;
+    img->y1 = y1;
+    img->data = (unsigned char *) calloc(nbytes, sizeof(char));
+    
+    memcpy(img->data, data, nbytes);
+    
+    images->nimages++;
+    
+    return retval;
+}
+
+GBUF_IMAGE *gbFindImage(CgraphContext *ctx, int ref)
+{
+    GBUF_IMAGES *images;
+    
+    if (!ctx) return NULL;
+    images = &ctx->gbuf_data.images;
+    
+    if (ref >= images->nimages) return NULL;
+    return(&images->images[ref]);
+}
+
+int gbReplaceImage(CgraphContext *ctx, int ref, int w, int h, int d, unsigned char *data)
+{
+    GBUF_IMAGE *gimg;
+    GBUF_IMAGES *images;
+    int nbytes = w*h*d;
+    
+    if (!ctx) return 0;
+    images = &ctx->gbuf_data.images;
+    
+    if (ref >= images->nimages) return 0;
+    gimg = &images->images[ref];
+
+    /* Easy case -- same size just overwrite data */
+    if (gimg->w == w && gimg->h == h && gimg->d == d) {
+        memcpy(gimg->data, data, nbytes);
+    }
+    else {			/* reallocate */
+        gimg->data = (unsigned char *) realloc(gimg->data, nbytes);
+        gimg->w = w;
+        gimg->h = h;
+        gimg->d = d;
+        memcpy(gimg->data, data, nbytes);
+    }
+    return 1;
+}
 
 void gbFreeImage(GBUF_IMAGE *image)
 {
-  if (image && image->data) free(image->data);
-}
-
-/*
- * gbFreeImages() - free any currently stored images
- */
-
-void gbFreeImages(void)
-{
-  int i;
-  GBUF_IMAGES *images = &GB_IMAGES(curGB);
-  for (i = 0; i < images->nimages; i++) {
-    gbFreeImage(&images->images[i]);
-  }
-  images->nimages = 0;
-}
-
-/*
- * gbFreeImageList() - free entire image list
- */
-
-void gbFreeImageList(void)
-{
-  GBUF_IMAGES *images = &GB_IMAGES(curGB);
-  gbFreeImages();
-  if (images->images) free(images->images);
-  images->nimages = 0;
-  images->maximages = 0;
-}
-
-int gbInitImageList(int n)
-{
-  GBUF_IMAGES *images = &GB_IMAGES(curGB);
-  gbFreeImageList();
-  if (n <= 0) n = 1;
-  images->allocinc = n;
-  images->maximages = n;
-  images->images = (GBUF_IMAGE *) calloc(n, sizeof(GBUF_IMAGE));
-  images->nimages = 0;
-  return n;
-}
-
-int gbWriteImageFile(FILE *fp)
-{
-  int i, n;
-  GBUF_IMAGES *imgheader = &GB_IMAGES(curGB);
-  GBUF_IMAGE *img;
-  fwrite(imgheader, sizeof(GBUF_IMAGES), 1, fp);
-  fwrite(imgheader->images, sizeof(GBUF_IMAGE), imgheader->nimages, fp);
-  for (i = 0; i < imgheader->nimages; i++) {
-    img = &(imgheader->images[i]);
-    n = img->w*img->h*img->d;
-    fwrite(img->data, sizeof(char), n, fp);
-  }
-  return 1;
-}
-
-int gbReadImageFile(FILE *fp)
-{
-  int i, j;
-  const int maximages = 4096;
-  GBUF_IMAGES Images;		/* To read into before copying */
-  GBUF_IMAGE *img;
-  int n, bytes_needed = 0;
-  char *imgdata;
-
-  if (fread(&Images, sizeof(GBUF_IMAGES), 1, fp) != 1) {
-    return 0;
-  }
-  if (Images.nimages < 0 || Images.nimages > maximages) return 0;
-  
-  Images.images = (GBUF_IMAGE *) calloc(Images.nimages, sizeof(GBUF_IMAGE));
-  Images.maximages = Images.nimages;
-  Images.allocinc = 10;
-
-  /* First read all image headers (and get total space needed for images) */
-  if (fread(Images.images, sizeof(GBUF_IMAGE), Images.nimages, fp) != 
-      (unsigned int) Images.nimages) {
-    free(Images.images);
-    return 0;
-  }
-  /* Now read in all data */
-  for (i = 0; i < Images.nimages; i++) {
-    img = &(Images.images[i]);
-    n = img->w*img->h*img->d;
-    imgdata = (char *) calloc(n, sizeof(char));
-    img->data = imgdata;
-    if (fread(img->data, n, 1, fp) != 1) {
-      /* Free all previously allocated images -- we won't use them */
-      for (j = 0; j <= i; j++) {
-	img = &(Images.images[j]);
-	free(img->data);
-      }
-      free(Images.images);
-      return 0;
+    if (image && image->data) {
+        free(image->data);
+        image->data = NULL;
     }
-  }
-  
-  gbFreeImageList();
-  memcpy(&GB_IMAGES(curGB), &Images, sizeof(GBUF_IMAGES));
-
-  return 1;
 }
 
-/*
- * gbInitGevents() - initialize the default gbuf data structure           
- */
-
-void gbInitGevents()
+void gbFreeImagesBuffer(CgraphContext *ctx)
 {
-   GHeader header;
-
-   GB_GBUFSIZE(curGB) = EVENT_BUFFER_SIZE;
-   if (!(GB_GBUF(curGB) = (unsigned char *)
-	 calloc(GB_GBUFSIZE(curGB), sizeof(unsigned char)))) {
-     fprintf(stderr,"Unable to allocate event buffer\n");
-     exit(-1);
-   }
-   
-   gbInitImageList(16);
-   GB_GBUFINDEX(curGB) = 0;
-   
-   G_VERSION(&header) = VERSION_NUMBER;
-   getresol(&G_WIDTH(&header),&G_HEIGHT(&header));
-   
-   send_event(G_HEADER,(unsigned char *) &header);
-   gbRecordDefaults();
-}
-
-
-void gbRecordDefaults()
-{
-  /* This sends the current font to the file */
-  if (GB_RECORD_EVENTS(curGB) && getfontname(contexp))  // ← Use per-buffer state
-    record_gtext(G_FONT, getfontsize(contexp), 0.0, getfontname(contexp));
-  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_COLOR, contexp->color); 
-  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_LSTYLE, contexp->grain);
-  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_LWIDTH, contexp->lwidth);
-  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_ORIENTATION, contexp->orientation);
-  if (GB_RECORD_EVENTS(curGB)) record_gattr(G_JUSTIFICATION, contexp->just);
-}
-
-void gbEnableGeventTimes()
-{
-   record_gattr(G_TIMESTAMP, 1);
-   AppendGEventTimes = 1;
-}
-
-void gbDisableGeventTimes()
-{
-   record_gattr(G_TIMESTAMP, 0);
-   AppendGEventTimes = 0;
-}
-
-int gbSetTime(int time)
-{
-   int oldtime = GEventTime;
-   GEventTime = time;
-   return(oldtime);
-}
-
-int gbIncTime(int time)
-{
-   int oldtime = GEventTime;
-   GEventTime += time;
-   return(oldtime);
-}
-
-int gbIsEmpty()
-{
-  return (GB_EMPTY(curGB));
-}
-
-int gbSetEmpty(int empty)
-{
-  int old = GB_EMPTY(curGB);
-  GB_EMPTY(curGB) = empty;
-  return old;
-}
-
-int gbSize()
-{
-  return (GB_GBUFINDEX(curGB));
-}
-
-void gbCleanupGeventBuffer(GBUF_DATA *gb)
-{
-   if (!gb) return;
-   
-   // Disable recording
-   GB_RECORD_EVENTS(gb) = 0;
-   
-   // Free images
-   gbFreeImagesBuffer(gb);
-   
-   // Free buffer data
-   if (gb->gbuf) {
-       free(gb->gbuf);
-       gb->gbuf = NULL;
-   }
-   
-   // Reset counters
-   gb->gbufindex = 0;
-   gb->gbufsize = 0;
-   gb->empty = 1;
-}
-
-void gbResetGeventBuffer(GBUF_DATA *gb)
-{
-   GHeader header;
-   
-   if (!gb) return;
-   
-   // Reset this specific buffer
-   gb->gbufindex = 0;
-   
-   G_VERSION(&header) = VERSION_NUMBER;
-   getresol(&G_WIDTH(&header), &G_HEIGHT(&header));
-   
-   // Temporarily set as current to send header and record defaults
-   GBUF_DATA *oldGB = gbSetGeventBuffer(gb);
-   
-   send_event(G_HEADER, (unsigned char *) &header);
-   gbRecordDefaults();
-   
-   // Restore previous buffer
-   gbSetGeventBuffer(oldGB);
-   
-   // Clean up images for this specific buffer
-   gbFreeImagesBuffer(gb);
-   gb->empty = 1;
-}
-
-// Helper function for per-buffer image cleanup
-void gbFreeImagesBuffer(GBUF_DATA *gb)
-{
-   int i;
-   GBUF_IMAGES *images = &gb->images;
-   
-   for (i = 0; i < images->nimages; i++) {
-     gbFreeImage(&images->images[i]);
-   }
-   images->nimages = 0;
-}
-
-
-int gbPlaybackGevents(void)
-{
-  float xl, yb, xr, yt;
-  float w, h;
-  
-  if (GB_GBUFINDEX(curGB)) { /* screen is not empty */
-
-	gbDisableCurrentBuffer();
-
-    getwindow(&xl, &yb, &xr, &yt) ;
-    playback_gbuf(GB_GBUF(curGB),GB_GBUFINDEX(curGB));
-    setwindow(xl, yb, xr, yt) ;
-
-    gbEnableCurrentBuffer();
-
-  }
-  else {
-    clearscreen();
-  }
-  return(GB_GBUFINDEX(curGB));
-}
-
-int gbWriteGevents(char *filename, int format)
-{
-   FILE *fp = stdout;
-   char *filemode;
-   
-   switch (format) {
-   case GBUF_PDF:
-     return gbuf_dump_pdf((char *) GB_GBUF(curGB), GB_GBUFINDEX(curGB),
-			  filename);
-     break;
-   case GBUF_RAW:
-     filemode = "wb+";
-     break;
-   default:
-     filemode = "w+";
-     break;
-   }
-   
-   if (filename && filename[0]) {
-      if (!(fp = fopen(filename,filemode))) {
-	 fprintf(stderr,"gbuf: unable to open file \"%s\" for output\n",
-		 filename);
-	 return(0);
-      }
-   }
-   gbuf_dump((char *)GB_GBUF(curGB), GB_GBUFINDEX(curGB), format, fp);
-
-   if (filename && filename[0]) fclose(fp);
-   return(1);
-}
-
-void gbPrintGevents()
-{
-  char fname[L_tmpnam];
-  static char buf[80];
-
-  tmpnam(fname);
-  gbWriteGevents(fname, GBUF_PS);
-
-  sprintf(buf,"lpr %s", fname);
-  system(buf);
-  unlink(fname);
-}   
-
-void gbCloseGevents()
-{
-  if (GB_GBUF(curGB)) {
-    free(GB_GBUF(curGB));
-    GB_GBUF(curGB) = NULL;
-    GB_GBUFINDEX(curGB) = 0;
-    GB_GBUFSIZE(curGB) = 0;
-    gbFreeImageList();
-  }
-}
-
-/**
- * Clean the current graphics buffer in-place
- */
-int gbCleanCurrentBuffer(int *original_size, int *clean_size)
-{
-    return gbCleanGeventBuffer(curGB, original_size, clean_size);
-}
-
-/**
- * Clean a specific graphics buffer in-place
- */
-int gbCleanGeventBuffer(GBUF_DATA *gb, int *original_size, int *clean_size)
-{
-    unsigned char *cleaned_buffer;
-    int cleaned_size;
+    int i;
+    GBUF_IMAGES *images;
     
-    if (!gb || !gb->gbuf) {
-        return -1; // Error: invalid buffer
+    if (!ctx) return;
+    images = &ctx->gbuf_data.images;
+    
+    for (i = 0; i < images->nimages; i++) {
+        gbFreeImage(&images->images[i]);
+    }
+    images->nimages = 0;
+}
+
+int gbInitImageList(CgraphContext *ctx, int n)
+{
+    GBUF_IMAGES *images;
+    
+    if (!ctx) return 0;
+    images = &ctx->gbuf_data.images;
+    
+    gbFreeImagesBuffer(ctx);
+    if (images->images) {
+        free(images->images);
     }
     
-    if (original_size) *original_size = gb->gbufindex;
+    if (n <= 0) n = 1;
+    images->allocinc = n;
+    images->maximages = n;
+    images->images = (GBUF_IMAGE *) calloc(n, sizeof(GBUF_IMAGE));
+    images->nimages = 0;
+    return n;
+}
+
+int gbWriteImageFile(CgraphContext *ctx, FILE *fp)
+{
+    int i, n;
+    GBUF_IMAGES *imgheader;
+    GBUF_IMAGE *img;
     
-    // Clean the buffer
-    cleaned_buffer = gbuf_clean(gb->gbuf, gb->gbufindex, &cleaned_size);
-    if (!cleaned_buffer) {
-        return -1; // Error: cleaning failed
+    if (!ctx || !fp) return 0;
+    
+    imgheader = &ctx->gbuf_data.images;
+    
+    fwrite(imgheader, sizeof(GBUF_IMAGES), 1, fp);
+    fwrite(imgheader->images, sizeof(GBUF_IMAGE), imgheader->nimages, fp);
+    
+    for (i = 0; i < imgheader->nimages; i++) {
+        img = &(imgheader->images[i]);
+        n = img->w * img->h * img->d;
+        fwrite(img->data, sizeof(char), n, fp);
+    }
+    return 1;
+}
+
+int gbReadImageFile(CgraphContext *ctx, FILE *fp)
+{
+    int i, j;
+    const int maximages = 4096;
+    GBUF_IMAGES tempImages;     /* Temporary read buffer */
+    GBUF_IMAGE *img;
+    int n;
+    char *imgdata;
+
+    if (!ctx || !fp) return 0;
+
+    /* Read the image header */
+    if (fread(&tempImages, sizeof(GBUF_IMAGES), 1, fp) != 1) {
+        return 0;
+    }
+    if (tempImages.nimages < 0 || tempImages.nimages > maximages) return 0;
+    
+    /* Allocate temporary space for image headers */
+    tempImages.images = (GBUF_IMAGE *) calloc(tempImages.nimages, sizeof(GBUF_IMAGE));
+    if (!tempImages.images) return 0;
+    
+    tempImages.maximages = tempImages.nimages;
+    tempImages.allocinc = 10;
+
+    /* Read all image headers */
+    if (fread(tempImages.images, sizeof(GBUF_IMAGE), tempImages.nimages, fp) != 
+        (unsigned int) tempImages.nimages) {
+        free(tempImages.images);
+        return 0;
     }
     
-    // Replace the buffer contents
-    if (gb->gbuf) {
-        free(gb->gbuf);
+    /* Now read in all image data */
+    for (i = 0; i < tempImages.nimages; i++) {
+        img = &(tempImages.images[i]);
+        n = img->w * img->h * img->d;
+        imgdata = (char *) calloc(n, sizeof(char));
+        if (!imgdata) {
+            /* Free all previously allocated images on failure */
+            for (j = 0; j < i; j++) {
+                free(tempImages.images[j].data);
+            }
+            free(tempImages.images);
+            return 0;
+        }
+        img->data = (unsigned char *)imgdata;
+        
+        if (fread(img->data, n, 1, fp) != 1) {
+            /* Free all previously allocated images on failure */
+            for (j = 0; j <= i; j++) {
+                free(tempImages.images[j].data);
+            }
+            free(tempImages.images);
+            return 0;
+        }
     }
     
-    gb->gbuf = cleaned_buffer;
-    gb->gbufindex = cleaned_size;
-    gb->gbufsize = cleaned_size;
-    gb->empty = (cleaned_size <= GHEADER_S + 1) ? 1 : 0;
+    /* Success - clean up existing images and replace with new ones */
+    gbFreeImagesBuffer(ctx);
+    if (ctx->gbuf_data.images.images) {
+        free(ctx->gbuf_data.images.images);
+    }
     
-    if (clean_size) *clean_size = cleaned_size;
+    /* Copy the successfully loaded images to context */
+    memcpy(&ctx->gbuf_data.images, &tempImages, sizeof(GBUF_IMAGES));
+
+    return 1;
+}
+
+/**************************************************************************/
+/*                      Legacy Compatibility Functions                    */
+/**************************************************************************/
+
+/* Note: gbInitGevents() is now replaced by gbInitGeventBuffer() 
+ * These functions were in the original but are no longer needed:
+ * - gbInitGevents() -> use gbInitGeventBuffer() 
+ * - gbResetGevents() -> use gbResetGeventBuffer()
+ * - gbCloseGevents() -> use gbCleanupGeventBuffer()
+ */
+
+/* Cleanup function - replaces old gbCloseGevents() */
+void gbCloseGevents(CgraphContext *ctx)
+{
+    if (!ctx) return;
+    gbCleanupGeventBuffer(ctx);
+}
+
+/**************************************************************************/
+/*                      Buffer Cleaning and Output Functions             */
+/**************************************************************************/
+
+int gbPlaybackGevents(CgraphContext *ctx)
+{
+    float xl, yb, xr, yt;
     
-    return 0; // Success
+    if (!ctx) return 0;
+    
+    if (ctx->gbuf_data.gbufindex) { /* buffer is not empty */
+        
+        gbDisableGeventBuffer(ctx);
+        
+        getwindow(ctx, &xl, &yb, &xr, &yt);
+        playback_gbuf(ctx, ctx->gbuf_data.gbuf, ctx->gbuf_data.gbufindex);
+        setwindow(ctx, xl, yb, xr, yt);
+        
+        gbEnableGeventBuffer(ctx);
+        
+    }
+    else {
+        clearscreen(ctx);
+    }
+    return(ctx->gbuf_data.gbufindex);
 }
 
-/*********************************************************************/
-/*                      Gevent Recording Funcs                       */
-/*********************************************************************/
-
-void record_gline(char type, float x0, float y0, float x1, float y1)
+int gbWriteGevents(CgraphContext *ctx, char *filename, int format)
 {
-  GLine gline;
-  
-  GLINE_X0(&gline) = x0;
-  GLINE_Y0(&gline) = y0;
-  GLINE_X1(&gline) = x1;
-  GLINE_Y1(&gline) = y1;
-  
-  send_event(type, (unsigned char *) &gline);
+    FILE *fp = stdout;
+    char *filemode;
+    
+    if (!ctx) return 0;
+    
+    switch (format) {
+    case GBUF_PDF:
+      return gbuf_dump_pdf(ctx, (char *) ctx->gbuf_data.gbuf, ctx->gbuf_data.gbufindex, filename);
+        break;
+    case GBUF_RAW:
+        filemode = "wb+";
+        break;
+    default:
+        filemode = "w+";
+        break;
+    }
+    
+    if (filename && filename[0]) {
+        if (!(fp = fopen(filename, filemode))) {
+            fprintf(stderr, "gbuf: unable to open file \"%s\" for output\n", filename);
+            return(0);
+        }
+    }
+    
+    gbuf_dump(ctx, (char *)ctx->gbuf_data.gbuf, ctx->gbuf_data.gbufindex, format, fp);
+
+    if (filename && filename[0]) fclose(fp);
+    return(1);
 }
 
-void record_gpoly(char type, int nverts, float *verts)
+void gbPrintGevents(CgraphContext *ctx)
 {
-  GPointList list;
-  
-  GPOINTLIST_N(&list) = nverts;
-  GPOINTLIST_PTS(&list) = NULL;
-  send_event(type, (unsigned char *) &list);
-  send_bytes(GPOINTLIST_N(&list)*sizeof(float), (unsigned char *) verts);
+    char fname[L_tmpnam];
+    static char buf[80];
+
+    if (!ctx) return;
+    
+    tmpnam(fname);
+    gbWriteGevents(ctx, fname, GBUF_PS);
+
+    sprintf(buf, "lpr %s", fname);
+    system(buf);
+    unlink(fname);
 }
 
-void record_gtext(char type, float x, float y, char *str)
+int gbCleanGeventBuffer(CgraphContext *ctx)
 {
-   GText gtext;
-  
-   GTEXT_X(&gtext) = x;
-   GTEXT_Y(&gtext) = y;
-   GTEXT_LENGTH(&gtext) = strlen(str)+1;
-   GTEXT_STRING(&gtext) = NULL;
-   
-   send_event(type, (unsigned char *) &gtext);
-   send_bytes(GTEXT_LENGTH(&gtext), (unsigned char *)str);
+    int clean_size;
+    unsigned char *clean_buffer = gbuf_clean(GB_GBUF(ctx), GB_GBUFINDEX(ctx), &clean_size);
+    
+    if (!clean_buffer) return 0;
+    
+    if (GB_GBUF(ctx)) free(GB_GBUF(ctx));
+    
+    ctx->gbuf_data.gbuf = clean_buffer;
+    ctx->gbuf_data.gbufindex = clean_size;
+    ctx->gbuf_data.gbufsize = clean_size;
+    
+    return 1;
 }
 
-void record_gpoint(char type, float x, float y)
-{
-  GPoint gpoint;
-  
-  GPOINT_X(&gpoint) = x;
-  GPOINT_Y(&gpoint) = y;
+/**************************************************************************/
+/*                      Page Setup Functions                             */
+/**************************************************************************/
 
-  send_event(type, (unsigned char *) &gpoint);
+void gbSetPageOrientation(CgraphContext *ctx, char ori)
+{
+    if (!ctx) return;
+    /* Store page orientation in context - could add to GBUF_DATA if needed */
+    /* For now, this affects the output format functions */
+    /* Implementation depends on how page setup is stored */
 }
 
-void record_gattr(char type, int val)
+void gbSetPageFill(CgraphContext *ctx, int fill)
 {
-  GAttr gattr;
-  
-  GATTR_VAL(&gattr) = val;
-
-  send_event(type, (unsigned char *) &gattr);
+    if (!ctx) return;
+    /* Store page fill setting in context */
+    /* Implementation depends on how page setup is stored */
 }
 
-static void send_event(char type, unsigned char *data)
+/**************************************************************************/
+/*                      Recording Functions                               */
+/**************************************************************************/
+
+void record_gline(CgraphContext *ctx, char type, float x0, float y0, float x1, float y1)
 {
-  push((unsigned char *)&type, 1, 1);
-  if (AppendGEventTimes) send_time(GEventTime);
-  switch(type) {
-  case G_HEADER:
-    push(data, GHEADER_S, 1);
-    break;
-  case G_FILLEDRECT:
-  case G_LINE:
-  case G_CLIP:
-  case G_CIRCLE:
-  case G_IMAGE:			/* Reference ID (cast to float), x, y */
-    push(data, GLINE_S, 1);
-    break;
-  case G_MOVETO:
-  case G_LINETO:
-  case G_POINT:
-    push(data, GPOINT_S, 1);
-    break;
-  case G_FONT:
-  case G_TEXT:
-  case G_POSTSCRIPT:
-    push(data, GTEXT_S, 1);
-    break;
-  case G_COLOR:
-  case G_BACKGROUND:
-  case G_LSTYLE:
-  case G_LWIDTH:
-  case G_ORIENTATION:
-  case G_JUSTIFICATION:
-  case G_SAVE:
-  case G_GROUP:
-  case G_TIMESTAMP:
-    push(data, GATTR_S, 1);
-    break;
-  case G_FILLEDPOLY:
-  case G_POLY:
-    push(data, GPOINTLIST_S, 1);
-    break;
-  default:
-    fprintf(stderr,"Unknown event type: %d\n", type);
-    break;
-  }
-  gbSetEmpty(0);
+    GLine gline;
+    
+    if (!ctx) return;
+    
+    GLINE_X0(&gline) = x0;
+    GLINE_Y0(&gline) = y0;
+    GLINE_X1(&gline) = x1;
+    GLINE_Y1(&gline) = y1;
+    
+    send_event(ctx, type, (unsigned char *) &gline);
 }
 
-static void send_time(int time)
+void record_gpoly(CgraphContext *ctx, char type, int nverts, float *verts)
 {
-   push((unsigned char *)&time, sizeof(int), 1);
+    GPointList list;
+    
+    if (!ctx) return;
+    
+    GPOINTLIST_N(&list) = nverts;
+    GPOINTLIST_PTS(&list) = NULL;
+    send_event(ctx, type, (unsigned char *) &list);
+    send_bytes(ctx, GPOINTLIST_N(&list)*sizeof(float), (unsigned char *) verts);
 }
 
-static void send_bytes(int n, unsigned char *data)
+void record_gtext(CgraphContext *ctx, char type, float x, float y, char *str)
 {
-  push(data, sizeof(unsigned char), n);
+    GText gtext;
+    
+    if (!ctx || !str) return;
+    
+    GTEXT_X(&gtext) = x;
+    GTEXT_Y(&gtext) = y;
+    GTEXT_LENGTH(&gtext) = strlen(str)+1;
+    GTEXT_STRING(&gtext) = NULL;
+    
+    send_event(ctx, type, (unsigned char *) &gtext);
+    send_bytes(ctx, GTEXT_LENGTH(&gtext), (unsigned char *)str);
 }
 
-static void push(unsigned char *data, int size, int count)
+void record_gpoint(CgraphContext *ctx, char type, float x, float y)
 {
-   int nbytes, newsize;
-   
-   nbytes = count * size;
-   
-   if (GB_GBUFINDEX(curGB) + nbytes >= GB_GBUFSIZE(curGB)) {
-     do {
-       newsize = GB_GBUFSIZE(curGB) + EVENT_BUFFER_SIZE;
-       GB_GBUF(curGB) = (unsigned char *) realloc(GB_GBUF(curGB), newsize);
-       GB_GBUFSIZE(curGB) = newsize;
-     } while (GB_GBUFINDEX(curGB) + nbytes >= GB_GBUFSIZE(curGB));
-   }
-   
-   memcpy(&GB_GBUF(curGB)[GB_GBUFINDEX(curGB)], data, nbytes);
-   GB_GBUFINDEX(curGB) += nbytes;
- }
+    GPoint gpoint;
+    
+    if (!ctx) return;
+    
+    GPOINT_X(&gpoint) = x;
+    GPOINT_Y(&gpoint) = y;
 
+    send_event(ctx, type, (unsigned char *) &gpoint);
+}
+
+void record_gattr(CgraphContext *ctx, char type, int val)
+{
+    GAttr gattr;
+    
+    if (!ctx) return;
+    
+    GATTR_VAL(&gattr) = val;
+
+    send_event(ctx, type, (unsigned char *) &gattr);
+}
+
+/* Record current graphics defaults - now has access to all context state! */
+void gbRecordDefaults(CgraphContext *ctx)
+{
+    if (!ctx) return;
+    
+    /* Only record if recording is enabled */
+    if (!ctx->gbuf_data.record_events) return;
+    
+    /* Record current font */
+    if (getfontname(ctx)) {
+        record_gtext(ctx, G_FONT, getfontsize(ctx), 0.0, getfontname(ctx));
+    }
+    
+    /* Record current graphics attributes */
+    record_gattr(ctx, G_COLOR, getcolor(ctx)); 
+    record_gattr(ctx, G_LSTYLE, getframe(ctx)->grain);
+    record_gattr(ctx, G_LWIDTH, getframe(ctx)->lwidth);
+    record_gattr(ctx, G_ORIENTATION, getorientation(ctx));
+    record_gattr(ctx, G_JUSTIFICATION, getframe(ctx)->just);
+}
+
+/**************************************************************************/
+/*                      Internal Helper Functions                         */
+/**************************************************************************/
+
+static void send_event(CgraphContext *ctx, char type, unsigned char *data)
+{
+    if (!ctx) return;
+    
+    push(ctx, (unsigned char *)&type, 1, 1);
+    if (ctx->gbuf_data.append_times) send_time(ctx, ctx->gbuf_data.event_time);
+    
+    switch(type) {
+    case G_HEADER:
+        push(ctx, data, GHEADER_S, 1);
+        break;
+    case G_FILLEDRECT:
+    case G_LINE:
+    case G_CLIP:
+    case G_CIRCLE:
+    case G_IMAGE:
+        push(ctx, data, GLINE_S, 1);
+        break;
+    case G_MOVETO:
+    case G_LINETO:
+    case G_POINT:
+        push(ctx, data, GPOINT_S, 1);
+        break;
+    case G_FONT:
+    case G_TEXT:
+    case G_POSTSCRIPT:
+        push(ctx, data, GTEXT_S, 1);
+        break;
+    case G_COLOR:
+    case G_BACKGROUND:
+    case G_LSTYLE:
+    case G_LWIDTH:
+    case G_ORIENTATION:
+    case G_JUSTIFICATION:
+    case G_SAVE:
+    case G_GROUP:
+    case G_TIMESTAMP:
+        push(ctx, data, GATTR_S, 1);
+        break;
+    case G_FILLEDPOLY:
+    case G_POLY:
+        push(ctx, data, GPOINTLIST_S, 1);
+        break;
+    default:
+        fprintf(stderr, "Unknown event type: %d\n", type);
+        break;
+    }
+    gbSetEmpty(ctx, 0);
+}
+
+static void send_time(CgraphContext *ctx, int time)
+{
+    if (!ctx) return;
+    push(ctx, (unsigned char *)&time, sizeof(int), 1);
+}
+
+static void send_bytes(CgraphContext *ctx, int n, unsigned char *data)
+{
+    if (!ctx) return;
+    push(ctx, data, sizeof(unsigned char), n);
+}
+
+static void push(CgraphContext *ctx, unsigned char *data, int size, int count)
+{
+    int nbytes, newsize;
+    GBUF_DATA *gb;
+    
+    if (!ctx || !data) return;
+    gb = &ctx->gbuf_data;
+    
+    nbytes = count * size;
+    
+    if (gb->gbufindex + nbytes >= gb->gbufsize) {
+        do {
+            newsize = gb->gbufsize + EVENT_BUFFER_SIZE;
+            gb->gbuf = (unsigned char *) realloc(gb->gbuf, newsize);
+            gb->gbufsize = newsize;
+        } while (gb->gbufindex + nbytes >= gb->gbufsize);
+    }
+    
+    memcpy(&gb->gbuf[gb->gbufindex], data, nbytes);
+    gb->gbufindex += nbytes;
+}

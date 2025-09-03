@@ -48,6 +48,29 @@ static char PDF_Stroking = 0, PDF_Filling = 0, PDF_Moveto = 0;
 static float PDF_linetox, PDF_linetoy;
 static float PDF_curx, PDF_cury;
 
+static float PSColorTableVals[][4] = {
+/* R    G    B   Grey -- currently we use the grey approx. */
+  { 0.0, 0.0, 0.0, 0.0 },       /*   0 -> BLACK     1 -> WHITE     */
+  { 0.1, 0.1, 0.4, 0.4 },
+  { 0.0, 0.35, 0.0, 0.1 },
+  { 0.0, 0.7, 0.7, 0.7 },
+  { 0.8, 0.05, 0.0, 0.3 },
+  { 0.8, 0.0, 0.8, 0.0 },
+  { 0.0, 0.0, 0.0, 0.0 },
+  { 0.0, 0.0, 0.0, 0.0 },
+  { 0.7, 0.7, 0.7, 0.7 },
+  { 0.3, 0.45, 0.9, 0.0 },
+  { 0.05, 0.95, 0.1, 0.0 },
+  { 0.0, 0.9, 0.9, 0.9 },
+  { 0.0, 0.0, 0.0, 0.0 },
+  { 0.0, 0.0, 0.0, 0.0 },
+  { 0.94, 0.94, 0.05, 0.8 },
+  { 0.0, 0.0, 0.0, 0.2 },
+  { 1.0, 1.0, 1.0, 1.0 },
+  { 0.96, 0.96, 0.96, 0.96 },
+};
+int NColorVals = 18;
+
 static void pdf_init(HPDF_Page page, float w, float h);
 static void pdf_gsave(HPDF_Page page);
 static void pdf_grestore(HPDF_Page page);
@@ -1468,7 +1491,7 @@ unsigned char *gbuf_clean(unsigned char *input_gbuf, int input_size, int *output
 /*                           Output Functions                            */
 /*************************************************************************/
 
-void gbuf_dump(char *buffer, int n, int type, FILE *fp)
+void gbuf_dump(CgraphContext *ctx, char *buffer, int n, int type, FILE *fp)
 {
    switch(type) {
       case GBUF_RAW:
@@ -1479,20 +1502,20 @@ void gbuf_dump(char *buffer, int n, int type, FILE *fp)
 	gbuf_dump_ascii((unsigned char *) buffer, n, fp);
 	 break;
       case GBUF_AI88:
-	 gbuf_dump_ps((unsigned char *) buffer, n, type, fp);
+	 gbuf_dump_ps(ctx, (unsigned char *) buffer, n, type, fp);
 	 add_ai88_trailer(fp);
 	 break;
       case GBUF_AI3:
-	 gbuf_dump_ps((unsigned char *) buffer, n, type, fp);
+	 gbuf_dump_ps(ctx, (unsigned char *) buffer, n, type, fp);
 	 add_ai3_trailer(fp);
 	 break;
       case GBUF_EPS:
       case GBUF_PS:
-	 gbuf_dump_ps((unsigned char *) buffer, n, type, fp);
+	 gbuf_dump_ps(ctx, (unsigned char *) buffer, n, type, fp);
 	 add_ps_trailer(fp);
 	 break;
        case GBUF_FIG:
-	 gbuf_dump_fig((unsigned char *) buffer, n, type, fp);
+	 gbuf_dump_fig(ctx, (unsigned char *) buffer, n, type, fp);
 	 break;
       default:
 	 break;
@@ -1542,7 +1565,7 @@ static int haru_log(char *op) {
   return 1;
 }
 
-int gbuf_dump_pdf(char *gbuf, int bufsize, char *filename)
+int gbuf_dump_pdf(CgraphContext *ctx, char *gbuf, int bufsize, char *filename)
 {
   HPDF_Doc  pdf;
   HPDF_Page page;
@@ -1679,7 +1702,8 @@ int gbuf_dump_pdf(char *gbuf, int bufsize, char *filename)
 	  pdf_check_path(page);
 	  advance_bytes = gget_gline((GLine *) &gbuf[i],
 				     &x0, &y0, &x1, &y1);
-	  if ((img = gbFindImage(x1)))
+	  // UPDATED: Use context for gbFindImage
+	  if ((img = gbFindImage(ctx, (int)x1)))
 	    pdf_image(pdf, page, x0, y0, img);
 	}
 	break;
@@ -1901,7 +1925,7 @@ gfile_to_ascii(FILE *InFP, FILE *OutFP)
  * requested, then the fill operator is used instead of the stroke command.
  */
 
-int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
+int gbuf_dump_ps(CgraphContext *ctx, unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, lwidth = 1;
@@ -2016,7 +2040,8 @@ int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
 	ps_check_path(type, OutFP);
 	advance_bytes = gget_gline((GLine *) &gbuf[i],
 				   &x0, &y0, &x1, &y1);
-	if ((img = gbFindImage(x1))) ps_image(type, x0, y0, img, OutFP);
+	// UPDATED: Use context for gbFindImage
+	if ((img = gbFindImage(ctx, (int)x1))) ps_image(type, x0, y0, img, OutFP);
       }
       break;
     case G_POSTSCRIPT:
@@ -2097,9 +2122,8 @@ int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
   return(0);
 }
 
-
-int
-gfile_to_ps(FILE *InFP, int type, FILE *OutFP)
+// Also update gfile_to_ps to add context parameter
+int gfile_to_ps(CgraphContext *ctx, FILE *InFP, int type, FILE *OutFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, save, lwidth = 1;
@@ -2208,7 +2232,8 @@ gfile_to_ps(FILE *InFP, int type, FILE *OutFP)
 	GBUF_IMAGE *img;
 	ps_check_path(type, OutFP);
 	get_gline(InFP, &x0, &y0, &x1, &y1);
-	if ((img = gbFindImage(x1))) ps_image(type, x0, y0, img, OutFP);
+	// UPDATED: Use context for gbFindImage
+	if ((img = gbFindImage(ctx, (int)x1))) ps_image(type, x0, y0, img, OutFP);
       }
       break;
     case G_FONT:
@@ -2297,14 +2322,13 @@ gfile_to_ps(FILE *InFP, int type, FILE *OutFP)
   return(0);
 }
 
-
 /*
  * gbuf_dump_fig()
  *
  * Convert a gbuffer to an (x)fig file for editing.
  */
 
-int gbuf_dump_fig(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
+int gbuf_dump_fig(CgraphContext *ctx, unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, lwidth = 1;
@@ -2396,7 +2420,7 @@ int gbuf_dump_fig(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
       fig_check_path(type, &Fig_Filling, &Fig_Stroking, OutFP);
       advance_bytes = gget_gline((GLine *) &gbuf[i],
 				 &x0, &y0, &x1, &y1);
-      /* DO NOTHING */
+      /* DO NOTHING - or could use context to access image if needed */
       break;
     case G_FONT:
       fig_check_path(type, &Fig_Filling, &Fig_Stroking, OutFP);
@@ -2456,9 +2480,8 @@ int gbuf_dump_fig(unsigned char *gbuf, int bufsize, int type, FILE *OutFP)
   return(0);
 }
 
-
-
-int gfile_to_fig(FILE *InFP, int type, FILE *OutFP)
+// Update gfile_to_fig to add context parameter  
+int gfile_to_fig(CgraphContext *ctx, FILE *InFP, int type, FILE *OutFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, save, lwidth;
@@ -2596,7 +2619,7 @@ int gfile_to_fig(FILE *InFP, int type, FILE *OutFP)
 }
 
 
-void playback_gfile(FILE *InFP)
+void playback_gfile(CgraphContext *ctx, FILE *InFP)
 {
   int c, n;
   int orientation = 0, lstyle = 0, color = 1, just = 0, save, lwidth = 1;
@@ -2620,100 +2643,100 @@ void playback_gfile(FILE *InFP)
     switch (c) {
     case G_HEADER:
       get_gheader(InFP, &version, &w, &h);
-      setwindow(0, 0, w-1.0f,  h-1.0f);
+      setwindow(ctx, 0, 0, w-1.0f,  h-1.0f);
       break;
     case G_LINE:
       get_gline(InFP, &x0, &y0, &x1, &y1);
-      moveto(x0, y0);
-      lineto(x1,y1);
+      moveto(ctx, x0, y0);
+      lineto(ctx, x1,y1);
       break;
     case G_CIRCLE:
       get_gline(InFP, &x0, &y0, &x1, &y1);
-      if (y1 == 0.0) circle(x0, y0, x1);
-      else fcircle(x0, y0, x1);
+      if (y1 == 0.0) circle(ctx, x0, y0, x1);
+      else fcircle(ctx, x0, y0, x1);
       break;
     case G_FILLEDRECT:
       get_gline(InFP, &x0, &y0, &x1, &y1);
-      filledrect(x0, y0, x1, y1);
+      filledrect(ctx, x0, y0, x1, y1);
       break;
     case G_POLY:
       get_gpoly(InFP, &n, &points);
-      polyline(n/2, points);
+      polyline(ctx, n/2, points);
       free(points);
       break;
     case G_FILLEDPOLY:
       get_gpoly(InFP, &n, &points);
-      filledpoly(n/2, points);
+      filledpoly(ctx, n/2, points);
       free(points);
       break;
     case G_CLIP:
       get_gline(InFP, &x0, &y0, &x1, &y1);
-      setclipregion(x0, y0, x1, y1);
+      setclipregion(ctx, x0, y0, x1, y1);
       break;
     case G_POINT:
       get_gpoint(InFP, &x0, &y0);
-      dotat(x0,y0);
+      dotat(ctx, x0,y0);
       break;
     case G_MOVETO:
       get_gpoint(InFP, &x0, &y0);
-      moveto(x0, y0);
+      moveto(ctx, x0, y0);
       break;
     case G_LINETO:
       get_gpoint(InFP, &x0, &y0);
-      lineto(x0, y0);
+      lineto(ctx, x0, y0);
       break;
     case G_TEXT:
       get_gtext(InFP, &x0, &y0, &length, &string);
-      moveto(x0, y0);
-      drawtext(string);
+      moveto(ctx, x0, y0);
+      drawtext(ctx, string);
       free(string);
       break;
     case G_POSTSCRIPT:
       get_gtext(InFP, &x0, &y0, &length, &string);
-      postscript(string, x0, y0);
+      postscript(ctx, string, x0, y0);
       free(string);
       break;
     case G_IMAGE:
       {
 	GBUF_IMAGE *img;
 	get_gline(InFP, &x0, &y0, &x1, &y1);
-	if ((img = gbFindImage(x1))) 
-	  place_image(img->w, img->h, img->d, img->data, x0, y0);
+	if ((img = gbFindImage(ctx, x1))) 
+	  place_image(ctx, img->w, img->h, img->d, img->data, x0, y0);
       }
       break;
     case G_FONT:
       get_gtext(InFP, &fontsize, &y0, &length, &string);
-      if (fontsize > 1.0) setfont(string, fontsize);
+      if (fontsize > 1.0) setfont(ctx, string, fontsize);
       free(string);
       break;
     case G_ORIENTATION:
       get_gattr(c, InFP, &orientation);
-      setorientation(orientation);
+      setorientation(ctx, orientation);
       break;
     case G_JUSTIFICATION:
       get_gattr(c, InFP, &just);
-      setjust(just);
+      setjust(ctx, just);
       break;
     case G_LSTYLE:
       get_gattr(c, InFP, &lstyle);
-      setlstyle(lstyle);
+      setlstyle(ctx, lstyle);
       break;
     case G_LWIDTH:
       get_gattr(c, InFP, &lwidth);
-      setlwidth(lwidth);
+      setlwidth(ctx, lwidth);
       break;
     case G_SAVE:
       get_gattr(c, InFP, &save);
-      if (save == 1) gsave();
-      else if (save == -1) grestore();
+      if (save == 1) gsave(ctx);
+      else if (save == -1) grestore(ctx);
       break;
     case G_COLOR:
       get_gattr(c, InFP, &color);
-      setcolor(color);
+      setcolor(ctx, color);
       break;
     case G_BACKGROUND:
       get_gattr(c, InFP, &backgroundcolor);
-      setbackgroundcolor(backgroundcolor);
+      setbackgroundcolor(ctx, backgroundcolor);
       break;
     case G_GROUP:
       get_gattr(c, InFP, &group);
@@ -2729,7 +2752,7 @@ void playback_gfile(FILE *InFP)
   }
 }
 
-void playback_gbuf(unsigned char *gbuf, int bufsize)
+void playback_gbuf(CgraphContext *ctx, unsigned char *gbuf, int bufsize)
 {
   int c, n;
   float w, h;
@@ -2757,105 +2780,105 @@ void playback_gbuf(unsigned char *gbuf, int bufsize)
     case G_HEADER:
       advance_bytes = gget_gheader((GHeader *) &gbuf[i],
 				   &version, &w, &h);
-      setwindow(0, 0, w-1.0f, h-1.0f);
+      setwindow(ctx, 0, 0, w-1.0f, h-1.0f);
       break;
     case G_LINE:
       advance_bytes = gget_gline((GLine *) &gbuf[i],
 				 &x0, &y0, &x1, &y1);
-      moveto(x0, y0);
-      lineto(x1,y1);
+      moveto(ctx, x0, y0);
+      lineto(ctx, x1,y1);
       break;
     case G_CIRCLE:
       advance_bytes = gget_gline((GLine *) &gbuf[i],
 				 &x0, &y0, &x1, &y1);
-      if (y1 == 0.0) circle(x0, y0, x1);
-      else fcircle(x0, y0, x1);
+      if (y1 == 0.0) circle(ctx, x0, y0, x1);
+      else fcircle(ctx, x0, y0, x1);
       break;
     case G_FILLEDRECT:
       advance_bytes = gget_gline((GLine *) &gbuf[i],
 				 &x0, &y0, &x1, &y1);
-      filledrect(x0, y0, x1, y1);
+      filledrect(ctx, x0, y0, x1, y1);
       break;
     case G_POLY:
       advance_bytes = gget_gpoly((GPointList *) &gbuf[i], &n, &points);
-      polyline(n/2, points);
+      polyline(ctx, n/2, points);
       free(points);
       break;
     case G_FILLEDPOLY:
       advance_bytes = gget_gpoly((GPointList *) &gbuf[i], &n, &points);
-      filledpoly(n/2, points);
+      filledpoly(ctx, n/2, points);
       free(points);
       break;
     case G_CLIP:
       advance_bytes = gget_gline((GLine *) &gbuf[i],
 				 &x0, &y0, &x1, &y1);
-      setclipregion(x0, y0, x1, y1);
+      setclipregion(ctx, x0, y0, x1, y1);
       break;
     case G_POINT:
       advance_bytes = gget_gpoint((GPoint *) &gbuf[i], &x0, &y0);
-      dotat(x0,y0);
+      dotat(ctx, x0,y0);
       break;
     case G_MOVETO:
       advance_bytes = gget_gpoint((GPoint *) &gbuf[i], &x0, &y0);
-      moveto(x0, y0);
+      moveto(ctx, x0, y0);
       break;
     case G_LINETO:
       advance_bytes = gget_gpoint((GPoint *) &gbuf[i], &x0, &y0);
-      lineto(x0, y0);
+      lineto(ctx, x0, y0);
       break;
     case G_TEXT:
       advance_bytes = gget_gtext((GText *) &gbuf[i],
 				 &x0, &y0, &length, &string);
-      moveto(x0, y0);
-      drawtext(string);
+      moveto(ctx, x0, y0);
+      drawtext(ctx, string);
       break;
     case G_POSTSCRIPT:
       advance_bytes = gget_gtext((GText *) &gbuf[i],
 				 &x0, &y0, &length, &string);
-      postscript(string, x0, y0);
+      postscript(ctx, string, x0, y0);
       break;
     case G_IMAGE:
       {
 	GBUF_IMAGE *img;
 	advance_bytes = gget_gline((GLine *) &gbuf[i],
 				   &x0, &y0, &x1, &y1);
-	if ((img = gbFindImage(x1))) 
-	  place_image(img->w, img->h, img->d, img->data, x0, y0);
+	if ((img = gbFindImage(ctx, x1))) 
+	  place_image(ctx, img->w, img->h, img->d, img->data, x0, y0);
       }
       break;
     case G_FONT:
       advance_bytes = gget_gtext((GText *) &gbuf[i],
 				 &fontsize, &y0, &length, &string);
-      if (fontsize > 1.0) setfont(string, fontsize);
+      if (fontsize > 1.0) setfont(ctx, string, fontsize);
       break;
     case G_ORIENTATION:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &orientation);
-      setorientation(orientation);
+      setorientation(ctx, orientation);
       break;
     case G_JUSTIFICATION:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &just);
-      setjust(just);
+      setjust(ctx, just);
       break;
     case G_LSTYLE:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &lstyle);
-      setlstyle(lstyle);
+      setlstyle(ctx, lstyle);
       break;
     case G_LWIDTH:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &lwidth);
-      setlwidth(lwidth);
+      setlwidth(ctx, lwidth);
       break;
     case G_SAVE:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &save);
-      if (save == 1) gsave();
-      else if (save == -1) grestore();
+      if (save == 1) gsave(ctx);
+      else if (save == -1) grestore(ctx);
       break;
     case G_COLOR:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &color);
-      setcolor(color);
+      setcolor(ctx, color);
       break;
     case G_BACKGROUND:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &backgroundcolor);
-      setbackgroundcolor(backgroundcolor);
+      setbackgroundcolor(ctx, backgroundcolor);
       break;
     case G_GROUP:
       advance_bytes = gget_gattr(c, (GAttr *) &gbuf[i], &group);
@@ -2871,28 +2894,12 @@ void playback_gbuf(unsigned char *gbuf, int bufsize)
   }
 }
 
-
-int gbClearAndPlayback(void)
+int gbClearAndPlayback(CgraphContext *ctx)
 {
-  clearscreen();
-  gbPlaybackGevents();
+  clearscreen(ctx);
+  gbPlaybackGevents(ctx);
   return(0);
 }  
-  
-
-void gbSetPageOrientation(char ori)
-{
-  if(ori != PS_LANDSCAPE && ori != PS_PORTRAIT) {
-    PS_Orientation = PS_AUTOMATIC;
-    return;
-  }
-  PS_Orientation = ori;
-}
-
-void gbSetPageFill(int status)
-{
-  PS_FillPage = (status != 0);
-}
 
 /*************************************************************************/
 /*                           String Functions                            */
@@ -3829,8 +3836,8 @@ static void pdf_image(HPDF_Doc pdf, HPDF_Page page,
   if (d == 4) {
     HPDF_ColorSpace color_space = HPDF_CS_DEVICE_RGB;
     int i, j, n = w*h, total_n = w*h*4;
-    p1 = buf2 = (unsigned char *) malloc(w*h*3);
-    p2 = img->data;
+    p1 = buf2 = (char *) malloc(w*h*3);
+    p2 = (char *) img->data;
     if (!buf2) return;
     for (i = 0; i < n; i++) {
       *p1++ = *p2++;
@@ -3839,15 +3846,16 @@ static void pdf_image(HPDF_Doc pdf, HPDF_Page page,
       p2++;			/* skip alpha */
     }
     d = 3;
-    hpdf_image = HPDF_LoadRawImageFromMem(pdf, buf2, w, h, color_space, 8);
+    hpdf_image = HPDF_LoadRawImageFromMem(pdf, (const HPDF_BYTE *) buf2, w, h, color_space, 8);
     free(buf2);
 
     /*
      * bail on mask if w*d is not a multiple of 8 - could be fixed in future...
      */
     if ((w*h)%8 == 0) {
-      p1 = mask_data = (unsigned char *) malloc(w*h/8);
-      p2 = img->data;
+      p1 = (char *) malloc(w*h/8);
+      mask_data = (unsigned char *) p1;
+      p2 = (char *) img->data;
       for (i = 3; i < total_n; ) {
 	for (j = 7; j >= 0; j--) {
 	  maskbyte |= ((p2[i] == 0) << j);

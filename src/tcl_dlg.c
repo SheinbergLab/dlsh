@@ -8,6 +8,7 @@
  *
  * AUTHOR
  *      DLS, JUL-95...DEC-16
+ *           SEP-25 - refactored for multithread safety
  *
  ****************************************************************************/
 
@@ -28,6 +29,17 @@
 
 #include <rawapi.h>
 
+static CgraphContext *getDlgContext(Tcl_Interp *interp) {
+    CgraphContext *ctx = CgraphGetContext(interp);
+    if (!ctx) {
+        // Could create one if needed, but for now assume it exists
+        Tcl_SetResult(interp, "No cgraph context available", TCL_STATIC);
+        return NULL;
+    }
+    return ctx;
+}
+
+
 typedef int (*TCL_FUNCTION)(ClientData, Tcl_Interp *, int, char **);
 typedef struct {
   char *name;
@@ -42,6 +54,8 @@ enum DLG_MARKERS    { DLG_SQUARE, DLG_FSQUARE, DLG_CIRC, DLG_FCIRC,
 			DLG_HTICK, DLG_VTICK, DLG_PLUS, DLG_HTICK_L,
 		        DLG_HTICK_R, DLG_VTICK_U, DLG_VTICK_D, DLG_TRIANGLE,
                         DLG_DIAMOND };
+enum DLG_LINEFUNCS  { DLG_LINE, DLG_BAR, DLG_STEP, DLG_DISJOINT, DLG_BEZIER };
+enum DLG_TEXTFUNCS  { DLG_INTS, DLG_STRINGS, DLG_FLOATS };
 enum DLG_SCALETYPES { DLG_UNIT_SCALE, DLG_X_SCALE, DLG_WINDOW_SCALE,
                       DLG_WINDOW_XSCALE, DLG_WINDOW_YSCALE};
 enum DLG_RGBFUNCS { DLG_SINGLE_COLOR, DLG_MULTI_COLORS };
@@ -49,9 +63,9 @@ enum DLG_RGBFUNCS { DLG_SINGLE_COLOR, DLG_MULTI_COLORS };
 /*
  * Data structures used for drawing markers and lines
  */
-
-typedef void (*MARKER_FUNC)(float, float, float);
      
+typedef void (*MARKER_FUNC)(CgraphContext *ctx, float, float, float);
+
 typedef struct _mfuncinfo {
   char *name;
   MARKER_FUNC mfunc;
@@ -63,10 +77,9 @@ typedef struct _mfuncinfo {
 } MARKER_INFO;
 
 static const char  *defaultMarkerType = "SQUARE";
-
 struct _lfuncinfo;
-typedef void (*LINE_FUNC)(int n, float *x, float *y, struct _lfuncinfo *);
-     
+typedef void (*LINE_FUNC)(CgraphContext *ctx, int n, float *x, float *y, struct _lfuncinfo *);
+ 
 typedef struct _lfuncinfo {
   char *name;
   LINE_FUNC lfunc;
@@ -87,8 +100,9 @@ typedef struct _lfuncinfo {
 } LINE_INFO;
 
 struct _tfuncinfo;
-typedef void (*TEXT_FUNC)(int n, float *x, float *y, void *s, 
-			  struct _tfuncinfo *);
+typedef void (*TEXT_FUNC)(CgraphContext *ctx, int n, float *x, float *y, void *s, 
+                          struct _tfuncinfo *);
+
      
 typedef struct _tfuncinfo {
   char *name;
@@ -103,8 +117,6 @@ typedef struct _tfuncinfo {
   float spacing;		/* for multiline text strings */
   DYN_LIST *colors;		/* must be ints representing colors */
 } TEXT_INFO;
-
-
 
 static float heatmap_jet_r[] = { 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 15.937500, 31.875000, 47.812500, 63.750000, 79.687500, 95.625000, 111.562500, 127.500000, 143.437500, 159.375000, 175.312500, 191.250000, 207.187500, 223.125000, 239.062500, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 255.000000, 239.062500, 223.125000, 207.187500, 191.250000, 175.312500, 159.375000, 143.437500, 127.500000};
 
@@ -123,29 +135,32 @@ static float heatmap_hot_b[] = { 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
  *                             Local Functions 
  *****************************************************************************/
 
-int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo);
-int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly, 
-			DYN_LIST *sizes, float scale, 
-			DYN_LIST *colors, MARKER_INFO *minfo);
+int dlgDrawMarkers(CgraphContext *ctx, DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo);
+int dlgDrawMultiMarkers(CgraphContext *ctx, DYN_LIST *dlx, DYN_LIST *dly, 
+                        DYN_LIST *sizes, float scale, 
+                        DYN_LIST *colors, MARKER_INFO *minfo);
 
 static int dlgGetMarkerInfo(char *tagname, MARKER_INFO *minfo);
 
-int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx);
-static int dlgLine(int n, float *x, float *y, LINE_INFO *linfo);
-static int dlgBar(int n, float *x, float *y, LINE_INFO *linfo);
-static int dlgStep(int n, float *x, float *y, LINE_INFO *linfo);
-static int dlgDisjointLines(int n, float *x, float *y, LINE_INFO *linfo);
-static int dlgBezier(int n, float *x, float *y, LINE_INFO *linfo);
+int dlgDrawLines(CgraphContext *ctx, DYN_LIST *dlx, DYN_LIST *dly, 
+					LINE_INFO *linfo, int idx);
+static int dlgLine(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo);
+static int dlgBar(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo);
+static int dlgStep(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo);
+static int dlgDisjointLines(CgraphContext *ctx, int n, float *x, float *y, 
+							LINE_INFO *linfo);
+static int dlgBezier(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo);
+
 static int dlgGetLineInfo(int i, LINE_INFO *linfo);
 
-int dlgDrawText(DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
-		TEXT_INFO *tinfo);
-static int dlgTextInt(int n, float *x, float *y, int *ints, 
-		      TEXT_INFO *tinfo);
-static int dlgTextFloat(int n, float *x, float *y, float *floats, 
-		      TEXT_INFO *tinfo);
-static int dlgTextString(int n, float *x, float *y, char **strings, 
-			 TEXT_INFO *tinfo);
+int dlgDrawText(CgraphContext *ctx, DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
+                TEXT_INFO *tinfo);
+static int dlgTextInt(CgraphContext *ctx, int n, float *x, float *y, int *ints, 
+                      TEXT_INFO *tinfo);
+static int dlgTextFloat(CgraphContext *ctx, int n, float *x, float *y, float *floats, 
+                        TEXT_INFO *tinfo);
+static int dlgTextString(CgraphContext *ctx, int n, float *x, float *y, char **strings, 
+                         TEXT_INFO *tinfo);
 static int dlgGetTextInfo(int i, TEXT_INFO *tinfo);
 
 static int getPSBB(Tcl_Interp *interp, char *filename, 
@@ -157,7 +172,6 @@ static float nicenum(float x, int round);
 /*****************************************************************************
  *                             Local Tables
  *****************************************************************************/
-
 
 static MARKER_INFO MarkerTable[] = {
   { "SQUARE",    (MARKER_FUNC) square ,   DLG_SQUARE,    -1, -1, 5.0, -1 },
@@ -176,8 +190,8 @@ static MARKER_INFO MarkerTable[] = {
 };
 
 
-enum DLG_LINEFUNCS  { DLG_LINE, DLG_BAR, DLG_STEP, DLG_DISJOINT, DLG_BEZIER };
-static LINE_INFO LineTable[] = {                             /* yoff */
+
+static LINE_INFO LineTable[] = {                             
   { "LINE", (LINE_FUNC) dlgLine , DLG_LINE, 0, 50, 0, -1, -1, 0, 1, -1, -1, 0,
     { 0.0, 0.0, 0.0, 0.0 }, NULL, NULL },
   { "BAR",  (LINE_FUNC) dlgBar,   DLG_BAR,  0, 50, 0, -1, -1, 0, 1, -1, -1, 0,
@@ -191,7 +205,7 @@ static LINE_INFO LineTable[] = {                             /* yoff */
     { 0.0, 0.0, 0.0, 0.0 }, NULL, NULL }
 };
 
-enum DLG_TEXTFUNCS  { DLG_INTS, DLG_STRINGS, DLG_FLOATS };
+
 static TEXT_INFO TextTable[] = {
   { "INTS",    (TEXT_FUNC) dlgTextInt    , DLG_INTS, 
       "Helvetica", 10.0, 0, 0, -1, "%d", 1.0, NULL },
@@ -350,8 +364,11 @@ static int tclDLGHelp (ClientData cd, Tcl_Interp *interp,
  *****************************************************************************/
 
 static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
-			     int argc, char *argv[])
+                             int argc, char *argv[])
 {
+  CgraphContext *ctx = getDlgContext(interp);
+  if (!ctx) return TCL_ERROR;
+  
   DYN_LIST *dlx, *dly, *dltx = NULL, *dlty = NULL;
   DYN_LIST *sizes = NULL, *colors = NULL;	/* for multi markers */
   int scaletype = DLG_UNIT_SCALE;
@@ -382,22 +399,22 @@ static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
 	l = strlen(argv[i+1])-1;
 
 	if (argv[i+1][l] == 's' || argv[i+1][l] == 'S') {
-	  scale = getxscale();
+	  scale = getxscale(ctx);
 	}
 	else if (argv[i+1][l] == 'w' || argv[i+1][l] == 'W' ||
 		 argv[i+1][l] == 'x' || argv[i+1][l] == 'X') {
 	  float xres, yres, xul, yub, xur, yut;
-	  getresol(&xres, &yres);
-	  getwindow(&xul, &yub, &xur, &yut);
+	  getresol(ctx, &xres, &yres);
+	  getwindow(ctx, &xul, &yub, &xur, &yut);
 	  /* Make the marker dims with respect to x axis */
-	  scale = xres/fabs(xur-xul) * getxscale();
+	  scale = xres/fabs(xur-xul) * getxscale(ctx);
 	}
 	else if (argv[i+1][l] == 'y' || argv[i+1][l] == 'Y') {
 	  float xres, yres, xul, yub, xur, yut;
-	  getresol(&xres, &yres);
-	  getwindow(&xul, &yub, &xur, &yut);
+	  getresol(ctx, &xres, &yres);
+	  getwindow(ctx, &xul, &yub, &xur, &yut);
 	  /* Make the marker dims with respect to y axis */
-	  scale = yres/fabs(yut-yub) * getyscale();
+	  scale = yres/fabs(yut-yub) * getyscale(ctx);
 	}
 	else {
 	  l = strlen(argv[i+1]);	/* no modifier */
@@ -601,7 +618,7 @@ static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
     int l = strlen(argv[4])-1;
     float scale = 1.0;
     if (argv[4][l] == 's' || argv[4][l] == 'S') {
-      scale = getxscale();
+      scale = getxscale(ctx);
       argv[4][l] = 0;
     }
     if (Tcl_GetDouble(interp, argv[4], &msize) != TCL_OK) return TCL_ERROR;
@@ -614,35 +631,35 @@ static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
    */
   if (sizes) {
     float scale = 1.0;
-    if (scaletype == DLG_X_SCALE) scale = getxscale();
+    if (scaletype == DLG_X_SCALE) scale = getxscale(ctx);
     else if (scaletype == DLG_WINDOW_SCALE || scaletype == DLG_WINDOW_XSCALE) {
       float xres, yres, xul, yub, xur, yut;
-      getresol(&xres, &yres);
-      getwindow(&xul, &yub, &xur, &yut);
-      scale = xres/fabs(xur-xul) * getxscale();
+      getresol(ctx, &xres, &yres);
+      getwindow(ctx, &xul, &yub, &xur, &yut);
+      scale = xres/fabs(xur-xul) * getxscale(ctx);
     }
     else if (scaletype == DLG_WINDOW_YSCALE) {
       float xres, yres, xul, yub, xur, yut;
-      getresol(&xres, &yres);
-      getwindow(&xul, &yub, &xur, &yut);
-      scale = yres/fabs(yut-yub) * getyscale();
+      getresol(ctx, &xres, &yres);
+      getwindow(ctx, &xul, &yub, &xur, &yut);
+      scale = yres/fabs(yut-yub) * getyscale(ctx);
     }
-    status = dlgDrawMultiMarkers(dlx, dly, sizes, scale, colors, &minfo);
+    status = dlgDrawMultiMarkers(ctx, dlx, dly, sizes, scale, colors, &minfo);
   }
   else {
     float scale = 1.0;
-    if (scaletype == DLG_X_SCALE) scale = getxscale();
+    if (scaletype == DLG_X_SCALE) scale = getxscale(ctx);
     else if (scaletype == DLG_WINDOW_SCALE || scaletype == DLG_WINDOW_XSCALE) {
       float xres, yres, xul, yub, xur, yut;
-      getresol(&xres, &yres);
-      getwindow(&xul, &yub, &xur, &yut);
-      scale = xres/fabs(xur-xul) * getxscale();
+      getresol(ctx, &xres, &yres);
+      getwindow(ctx, &xul, &yub, &xur, &yut);
+      scale = xres/fabs(xur-xul) * getxscale(ctx);
     }
     else if (scaletype == DLG_WINDOW_YSCALE) {
       float xres, yres, xul, yub, xur, yut;
-      getresol(&xres, &yres);
-      getwindow(&xul, &yub, &xur, &yut);
-      scale = yres/fabs(yut-yub) * getyscale();
+      getresol(ctx, &xres, &yres);
+      getwindow(ctx, &xul, &yub, &xur, &yut);
+      scale = yres/fabs(yut-yub) * getyscale(ctx);
     }
     minfo.msize *= scale;
 
@@ -652,11 +669,11 @@ static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
       length = DYN_LIST_N(dlx);
       if (DYN_LIST_N(dly) > length) length = DYN_LIST_N(dly);
       sizes = dynListOnesFloat(length);
-      status = dlgDrawMultiMarkers(dlx, dly, sizes, minfo.msize, 
+      status = dlgDrawMultiMarkers(ctx, dlx, dly, sizes, minfo.msize, 
 				   colors, &minfo);
       dfuFreeDynList(sizes);
     }
-    else status = dlgDrawMarkers(dlx, dly, &minfo);
+    else status = dlgDrawMarkers(ctx, dlx, dly, &minfo);
   }
 
   switch (status) {
@@ -688,7 +705,7 @@ static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
   return TCL_ERROR;
 }
 
-int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
+int dlgDrawMarkers(CgraphContext *ctx, DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
 {
   int mode = 0;
   int oldcolor = 0, oldwidth = 0, oldclip = 0;
@@ -703,7 +720,7 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
       int i, status;
       DYN_LIST **sublists = (DYN_LIST **) DYN_LIST_VALS(dlx);
       for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	status = dlgDrawMarkers(sublists[i], dly, minfo);
+	status = dlgDrawMarkers(ctx, sublists[i], dly, minfo);
 	if (status != DLG_OK) return status;
       }
       return DLG_OK;
@@ -713,7 +730,7 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
 	DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
 	DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
 	for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	  status = dlgDrawMarkers(sx[i], sy[i], minfo);
+	  status = dlgDrawMarkers(ctx, sx[i], sy[i], minfo);
 	  if (status != DLG_OK) return status;
 	}
 	return DLG_OK;
@@ -723,7 +740,7 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
       DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
       DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dly); i++) {
-	status = dlgDrawMarkers(sx[0], sy[i], minfo);
+	status = dlgDrawMarkers(ctx, sx[0], sy[i], minfo);
 	if (status != DLG_OK) return status;
       }
       return DLG_OK;
@@ -733,7 +750,7 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
       DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
       DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	status = dlgDrawMarkers(sx[i], sy[0], minfo);
+	status = dlgDrawMarkers(ctx, sx[i], sy[0], minfo);
 	if (status != DLG_OK) return status;
       }
       return DLG_OK;
@@ -751,7 +768,7 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
       int i, status;
       DYN_LIST **sublists = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dly); i++) {
-	status = dlgDrawMarkers(dlx, sublists[i], minfo);
+	status = dlgDrawMarkers(ctx, dlx, sublists[i], minfo);
 	if (status != DLG_OK) return status;
       }
       return DLG_OK;
@@ -782,29 +799,29 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
     float *x = (float *) DYN_LIST_VALS(dlx);
     float *y = (float *) DYN_LIST_VALS(dly);
 
-    if (minfo->clip >= 0) oldclip = setclip(minfo->clip);
-    if (minfo->color >= 0) oldcolor = setcolor(minfo->color);
-    if (minfo->lwidth >= 0) oldwidth = setlwidth(minfo->lwidth);
+    if (minfo->clip >= 0) oldclip = setclip(ctx, minfo->clip);
+    if (minfo->color >= 0) oldcolor = setcolor(ctx, minfo->color);
+    if (minfo->lwidth >= 0) oldwidth = setlwidth(ctx, minfo->lwidth);
     switch (mode) {
     case 0:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[i], y[i], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[i], y[i], minfo->msize);
       }
       break;
     case 1:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[0], y[i], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[0], y[i], minfo->msize);
       }
       break;
     case 2:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[i], y[0], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[i], y[0], minfo->msize);
       }
       break;
     }
-    if (minfo->lwidth >= 0) setlwidth(oldwidth);
-    if (minfo->color >= 0) setcolor(oldcolor);
-    if (minfo->clip >= 0) setclip(oldclip);
+    if (minfo->lwidth >= 0) setlwidth(ctx, oldwidth);
+    if (minfo->color >= 0) setcolor(ctx, oldcolor);
+    if (minfo->clip >= 0) setclip(ctx, oldclip);
     return DLG_OK;
   }
 
@@ -814,29 +831,29 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
     int *x = (int *) DYN_LIST_VALS(dlx);
     float *y = (float *) DYN_LIST_VALS(dly);
     
-    if (minfo->clip >= 0) oldclip = setclip(minfo->clip);
-    if (minfo->color >= 0) oldcolor = setcolor(minfo->color);
-    if (minfo->lwidth >= 0) oldwidth = setlwidth(minfo->lwidth);
+    if (minfo->clip >= 0) oldclip = setclip(ctx, minfo->clip);
+    if (minfo->color >= 0) oldcolor = setcolor(ctx, minfo->color);
+    if (minfo->lwidth >= 0) oldwidth = setlwidth(ctx, minfo->lwidth);
     switch (mode) {
     case 0:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[i], y[i], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[i], y[i], minfo->msize);
       }
       break;
     case 1:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[0], y[i], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[0], y[i], minfo->msize);
       }
       break;
     case 2:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[i], y[0], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[i], y[0], minfo->msize);
       }
       break;
     }
-    if (minfo->lwidth >= 0) setlwidth(oldwidth);
-    if (minfo->color >= 0) setcolor(oldcolor);
-    if (minfo->clip >= 0) setclip(oldclip);
+    if (minfo->lwidth >= 0) setlwidth(ctx, oldwidth);
+    if (minfo->color >= 0) setcolor(ctx, oldcolor);
+    if (minfo->clip >= 0) setclip(ctx, oldclip);
     return DLG_OK;
   }
 
@@ -846,29 +863,29 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
     float *x = (float *) DYN_LIST_VALS(dlx);
     int *y = (int *) DYN_LIST_VALS(dly);
     
-    if (minfo->clip >= 0) oldclip = setclip(minfo->clip);
-    if (minfo->color >= 0) oldcolor = setcolor(minfo->color);
-    if (minfo->lwidth >= 0) oldwidth = setlwidth(minfo->lwidth);
+    if (minfo->clip >= 0) oldclip = setclip(ctx, minfo->clip);
+    if (minfo->color >= 0) oldcolor = setcolor(ctx, minfo->color);
+    if (minfo->lwidth >= 0) oldwidth = setlwidth(ctx, minfo->lwidth);
     switch (mode) {
     case 0:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[i], y[i], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[i], y[i], minfo->msize);
       }
       break;
     case 1:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[0], y[i], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[0], y[i], minfo->msize);
       }
       break;
     case 2:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[i], y[0], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[i], y[0], minfo->msize);
       }
       break;
     }
-    if (minfo->lwidth >= 0) setlwidth(oldwidth);
-    if (minfo->color >= 0) setcolor(oldcolor);
-    if (minfo->clip >= 0) setclip(oldclip);
+    if (minfo->lwidth >= 0) setlwidth(ctx, oldwidth);
+    if (minfo->color >= 0) setcolor(ctx, oldcolor);
+    if (minfo->clip >= 0) setclip(ctx, oldclip);
     return DLG_OK;
   }
 
@@ -878,39 +895,40 @@ int dlgDrawMarkers(DYN_LIST *dlx, DYN_LIST *dly, MARKER_INFO *minfo)
     int *x = (int *) DYN_LIST_VALS(dlx);
     int *y = (int *) DYN_LIST_VALS(dly);
     
-    if (minfo->clip >= 0) oldclip = setclip(minfo->clip);
-    if (minfo->color >= 0) oldcolor = setcolor(minfo->color);
-    if (minfo->lwidth >= 0) oldwidth = setlwidth(minfo->lwidth);
+    if (minfo->clip >= 0) oldclip = setclip(ctx, minfo->clip);
+    if (minfo->color >= 0) oldcolor = setcolor(ctx, minfo->color);
+    if (minfo->lwidth >= 0) oldwidth = setlwidth(ctx, minfo->lwidth);
     switch (mode) {
     case 0:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[i], y[i], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[i], y[i], minfo->msize);
       }
       break;
     case 1:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[0], y[i], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[0], y[i], minfo->msize);
       }
       break;
     case 2:
       for (i = 0; i < length; i++) {
-	(*(minfo->mfunc))(x[i], y[0], minfo->msize);
+	(*(minfo->mfunc))(ctx, x[i], y[0], minfo->msize);
       }
       break;
     }
-    if (minfo->lwidth >= 0) setlwidth(oldwidth);
-    if (minfo->color >= 0) setcolor(oldcolor);
-    if (minfo->clip >= 0) setclip(oldclip);
+    if (minfo->lwidth >= 0) setlwidth(ctx, oldwidth);
+    if (minfo->color >= 0) setcolor(ctx, oldcolor);
+    if (minfo->clip >= 0) setclip(ctx, oldclip);
     return DLG_OK;
   }
   else return DLG_BADARGS;
 }
 
+
 /*
  * Drawing different marker types (sizes, colors) at each x-y postition
  */
 
-int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly, 
+int dlgDrawMultiMarkers(CgraphContext *ctx, DYN_LIST *dlx, DYN_LIST *dly, 
 			DYN_LIST *sizes, float scale, 
 			DYN_LIST *colors, MARKER_INFO *minfo)
 {
@@ -918,7 +936,6 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
   int *colorvals = NULL;
   int oldcolor = 0, oldwidth = 0, oldclip = 0;
   int length;
-
 
   switch (DYN_LIST_DATATYPE(dlx)) {
   case DF_STRING:
@@ -929,7 +946,7 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
       int i, status;
       DYN_LIST **sublists = (DYN_LIST **) DYN_LIST_VALS(dlx);
       for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	status = dlgDrawMultiMarkers(sublists[i], dly, 
+	status = dlgDrawMultiMarkers(ctx, sublists[i], dly, 
 				     sizes, scale, colors, minfo);
 	if (status != DLG_OK) return status;
       }
@@ -940,7 +957,7 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
 	DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
 	DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
 	for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	  status = dlgDrawMultiMarkers(sx[i], sy[i],
+	  status = dlgDrawMultiMarkers(ctx, sx[i], sy[i],
 				  sizes, scale, colors, minfo);
 	  if (status != DLG_OK) return status;
 	}
@@ -951,7 +968,7 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
       DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
       DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dly); i++) {
-	status = dlgDrawMultiMarkers(sx[0], sy[i],
+	status = dlgDrawMultiMarkers(ctx, sx[0], sy[i],
 				     sizes, scale, colors, minfo);
 	if (status != DLG_OK) return status;
       }
@@ -962,7 +979,7 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
       DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
       DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	status = dlgDrawMultiMarkers(sx[i], sy[0],
+	status = dlgDrawMultiMarkers(ctx, sx[i], sy[0],
 				     sizes, scale, colors, minfo);
 	if (status != DLG_OK) return status;
       }
@@ -981,7 +998,7 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
       int i, status;
       DYN_LIST **sublists = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dly); i++) {
-	status = dlgDrawMultiMarkers(dlx, sublists[i], 
+	status = dlgDrawMultiMarkers(ctx, dlx, sublists[i], 
 				     sizes, scale, colors, minfo);
 	if (status != DLG_OK) return status;
       }
@@ -991,7 +1008,6 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
     break;
   }
   
-
   if (!DYN_LIST_N(dlx) || !DYN_LIST_N(dly)) return DLG_ZEROLIST;
   if (DYN_LIST_N(dlx) == DYN_LIST_N(dly)) {
     mode = 0;
@@ -1024,42 +1040,42 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
     float *x = (float *) DYN_LIST_VALS(dlx);
     float *y = (float *) DYN_LIST_VALS(dly);
 
-    if (minfo->clip >= 0) oldclip = setclip(minfo->clip);
-    if (minfo->color >= 0) oldcolor = setcolor(minfo->color);
-    if (minfo->lwidth >= 0) oldwidth = setlwidth(minfo->lwidth);
+    if (minfo->clip >= 0) oldclip = setclip(ctx, minfo->clip);
+    if (minfo->color >= 0) oldcolor = setcolor(ctx, minfo->color);
+    if (minfo->lwidth >= 0) oldwidth = setlwidth(ctx, minfo->lwidth);
     switch (mode) {
     case 0:
       if (!colors) {
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     case 1:
@@ -1067,74 +1083,73 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
-
       break;
     case 2:
       if (!colors) {
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     }
-    if (minfo->lwidth >= 0) setlwidth(oldwidth);
-    if (minfo->color >= 0) setcolor(oldcolor);
-    if (minfo->clip >= 0) setclip(oldclip);
+    if (minfo->lwidth >= 0) setlwidth(ctx, oldwidth);
+    if (minfo->color >= 0) setcolor(ctx, oldcolor);
+    if (minfo->clip >= 0) setclip(ctx, oldclip);
     return DLG_OK;
   }
 
@@ -1144,42 +1159,42 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
     int *x = (int *) DYN_LIST_VALS(dlx);
     float *y = (float *) DYN_LIST_VALS(dly);
     
-    if (minfo->clip >= 0) oldclip = setclip(minfo->clip);
-    if (minfo->color >= 0) oldcolor = setcolor(minfo->color);
-    if (minfo->lwidth >= 0) oldwidth = setlwidth(minfo->lwidth);
+    if (minfo->clip >= 0) oldclip = setclip(ctx, minfo->clip);
+    if (minfo->color >= 0) oldcolor = setcolor(ctx, minfo->color);
+    if (minfo->lwidth >= 0) oldwidth = setlwidth(ctx, minfo->lwidth);
     switch (mode) {
     case 0:
       if (!colors) {
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     case 1:
@@ -1187,33 +1202,33 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     case 2:
@@ -1221,39 +1236,39 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     }
-    if (minfo->lwidth >= 0) setlwidth(oldwidth);
-    if (minfo->color >= 0) setcolor(oldcolor);
-    if (minfo->clip >= 0) setclip(oldclip);
+    if (minfo->lwidth >= 0) setlwidth(ctx, oldwidth);
+    if (minfo->color >= 0) setcolor(ctx, oldcolor);
+    if (minfo->clip >= 0) setclip(ctx, oldclip);
     return DLG_OK;
   }
 
@@ -1263,42 +1278,42 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
     float *x = (float *) DYN_LIST_VALS(dlx);
     int *y = (int *) DYN_LIST_VALS(dly);
     
-    if (minfo->clip >= 0) oldclip = setclip(minfo->clip);
-    if (minfo->color >= 0) oldcolor = setcolor(minfo->color);
-    if (minfo->lwidth >= 0) oldwidth = setlwidth(minfo->lwidth);
+    if (minfo->clip >= 0) oldclip = setclip(ctx, minfo->clip);
+    if (minfo->color >= 0) oldcolor = setcolor(ctx, minfo->color);
+    if (minfo->lwidth >= 0) oldwidth = setlwidth(ctx, minfo->lwidth);
     switch (mode) {
     case 0:
       if (!colors) {
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     case 1:
@@ -1306,33 +1321,33 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     case 2:
@@ -1340,39 +1355,39 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     }
-    if (minfo->lwidth >= 0) setlwidth(oldwidth);
-    if (minfo->color >= 0) setcolor(oldcolor);
-    if (minfo->clip >= 0) setclip(oldclip);
+    if (minfo->lwidth >= 0) setlwidth(ctx, oldwidth);
+    if (minfo->color >= 0) setcolor(ctx, oldcolor);
+    if (minfo->clip >= 0) setclip(ctx, oldclip);
     return DLG_OK;
   }
 
@@ -1382,42 +1397,42 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
     int *x = (int *) DYN_LIST_VALS(dlx);
     int *y = (int *) DYN_LIST_VALS(dly);
     
-    if (minfo->clip >= 0) oldclip = setclip(minfo->clip);
-    if (minfo->color >= 0) oldcolor = setcolor(minfo->color);
-    if (minfo->lwidth >= 0) oldwidth = setlwidth(minfo->lwidth);
+    if (minfo->clip >= 0) oldclip = setclip(ctx, minfo->clip);
+    if (minfo->color >= 0) oldcolor = setcolor(ctx, minfo->color);
+    if (minfo->lwidth >= 0) oldwidth = setlwidth(ctx, minfo->lwidth);
     switch (mode) {
     case 0:
       if (!colors) {
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[i], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     case 1:
@@ -1425,33 +1440,33 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[0], y[i], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[0], y[i], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     case 2:
@@ -1459,39 +1474,39 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
       }
       else {
-	oldcolor = setcolor(0);
+	oldcolor = setcolor(ctx, 0);
 	if (DYN_LIST_DATATYPE(sizes) == DF_FLOAT) {
 	  float *vals = (float *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
 	else if (DYN_LIST_DATATYPE(sizes) == DF_LONG) {
 	  int *vals = (int *) DYN_LIST_VALS(sizes);
 	  for (i = 0; i < length; i++) {
-	    setcolor(colorvals[i]);
-	    (*(minfo->mfunc))(x[i], y[0], vals[i]*scale);
+	    setcolor(ctx, colorvals[i]);
+	    (*(minfo->mfunc))(ctx, x[i], y[0], vals[i]*scale);
 	  }
 	}
-	setcolor(oldcolor);
+	setcolor(ctx, oldcolor);
       }
       break;
     }
-    if (minfo->lwidth >= 0) setlwidth(oldwidth);
-    if (minfo->color >= 0) setcolor(oldcolor);
-    if (minfo->clip >= 0) setclip(oldclip);
+    if (minfo->lwidth >= 0) setlwidth(ctx, oldwidth);
+    if (minfo->color >= 0) setcolor(ctx, oldcolor);
+    if (minfo->clip >= 0) setclip(ctx, oldclip);
     return DLG_OK;
   }
   else return DLG_BADARGS;
@@ -1517,8 +1532,11 @@ int dlgDrawMultiMarkers(DYN_LIST *dlx, DYN_LIST *dly,
  *****************************************************************************/
 
 static int tclLineDynList (ClientData data, Tcl_Interp *interp,
-			     int argc, char *argv[])
+                           int argc, char *argv[])
 {
+  CgraphContext *ctx = getDlgContext(interp);
+  if (!ctx) return TCL_ERROR;
+  
   DYN_LIST *dlx, *dly, *dltx = NULL, *dlty = NULL;
   DYN_LIST *fillcolors, *linecolors;
   LINE_INFO linfo;
@@ -1530,223 +1548,221 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
   
   if (!dlgGetLineInfo(mode, &linfo)) {
     Tcl_AppendResult(interp, argv[0], ": unknown line function", 
-		     (char *) NULL);
+                     (char *) NULL);
       goto error;
   }
 
   /* This is a nasty command parsing loop, looking for option pairs */
   for (i = 1; i < argc; i++) {
     if (argv[i][0] == '-' &&
-	argv[i][1] != '.' &&
-	(argv[i][1] < '0' || argv[i][1] > '9')) {
+        argv[i][1] != '.' &&
+        (argv[i][1] < '0' || argv[i][1] > '9')) {
       if (!strcmp(argv[i],"-filled")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no arg to filled", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &filled) != TCL_OK) goto error;
-	linfo.filled = filled;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no arg to filled", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &filled) != TCL_OK) goto error;
+        linfo.filled = filled;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-lstyle")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no arg to lstyle", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &lstyle) != TCL_OK) goto error;
-	linfo.lstyle = lstyle;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no arg to lstyle", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &lstyle) != TCL_OK) goto error;
+        linfo.lstyle = lstyle;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-lwidth")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no arg to lwidth", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &lwidth) != TCL_OK) goto error;
-	linfo.lwidth = lwidth;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no arg to lwidth", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &lwidth) != TCL_OK) goto error;
+        linfo.lwidth = lwidth;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-sideways")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no arg to sideways", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &sideways) != TCL_OK) goto error;
-	linfo.sideways = sideways;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no arg to sideways", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &sideways) != TCL_OK) goto error;
+        linfo.sideways = sideways;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-clip")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no arg to clip", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &clip) != TCL_OK) goto error;
-	linfo.clip = clip;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no arg to clip", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &clip) != TCL_OK) goto error;
+        linfo.clip = clip;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-closed")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no arg to closed", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &closed) != TCL_OK) goto error;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no arg to closed", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &closed) != TCL_OK) goto error;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-linecolor")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no arg to linecolor", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &linecolor) != TCL_OK) goto error;
-	linfo.linecolor = linecolor;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no arg to linecolor", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &linecolor) != TCL_OK) goto error;
+        linfo.linecolor = linecolor;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-start")) {
-	double start;
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no start specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetDouble(interp, argv[i+1], &start) != TCL_OK) goto error;
-	linfo.fparams[0] = start;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        double start;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no start specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetDouble(interp, argv[i+1], &start) != TCL_OK) goto error;
+        linfo.fparams[0] = start;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-width")) {
-	double width;
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no width specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetDouble(interp, argv[i+1], &width) != TCL_OK) goto error;
-	linfo.fparams[1] = width;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        double width;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no width specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetDouble(interp, argv[i+1], &width) != TCL_OK) goto error;
+        linfo.fparams[1] = width;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
-
       else if (!strcmp(argv[i],"-interbar")) {
-	double width;
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no interbar spacing specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetDouble(interp, argv[i+1], &width) != TCL_OK) goto error;
-	linfo.fparams[3] = width;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        double width;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no interbar spacing specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetDouble(interp, argv[i+1], &width) != TCL_OK) goto error;
+        linfo.fparams[3] = width;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
-
       else if (!strcmp(argv[i],"-offset") || !strcmp(argv[i],"-xoffset")) {
-	double offset;
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no offset specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetDouble(interp, argv[i+1], &offset) != TCL_OK) goto error;
-	linfo.fparams[2] = offset;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        double offset;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no offset specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetDouble(interp, argv[i+1], &offset) != TCL_OK) goto error;
+        linfo.fparams[2] = offset;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-skip")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no skip specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &skip) != TCL_OK) goto error;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no skip specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &skip) != TCL_OK) goto error;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strncmp(argv[i],"-box", 4)) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no boxfilter value specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &boxfilter) != TCL_OK) goto error;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no boxfilter value specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &boxfilter) != TCL_OK) goto error;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-fillcolor")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no arg to fillcolor", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &fillcolor) != TCL_OK) goto error;
-	linfo.fillcolor = fillcolor;
-	linfo.filled = 1;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no arg to fillcolor", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &fillcolor) != TCL_OK) goto error;
+        linfo.fillcolor = fillcolor;
+        linfo.filled = 1;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-linecolors")) {
-	if (tclFindDynList(interp, argv[i+1], &linecolors) != TCL_OK)
-	  goto error;
-	linfo.linecolors = linecolors;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (tclFindDynList(interp, argv[i+1], &linecolors) != TCL_OK)
+          goto error;
+        linfo.linecolors = linecolors;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-fillcolors")) {
-	if (tclFindDynList(interp, argv[i+1], &fillcolors) != TCL_OK)
-	  goto error;
-	linfo.fillcolors = fillcolors;
-	linfo.filled = 1;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (tclFindDynList(interp, argv[i+1], &fillcolors) != TCL_OK)
+          goto error;
+        linfo.fillcolors = fillcolors;
+        linfo.filled = 1;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
-      
       else {
-	/* Could be a negative number, so try to parse as double */
-	double val;
-	if (Tcl_GetDouble(interp, argv[i], &val) != TCL_OK) {
-	  Tcl_ResetResult(interp);
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": bad option ", argv[i], (char *) NULL);
-	  goto error;
-	}
+        /* Could be a negative number, so try to parse as double */
+        double val;
+        if (Tcl_GetDouble(interp, argv[i], &val) != TCL_OK) {
+          Tcl_ResetResult(interp);
+          Tcl_AppendResult(interp, argv[0], 
+                           ": bad option ", argv[i], (char *) NULL);
+          goto error;
+        }
       }
     }
   }
+  
   if (argc < 3) {
     Tcl_AppendResult(interp, "usage:\t", argv[0], 
-		     " xlist ylist [lstyle lwidth filled]",
-		     "\noptions:   -lstyle, -lwidth, -filled, -linecolor,", "-linecolors",
-		     " -fillcolor, -fillcolors, -start, -width, -interbar, -sideways",
-		     "-skip n, -boxfilter n, -closed", (char *) NULL);
+                     " xlist ylist [lstyle lwidth filled]",
+                     "\noptions:   -lstyle, -lwidth, -filled, -linecolor,", "-linecolors",
+                     " -fillcolor, -fillcolors, -start, -width, -interbar, -sideways",
+                     "-skip n, -boxfilter n, -closed", (char *) NULL);
     return TCL_ERROR;
   }
 
@@ -1761,19 +1777,19 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
     DYN_LIST *temp;
     if (DYN_LIST_N(dlx) != DYN_LIST_N(dly)) {
       if (DYN_LIST_N(dlx) == 1) {
-	temp = dfuCreateDynList(DYN_LIST_DATATYPE(dlx), DYN_LIST_N(dly));
-	for (i = 0; i < DYN_LIST_N(dly); i++) 
-	  dynListCopyElement(dlx, 0, temp);
-	dlx = temp;
-	dltx = dlx;
+        temp = dfuCreateDynList(DYN_LIST_DATATYPE(dlx), DYN_LIST_N(dly));
+        for (i = 0; i < DYN_LIST_N(dly); i++) 
+          dynListCopyElement(dlx, 0, temp);
+        dlx = temp;
+        dltx = dlx;
       }
       else if (DYN_LIST_N(dly) == 1) {
-	DYN_LIST *temp;
-	temp = dfuCreateDynList(DYN_LIST_DATATYPE(dly), DYN_LIST_N(dlx));
-	for (i = 0; i < DYN_LIST_N(dlx); i++) 
-	  dynListCopyElement(dly, 0, temp);
-	dly = temp;
-	dlty = dly;
+        DYN_LIST *temp;
+        temp = dfuCreateDynList(DYN_LIST_DATATYPE(dly), DYN_LIST_N(dlx));
+        for (i = 0; i < DYN_LIST_N(dlx); i++) 
+          dynListCopyElement(dly, 0, temp);
+        dly = temp;
+        dlty = dly;
       }
     }
   }
@@ -1781,7 +1797,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[1], &val) != TCL_OK) {
       Tcl_ResetResult(interp);
       Tcl_AppendResult(interp, argv[0], ": xvalue must be a scalar or a list",
-		       (char *) NULL);
+                       (char *) NULL);
       goto error;
     }
     dlx = dfuCreateDynList(DF_FLOAT, 1);
@@ -1791,7 +1807,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[2], &val) != TCL_OK) {
       Tcl_ResetResult(interp);
       Tcl_AppendResult(interp, argv[0], ": yvalue must be a scalar or a list",
-		       (char *) NULL);
+                       (char *) NULL);
       goto error;
     }
     dly = dfuCreateDynList(DF_FLOAT, 1);
@@ -1803,7 +1819,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[1], &val) != TCL_OK) {
       Tcl_ResetResult(interp);
       Tcl_AppendResult(interp, argv[0], ": xvalue must be a scalar or a list",
-		       (char *) NULL);
+                       (char *) NULL);
       goto error;
     }
     dlx = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dly));
@@ -1816,7 +1832,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[2], &val) != TCL_OK) {
       Tcl_ResetResult(interp);
       Tcl_AppendResult(interp, argv[0], ": yvalue must be a scalar or a list",
-		       (char *) NULL);
+                       (char *) NULL);
       goto error;
     }
     dly = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dlx));
@@ -1848,27 +1864,27 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
   linfo.boxfilter = boxfilter;
   linfo.closed = closed;
 
-  status = dlgDrawLines(dlx, dly, &linfo, 0);
+  status = dlgDrawLines(ctx, dlx, dly, &linfo, 0);
 
   switch (status) {
   case DLG_NOWINDOW:
     Tcl_AppendResult(interp, argv[0], 
-		     ": no graphics window open", (char *) NULL);
+                     ": no graphics window open", (char *) NULL);
     goto error;
     break;
   case DLG_BADARGS:
     Tcl_AppendResult(interp, argv[0], 
-		     ": bad arguments", (char *) NULL);
+                     ": bad arguments", (char *) NULL);
     goto error;
     break;
   case DLG_ARGMISMATCH:
     Tcl_AppendResult(interp, argv[0], 
-		     ": lists must be same length", (char *) NULL);
+                     ": lists must be same length", (char *) NULL);
     goto error;
     break;
   case DLG_NOMEMORY:
     Tcl_AppendResult(interp, argv[0], 
-		     ": unable to allocate memory", (char *) NULL);
+                     ": unable to allocate memory", (char *) NULL);
     goto error;
     break;
   default:
@@ -1883,7 +1899,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
   return TCL_ERROR;
 }
 
-int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
+int dlgDrawLines(CgraphContext *ctx, DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
 {
   switch (DYN_LIST_DATATYPE(dlx)) {
   case DF_STRING:
@@ -1894,28 +1910,28 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
       int i, status;
       DYN_LIST **sublists = (DYN_LIST **) DYN_LIST_VALS(dlx);
       for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	status = dlgDrawLines(sublists[i], dly, linfo, i);
-	if (status != DLG_OK) return status;
+        status = dlgDrawLines(ctx, sublists[i], dly, linfo, i);
+        if (status != DLG_OK) return status;
       }
       return DLG_OK;
     }
     else if (DYN_LIST_N(dly) == DYN_LIST_N(dlx)) {
-	int i, status;
-	DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
-	DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
-	for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	  status = dlgDrawLines(sx[i], sy[i], linfo, i);
-	  if (status != DLG_OK) return status;
-	}
-	return DLG_OK;
+      int i, status;
+      DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
+      DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
+      for (i = 0; i < DYN_LIST_N(dlx); i++) {
+        status = dlgDrawLines(ctx, sx[i], sy[i], linfo, i);
+        if (status != DLG_OK) return status;
+      }
+      return DLG_OK;
     }
     else if (DYN_LIST_N(dlx) == 1) {
       int i, status;
       DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
       DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dly); i++) {
-	status = dlgDrawLines(sx[0], sy[i], linfo, i);
-	if (status != DLG_OK) return status;
+        status = dlgDrawLines(ctx, sx[0], sy[i], linfo, i);
+        if (status != DLG_OK) return status;
       }
       return DLG_OK;
     }
@@ -1924,8 +1940,8 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
       DYN_LIST **sx = (DYN_LIST **) DYN_LIST_VALS(dlx);
       DYN_LIST **sy = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dlx); i++) {
-	status = dlgDrawLines(sx[i], sy[0], linfo, i);
-	if (status != DLG_OK) return status;
+        status = dlgDrawLines(ctx, sx[i], sy[0], linfo, i);
+        if (status != DLG_OK) return status;
       }
       return DLG_OK;
     }
@@ -1942,8 +1958,8 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
       int i, status;
       DYN_LIST **sublists = (DYN_LIST **) DYN_LIST_VALS(dly);
       for (i = 0; i < DYN_LIST_N(dly); i++) {
-	status = dlgDrawLines(dlx, sublists[i], linfo, i);
-	if (status != DLG_OK) return status;
+        status = dlgDrawLines(ctx, dlx, sublists[i], linfo, i);
+        if (status != DLG_OK) return status;
       }
       return DLG_OK;
     }
@@ -1967,7 +1983,7 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
   /* set current color using dynlist of linecolors if possible */
   if (linfo->linecolors) {
     if (idx < DYN_LIST_N(linfo->linecolors) &&
-	DYN_LIST_DATATYPE(linfo->linecolors) == DF_LONG) {
+        DYN_LIST_DATATYPE(linfo->linecolors) == DF_LONG) {
       linfo->linecolor = ((int *) DYN_LIST_VALS(linfo->linecolors))[idx];
     }
   }
@@ -1975,12 +1991,12 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
   /* set current color using dynlist of fillcolors if possible */
   if (linfo->fillcolors) {
     if (idx < DYN_LIST_N(linfo->fillcolors) &&
-	DYN_LIST_DATATYPE(linfo->fillcolors) == DF_LONG) {
+        DYN_LIST_DATATYPE(linfo->fillcolors) == DF_LONG) {
       linfo->fillcolor = ((int *) DYN_LIST_VALS(linfo->fillcolors))[idx];
     }
   }
   
-/* 
+  /* 
    * If lists are both floats, then no float conversion is
    * necessary
    */
@@ -1988,12 +2004,12 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
       DYN_LIST_DATATYPE(dly) == DF_FLOAT) {
     float *x = (float *) DYN_LIST_VALS(dlx);
     float *y = (float *) DYN_LIST_VALS(dly);
-    (*(linfo->lfunc))(DYN_LIST_N(dlx), x, y, linfo);
+    (*(linfo->lfunc))(ctx, DYN_LIST_N(dlx), x, y, linfo);
     return DLG_OK;
   }
 
   else if (DYN_LIST_DATATYPE(dlx) == DF_LONG &&
-	   DYN_LIST_DATATYPE(dly) == DF_FLOAT) {
+           DYN_LIST_DATATYPE(dly) == DF_FLOAT) {
     int i;
     float *x = (float *) calloc(DYN_LIST_N(dlx), sizeof(float));
     int   *xv = (int *) DYN_LIST_VALS(dlx);
@@ -2005,14 +2021,14 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
       x[i] = (float) xv[i];
     }
     
-    (*(linfo->lfunc))(DYN_LIST_N(dlx), x, y, linfo);
+    (*(linfo->lfunc))(ctx, DYN_LIST_N(dlx), x, y, linfo);
 
     free ((void *) x);
     return DLG_OK;
   }
 
   else if (DYN_LIST_DATATYPE(dlx) == DF_FLOAT &&
-	   DYN_LIST_DATATYPE(dly) == DF_LONG) {
+           DYN_LIST_DATATYPE(dly) == DF_LONG) {
     int i;
     float *x = (float *) DYN_LIST_VALS(dlx);
     float *y = (float *) calloc(DYN_LIST_N(dly), sizeof(float));
@@ -2024,14 +2040,14 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
       y[i] = (float) yv[i];
     }
     
-    (*(linfo->lfunc))(DYN_LIST_N(dlx), x, y, linfo);
+    (*(linfo->lfunc))(ctx, DYN_LIST_N(dlx), x, y, linfo);
 
     free ((void *) y);
     return DLG_OK;
   }
 
   else if (DYN_LIST_DATATYPE(dlx) == DF_LONG &&
-	   DYN_LIST_DATATYPE(dly) == DF_LONG) {
+           DYN_LIST_DATATYPE(dly) == DF_LONG) {
     int i;
     float *x = (float *) calloc(DYN_LIST_N(dlx), sizeof(float));
     int   *xv = (int *) DYN_LIST_VALS(dlx);
@@ -2045,7 +2061,7 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
       y[i] = (float) yv[i];
     }
     
-    (*(linfo->lfunc))(DYN_LIST_N(dlx), x, y, linfo);
+    (*(linfo->lfunc))(ctx, DYN_LIST_N(dlx), x, y, linfo);
 
     free ((void *) x);
     free ((void *) y);
@@ -2055,96 +2071,95 @@ int dlgDrawLines(DYN_LIST *dlx, DYN_LIST *dly, LINE_INFO *linfo, int idx)
 }
 
 
-
-int dlgLine(int n, float *x, float *y, LINE_INFO *linfo)
+static int dlgLine(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo)
 {
   int i, j, k, total;
   int oldstyle = 0, oldwidth = 0, oldcolor = 0, oldclip;
   float *verts = NULL, *v;
   
   if (n < 2) return 0;
-  oldstyle = setlstyle(linfo->lstyle);
-  oldwidth = setlwidth(linfo->lwidth);
-  if (linfo->clip >= 0) oldclip = setclip(linfo->clip);
+  oldstyle = setlstyle(ctx, linfo->lstyle);
+  oldwidth = setlwidth(ctx, linfo->lwidth);
+  if (linfo->clip >= 0) oldclip = setclip(ctx, linfo->clip);
 
   if (linfo->filled) {
     /* If the polygon is closed, no need to start from the base */
     if (linfo->closed || (x[0] == x[n-1] && y[0] == y[n-1])) {
       if (linfo->boxfilter < 0) {
-	verts = (float *) calloc((2*n)/linfo->skip, sizeof(float));
-	total = n/linfo->skip;
+        verts = (float *) calloc((2*n)/linfo->skip, sizeof(float));
+        total = n/linfo->skip;
       }
       else {
-	verts = (float *) calloc((2*n)/linfo->boxfilter, sizeof(float));
-	total = n/linfo->boxfilter;
+        verts = (float *) calloc((2*n)/linfo->boxfilter, sizeof(float));
+        total = n/linfo->boxfilter;
       }
       if (!verts) return (0);
-      if (linfo->fillcolor >= 0) oldcolor = setcolor(linfo->fillcolor);
+      if (linfo->fillcolor >= 0) oldcolor = setcolor(ctx, linfo->fillcolor);
       if (linfo->boxfilter < 0) {
-	for (i = 0, v = verts; i < n; i+=linfo->skip) {
-	  *v++ = x[i];
-	  *v++ = y[i];
-	}
+        for (i = 0, v = verts; i < n; i+=linfo->skip) {
+          *v++ = x[i];
+          *v++ = y[i];
+        }
       }
       else {
-	int max, stop;
-	float sumx, sumy;
-	max = n - linfo->boxfilter + 1;
-	for (i = 0, k = 0, v = verts; i < max; i+=linfo->boxfilter, k++) {
-	  stop = i+linfo->boxfilter;
-	  sumx = 0; sumy = 0;
-	  for (j = i+1; j < stop; j++) {
-	    sumx += x[j];
-	    sumy += y[j];
-	  }
-	  *v++ = sumx/linfo->boxfilter; 
-	  *v++ = sumy/linfo->boxfilter;
-	}
+        int max, stop;
+        float sumx, sumy;
+        max = n - linfo->boxfilter + 1;
+        for (i = 0, k = 0, v = verts; i < max; i+=linfo->boxfilter, k++) {
+          stop = i+linfo->boxfilter;
+          sumx = 0; sumy = 0;
+          for (j = i+1; j < stop; j++) {
+            sumx += x[j];
+            sumy += y[j];
+          }
+          *v++ = sumx/linfo->boxfilter; 
+          *v++ = sumy/linfo->boxfilter;
+        }
       }
-      filledpoly(total, verts);
-      if (linfo->fillcolor >= 0) setcolor(oldcolor);
+      filledpoly(ctx, total, verts);
+      if (linfo->fillcolor >= 0) setcolor(ctx, oldcolor);
       free((void *) verts);
     }
     else {			/* use linfo->fparams[0] as start y */
       if (linfo->boxfilter < 0) {
-	verts = (float *) calloc((2*n)/linfo->skip+4, sizeof(float));
-	total = n/linfo->skip+2;
+        verts = (float *) calloc((2*n)/linfo->skip+4, sizeof(float));
+        total = n/linfo->skip+2;
       }
       else {
-	verts = (float *) calloc((2*n)/linfo->boxfilter+4, sizeof(float));
-	total = n/linfo->boxfilter+2;
+        verts = (float *) calloc((2*n)/linfo->boxfilter+4, sizeof(float));
+        total = n/linfo->boxfilter+2;
       }
       if (!verts) return (0);
-      if (linfo->fillcolor >= 0) oldcolor = setcolor(linfo->fillcolor);
+      if (linfo->fillcolor >= 0) oldcolor = setcolor(ctx, linfo->fillcolor);
       verts[0] = x[0];
       verts[1] = linfo->fparams[0];
 
       if (linfo->boxfilter < 0) {
-	for (i = 0, v = verts+2; i < n; i+=linfo->skip) {
-	  *v++ = x[i];
-	  *v++ = y[i];
-	}
+        for (i = 0, v = verts+2; i < n; i+=linfo->skip) {
+          *v++ = x[i];
+          *v++ = y[i];
+        }
       }
       else {
-	int max, stop;
-	float sumx, sumy;
-	max = n - linfo->boxfilter + 1;
-	for (i = 0, k = 0, v = verts; i < max; i+=linfo->boxfilter, k++) {
-	  stop = i+linfo->boxfilter;
-	  sumx = 0; sumy = 0;
-	  for (j = i+1; j < stop; j++) {
-	    sumx += x[j];
-	    sumy += y[j];
-	  }
-	  *v++ = sumx/linfo->boxfilter; 
-	  *v++ = sumy/linfo->boxfilter;
-	}
+        int max, stop;
+        float sumx, sumy;
+        max = n - linfo->boxfilter + 1;
+        for (i = 0, k = 0, v = verts; i < max; i+=linfo->boxfilter, k++) {
+          stop = i+linfo->boxfilter;
+          sumx = 0; sumy = 0;
+          for (j = i+1; j < stop; j++) {
+            sumx += x[j];
+            sumy += y[j];
+          }
+          *v++ = sumx/linfo->boxfilter; 
+          *v++ = sumy/linfo->boxfilter;
+        }
       }
       *v++ = x[i-1];
       *v++ = linfo->fparams[0];
 
-      filledpoly(total, verts);
-      if (linfo->fillcolor >= 0) setcolor(oldcolor);
+      filledpoly(ctx, total, verts);
+      if (linfo->fillcolor >= 0) setcolor(ctx, oldcolor);
       free((void *) verts);
     }
   }
@@ -2172,8 +2187,8 @@ int dlgLine(int n, float *x, float *y, LINE_INFO *linfo)
       stop = i+linfo->boxfilter;
       sumx = 0; sumy = 0;
       for (j = i+1; j < stop; j++) {
-	sumx += x[j];
-	sumy += y[j];
+        sumx += x[j];
+        sumy += y[j];
       }
       *v++ = sumx/linfo->boxfilter; 
       *v++ = sumy/linfo->boxfilter;
@@ -2181,21 +2196,20 @@ int dlgLine(int n, float *x, float *y, LINE_INFO *linfo)
   }
   
   /* Now draw lines on top */
-  if (linfo->linecolor >= 0) oldcolor = setcolor(linfo->linecolor);
-  polyline(total, verts);
-  if (linfo->linecolor >= 0) setcolor(oldcolor);
+  if (linfo->linecolor >= 0) oldcolor = setcolor(ctx, linfo->linecolor);
+  polyline(ctx, total, verts);
+  if (linfo->linecolor >= 0) setcolor(ctx, oldcolor);
 
-  if (linfo->clip >= 0) setclip(oldclip);
-  setlwidth(oldwidth);
-  setlstyle(oldstyle);
+  if (linfo->clip >= 0) setclip(ctx, oldclip);
+  setlwidth(ctx, oldwidth);
+  setlstyle(ctx, oldstyle);
 
   free(verts);
 
   return 1;
 }
 
-
-int dlgBar(int n, float *x, float *y, LINE_INFO *linfo)
+static int dlgBar(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo)
 {
   int i;
   int oldstyle = 0, oldwidth = 0, oldcolor = 0, oldclip;
@@ -2203,28 +2217,28 @@ int dlgBar(int n, float *x, float *y, LINE_INFO *linfo)
   
   if (n < 1) return 0;
 
-  oldstyle = setlstyle(linfo->lstyle);
-  oldwidth = setlwidth(linfo->lwidth);
-  if (linfo->clip >= 0) oldclip = setclip(linfo->clip);
+  oldstyle = setlstyle(ctx, linfo->lstyle);
+  oldwidth = setlwidth(ctx, linfo->lwidth);
+  if (linfo->clip >= 0) oldclip = setclip(ctx, linfo->clip);
 
   if (!linfo->sideways) {
     if (linfo->filled) {
-      if (linfo->fillcolor >= 0) oldcolor = setcolor(linfo->fillcolor);
+      if (linfo->fillcolor >= 0) oldcolor = setcolor(ctx, linfo->fillcolor);
 
       /* fparams[3] = width override */
       if (linfo->fparams[3] == 0.0) width = x[1]-x[0];
       else width = linfo->fparams[3];
-	
+        
       off = 0.5*(width*linfo->fparams[1]);
       for (i = 0; i < n; i++) {
-	start = x[i]+linfo->fparams[2];
-	filledrect(start-off, linfo->fparams[0],
-		   start+off, y[i]);
+        start = x[i]+linfo->fparams[2];
+        filledrect(ctx, start-off, linfo->fparams[0],
+                   start+off, y[i]);
       }
-      if (linfo->fillcolor >= 0) setcolor(oldcolor);
+      if (linfo->fillcolor >= 0) setcolor(ctx, oldcolor);
     }
     
-    if (linfo->linecolor >= 0) oldcolor = setcolor(linfo->linecolor);
+    if (linfo->linecolor >= 0) oldcolor = setcolor(ctx, linfo->linecolor);
 
     /* fparams[3] = width override */
     if (linfo->fparams[3] == 0.0) width = x[1]-x[0];
@@ -2233,13 +2247,13 @@ int dlgBar(int n, float *x, float *y, LINE_INFO *linfo)
     off = 0.5*(width*linfo->fparams[1]);
     for (i = 0; i < n; i++) {
       start = x[i]+linfo->fparams[2];
-      rect(start-off, linfo->fparams[0], start+off, y[i]);
+      rect(ctx, start-off, linfo->fparams[0], start+off, y[i]);
     }
-    if (linfo->linecolor >= 0) setcolor(oldcolor);
+    if (linfo->linecolor >= 0) setcolor(ctx, oldcolor);
   }
   else {			/* start from yaxis, not xaxis */
     if (linfo->filled) {
-      if (linfo->fillcolor >= 0) oldcolor = setcolor(linfo->fillcolor);
+      if (linfo->fillcolor >= 0) oldcolor = setcolor(ctx, linfo->fillcolor);
 
       /* fparams[3] = width override */
       if (linfo->fparams[3] == 0.0) width = x[1]-x[0];
@@ -2247,13 +2261,13 @@ int dlgBar(int n, float *x, float *y, LINE_INFO *linfo)
 
       off = 0.5*(width*linfo->fparams[1]);
       for (i = 0; i < n; i++) {
-	start = x[i]+linfo->fparams[2];
-	filledrect(linfo->fparams[0], start-off, y[i], start+off);
+        start = x[i]+linfo->fparams[2];
+        filledrect(ctx, linfo->fparams[0], start-off, y[i], start+off);
       }
-      if (linfo->fillcolor >= 0) setcolor(oldcolor);
+      if (linfo->fillcolor >= 0) setcolor(ctx, oldcolor);
     }
     
-    if (linfo->linecolor >= 0) oldcolor = setcolor(linfo->linecolor);
+    if (linfo->linecolor >= 0) oldcolor = setcolor(ctx, linfo->linecolor);
 
     /* fparams[3] = width override */
     if (linfo->fparams[3] == 0.0) width = x[1]-x[0];
@@ -2262,27 +2276,27 @@ int dlgBar(int n, float *x, float *y, LINE_INFO *linfo)
     off = 0.5*(width*linfo->fparams[1]);
     for (i = 0; i < n; i++) {
       start = x[i]+linfo->fparams[2];
-      rect(linfo->fparams[0], start-off, y[i], start+off);
+      rect(ctx, linfo->fparams[0], start-off, y[i], start+off);
     }
-    if (linfo->linecolor >= 0) setcolor(oldcolor);
+    if (linfo->linecolor >= 0) setcolor(ctx, oldcolor);
   }
   
-  if (linfo->clip >= 0) setclip(oldclip);
-  setlwidth(oldwidth);
-  setlstyle(oldstyle);
+  if (linfo->clip >= 0) setclip(ctx, oldclip);
+  setlwidth(ctx, oldwidth);
+  setlstyle(ctx, oldstyle);
   return 1;
 }
 
-int dlgStep(int n, float *x, float *y, LINE_INFO *linfo)
+static int dlgStep(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo)
 {
   int i, stop = n-1;
   int oldstyle = 0, oldwidth = 0, oldcolor = 0, oldclip;
 
   if (n < 2) return 0;
 
-  oldstyle = setlstyle(linfo->lstyle);
-  oldwidth = setlwidth(linfo->lwidth);
-  if (linfo->clip >= 0) oldclip = setclip(linfo->clip);
+  oldstyle = setlstyle(ctx, linfo->lstyle);
+  oldwidth = setlwidth(ctx, linfo->lwidth);
+  if (linfo->clip >= 0) oldclip = setclip(ctx, linfo->clip);
 
   if (linfo->filled) {
     int i;
@@ -2302,56 +2316,53 @@ int dlgStep(int n, float *x, float *y, LINE_INFO *linfo)
     *v++ = x[i];
     *v++ = linfo->fparams[0];
 
-    if (linfo->fillcolor >= 0) oldcolor = setcolor(linfo->fillcolor);
-    filledpoly(2*n+1, verts);
-    if (linfo->fillcolor >= 0) setcolor(oldcolor);
+    if (linfo->fillcolor >= 0) oldcolor = setcolor(ctx, linfo->fillcolor);
+    filledpoly(ctx, 2*n+1, verts);
+    if (linfo->fillcolor >= 0) setcolor(ctx, oldcolor);
     free((void *) verts);
   }
 
-  if (linfo->linecolor >= 0) oldcolor = setcolor(linfo->linecolor);
-  moveto(x[0], linfo->fparams[0]);
+  if (linfo->linecolor >= 0) oldcolor = setcolor(ctx, linfo->linecolor);
+  moveto(ctx, x[0], linfo->fparams[0]);
   for (i = 0; i < stop; i++) {
-    lineto(x[i], y[i]);
-    lineto(x[i+1], y[i]);
+    lineto(ctx, x[i], y[i]);
+    lineto(ctx, x[i+1], y[i]);
   }
   
-  lineto(x[i],y[i]);
-  lineto(x[i],linfo->fparams[0]);
-  lineto(x[0],linfo->fparams[0]);
-  if (linfo->linecolor >= 0) setcolor(oldcolor);
+  lineto(ctx, x[i], y[i]);
+  lineto(ctx, x[i], linfo->fparams[0]);
+  lineto(ctx, x[0], linfo->fparams[0]);
+  if (linfo->linecolor >= 0) setcolor(ctx, oldcolor);
   
-  if (linfo->clip >= 0) setclip(oldclip);
-  setlwidth(oldwidth);
-  setlstyle(oldstyle);
+  if (linfo->clip >= 0) setclip(ctx, oldclip);
+  setlwidth(ctx, oldwidth);
+  setlstyle(ctx, oldstyle);
   return 1;
 }
 
-
-int dlgDisjointLines(int n, float *x, float *y, LINE_INFO *linfo)
+static int dlgDisjointLines(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo)
 {
   int i, j, stop = n/2;
   int oldstyle = 0, oldwidth = 0, oldcolor = 0, oldclip;
   
   if (n < 2) return 0;
-  oldstyle = setlstyle(linfo->lstyle);
-  oldwidth = setlwidth(linfo->lwidth);
-  if (linfo->clip >= 0) oldclip = setclip(linfo->clip);
+  oldstyle = setlstyle(ctx, linfo->lstyle);
+  oldwidth = setlwidth(ctx, linfo->lwidth);
+  if (linfo->clip >= 0) oldclip = setclip(ctx, linfo->clip);
 
-  if (linfo->linecolor >= 0) oldcolor = setcolor(linfo->linecolor);
+  if (linfo->linecolor >= 0) oldcolor = setcolor(ctx, linfo->linecolor);
   for (i = 0, j = 0; i < stop; i++, j+=2) {
-    moveto(x[j]+linfo->fparams[2], y[j]);
-    lineto(x[j+1]+linfo->fparams[2], y[j+1]);
+    moveto(ctx, x[j]+linfo->fparams[2], y[j]);
+    lineto(ctx, x[j+1]+linfo->fparams[2], y[j+1]);
   }
-  if (linfo->linecolor >= 0) setcolor(oldcolor);
+  if (linfo->linecolor >= 0) setcolor(ctx, oldcolor);
 
-  if (linfo->clip >= 0) setclip(oldclip);
-  setlwidth(oldwidth);
-  setlstyle(oldstyle);
+  if (linfo->clip >= 0) setclip(ctx, oldclip);
+  setlwidth(ctx, oldwidth);
+  setlstyle(ctx, oldstyle);
 
   return 1;
 }
-
-
 
 /*
  * CREDIT: The bezier functions were taken from the Graphics Gems V
@@ -2405,7 +2416,7 @@ static void bezierCurve(int nctrlpnts, float *bx, float *by,
 }
 
 
-int dlgBezier(int n, float *x, float *y, LINE_INFO *linfo)
+static int dlgBezier(CgraphContext *ctx, int n, float *x, float *y, LINE_INFO *linfo)
 {
   int j, k, m;
   int resolution = linfo->skip?linfo->skip:30;
@@ -2428,43 +2439,40 @@ int dlgBezier(int n, float *x, float *y, LINE_INFO *linfo)
       *v++ = x[m];
       *v++ = y[m];
       for (j = 1, t = tstep; j <= resolution; t+=tstep, j++) {
-	bezierCurve(4, bx, by, wbx, wby, &xpos, &ypos, t);
-	*v++ = xpos;
-	*v++ = ypos;
+        bezierCurve(4, bx, by, wbx, wby, &xpos, &ypos, t);
+        *v++ = xpos;
+        *v++ = ypos;
       }
     }
 
-    if (linfo->fillcolor >= 0) oldcolor = setcolor(linfo->fillcolor);
-    filledpoly(nverts/2, verts);
-    if (linfo->fillcolor >= 0) setcolor(oldcolor);
+    if (linfo->fillcolor >= 0) oldcolor = setcolor(ctx, linfo->fillcolor);
+    filledpoly(ctx, nverts/2, verts);
+    if (linfo->fillcolor >= 0) setcolor(ctx, oldcolor);
     free((void *) verts);
   }
-
   else {
-    oldstyle = setlstyle(linfo->lstyle);
-    oldwidth = setlwidth(linfo->lwidth);
-    if (linfo->clip >= 0) oldclip = setclip(linfo->clip);
+    oldstyle = setlstyle(ctx, linfo->lstyle);
+    oldwidth = setlwidth(ctx, linfo->lwidth);
+    if (linfo->clip >= 0) oldclip = setclip(ctx, linfo->clip);
     
-    if (linfo->linecolor >= 0) oldcolor = setcolor(linfo->linecolor);
+    if (linfo->linecolor >= 0) oldcolor = setcolor(ctx, linfo->linecolor);
     for (k = 0, m = 0; k < nquads; k++, m+=4) {
       bezierForm(4, &x[m], &y[m], bx, by);
-      moveto(x[m], y[m]);
+      moveto(ctx, x[m], y[m]);
       for (j = 1, t = tstep; j <= resolution; t+=tstep, j++) {
-	bezierCurve(4, bx, by, wbx, wby, &xpos, &ypos, t);
-	lineto(xpos, ypos);
+        bezierCurve(4, bx, by, wbx, wby, &xpos, &ypos, t);
+        lineto(ctx, xpos, ypos);
       }
     }
-    if (linfo->linecolor >= 0) setcolor(oldcolor);
+    if (linfo->linecolor >= 0) setcolor(ctx, oldcolor);
     
-    if (linfo->clip >= 0) setclip(oldclip);
-    setlwidth(oldwidth);
-    setlstyle(oldstyle);
+    if (linfo->clip >= 0) setclip(ctx, oldclip);
+    setlwidth(ctx, oldwidth);
+    setlstyle(ctx, oldstyle);
   }
 
   return 1;
 }
-
-
 
 /*****************************************************************************
  *
@@ -2484,8 +2492,11 @@ int dlgBezier(int n, float *x, float *y, LINE_INFO *linfo)
  *****************************************************************************/
 
 static int tclTextDynList (ClientData data, Tcl_Interp *interp,
-			   int argc, char *argv[])
+                           int argc, char *argv[])
 {
+  CgraphContext *ctx = getDlgContext(interp);
+  if (!ctx) return TCL_ERROR;
+  
   DYN_LIST *dlx, *dly, *dldata, *dltx = NULL, *dlty = NULL, *dltt = NULL;
   DYN_LIST *colors;
   int i, j;
@@ -2505,139 +2516,138 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
   /* This is a nasty command parsing loop, looking for option pairs */
   for (i = 1; i < argc; i++) {
     if (argv[i][0] == '-' &&
-	argv[i][1] != '.' &&
-	(argv[i][1] < '0' || argv[i][1] > '9')) {
+        argv[i][1] != '.' &&
+        (argv[i][1] < '0' || argv[i][1] > '9')) {
       if (!strcmp(argv[i],"-font")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no font specified", (char *) NULL);
-	  goto error;
-	}
-	strncpy(fontname, argv[i+1], 63);
-	tinfo.font = fontname;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no font specified", (char *) NULL);
+          goto error;
+        }
+        strncpy(fontname, argv[i+1], 63);
+        tinfo.font = fontname;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-just")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no justification specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &tinfo.just) != TCL_OK) goto error;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no justification specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &tinfo.just) != TCL_OK) goto error;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-spacing")) {
-	double spacing;
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no line spacing specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetDouble(interp, argv[i+1], &spacing) != TCL_OK) goto error;
-	tinfo.spacing = spacing;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        double spacing;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no line spacing specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetDouble(interp, argv[i+1], &spacing) != TCL_OK) goto error;
+        tinfo.spacing = spacing;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-size")) {
-	int l;
-	float scale = 1.0;
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no size arg", (char *) NULL);
-	  goto error;
-	}
-	l = strlen(argv[i+1])-1;
-	if (argv[i+1][l] == 's' || argv[i+1][l] == 'S') {
-	  scale = getxscale();
-	  argv[i+1][l] = 0;
-	}
-	if (Tcl_GetDouble(interp, argv[i+1], &size) != TCL_OK)
-	  goto error;
-	tinfo.size = size*scale;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        int l;
+        float scale = 1.0;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no size arg", (char *) NULL);
+          goto error;
+        }
+        l = strlen(argv[i+1])-1;
+        if (argv[i+1][l] == 's' || argv[i+1][l] == 'S') {
+          scale = getxscale(ctx);
+          argv[i+1][l] = 0;
+        }
+        if (Tcl_GetDouble(interp, argv[i+1], &size) != TCL_OK)
+          goto error;
+        tinfo.size = size*scale;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-color")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no color specified", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &tinfo.color) != TCL_OK) goto error;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no color specified", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &tinfo.color) != TCL_OK) goto error;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-colors")) {
-	if (tclFindDynList(interp, argv[i+1], &colors) != TCL_OK)
-	  goto error;
-	if (DYN_LIST_DATATYPE(colors) != DF_LONG) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": color list must be ints", (char *) NULL);
-	  goto error;
-	}
-	tinfo.colors = colors;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (tclFindDynList(interp, argv[i+1], &colors) != TCL_OK)
+          goto error;
+        if (DYN_LIST_DATATYPE(colors) != DF_LONG) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": color list must be ints", (char *) NULL);
+          goto error;
+        }
+        tinfo.colors = colors;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-ori")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no orientation", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &tinfo.ori) != TCL_OK) goto error;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no orientation", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &tinfo.ori) != TCL_OK) goto error;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else if (!strcmp(argv[i],"-dpoints")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": missing decimal points", (char *) NULL);
-	  goto error;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &dpoints) != TCL_OK) goto error;
-	if (dpoints < 0) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": number of decimal points must be nonnegative", 
-			   (char *) NULL);
-	  goto error;
-	}
-	else {
-	  sprintf(format, "%%.%df", dpoints);
-	}
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": missing decimal points", (char *) NULL);
+          goto error;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &dpoints) != TCL_OK) goto error;
+        if (dpoints < 0) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": number of decimal points must be nonnegative", 
+                           (char *) NULL);
+          goto error;
+        }
+        else {
+          sprintf(format, "%%.%df", dpoints);
+        }
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       else {
-	/* Could be a negative number, so try to parse as double */
-	double val;
-	if (Tcl_GetDouble(interp, argv[i], &val) != TCL_OK) {
-	  Tcl_ResetResult(interp);
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": bad option ", argv[i], (char *) NULL);
-	  goto error;
-	}
+        /* Could be a negative number, so try to parse as double */
+        double val;
+        if (Tcl_GetDouble(interp, argv[i], &val) != TCL_OK) {
+          Tcl_ResetResult(interp);
+          Tcl_AppendResult(interp, argv[0], 
+                           ": bad option ", argv[i], (char *) NULL);
+          goto error;
+        }
       }
     }
   }
 
   if (argc < 4) {
     Tcl_AppendResult(interp, "usage:\t", argv[0], 
-		     " xlist ylist data [font size just ori dpoints]",
-		     "\noptions: -font, -size, -just, -ori,",
-		     " -dpoints, -color(s), -spacing",
-
-		     (char *) NULL);
+                     " xlist ylist data [font size just ori dpoints]",
+                     "\noptions: -font, -size, -just, -ori,",
+                     " -dpoints, -color(s), -spacing",
+                     (char *) NULL);
     return TCL_ERROR;
   }
   
@@ -2652,19 +2662,19 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     DYN_LIST *temp;
     if (DYN_LIST_N(dlx) != DYN_LIST_N(dly)) {
       if (DYN_LIST_N(dlx) == 1) {
-	temp = dfuCreateDynList(DYN_LIST_DATATYPE(dlx), DYN_LIST_N(dly));
-	for (i = 0; i < DYN_LIST_N(dly); i++) 
-	  dynListCopyElement(dlx, 0, temp);
-	dlx = temp;
-	dltx = dlx;
+        temp = dfuCreateDynList(DYN_LIST_DATATYPE(dlx), DYN_LIST_N(dly));
+        for (i = 0; i < DYN_LIST_N(dly); i++) 
+          dynListCopyElement(dlx, 0, temp);
+        dlx = temp;
+        dltx = dlx;
       }
       else if (DYN_LIST_N(dly) == 1) {
-	DYN_LIST *temp;
-	temp = dfuCreateDynList(DYN_LIST_DATATYPE(dly), DYN_LIST_N(dlx));
-	for (i = 0; i < DYN_LIST_N(dlx); i++) 
-	  dynListCopyElement(dly, 0, temp);
-	dly = temp;
-	dlty = dly;
+        DYN_LIST *temp;
+        temp = dfuCreateDynList(DYN_LIST_DATATYPE(dly), DYN_LIST_N(dlx));
+        for (i = 0; i < DYN_LIST_N(dlx); i++) 
+          dynListCopyElement(dly, 0, temp);
+        dly = temp;
+        dlty = dly;
       }
     }
   }
@@ -2673,7 +2683,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[1], &val) != TCL_OK) {
       Tcl_ResetResult(interp);
       Tcl_AppendResult(interp, argv[0], ": xvalue must be a scalar or a list",
-		       (char *) NULL);
+                       (char *) NULL);
       goto error;
     }
     dlx = dfuCreateDynList(DF_FLOAT, 1);
@@ -2683,7 +2693,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[2], &val) != TCL_OK) {
       Tcl_ResetResult(interp);
       Tcl_AppendResult(interp, argv[0], ": yvalue must be a scalar or a list",
-		       (char *) NULL);
+                       (char *) NULL);
       goto error;
     }
     dly = dfuCreateDynList(DF_FLOAT, 1);
@@ -2695,7 +2705,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[1], &val) != TCL_OK) {
       Tcl_ResetResult(interp);
       Tcl_AppendResult(interp, argv[0], ": xvalue must be a scalar or a list",
-		       (char *) NULL);
+                       (char *) NULL);
       goto error;
     }
     dlx = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dly));
@@ -2708,7 +2718,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[2], &val) != TCL_OK) {
       Tcl_ResetResult(interp);
       Tcl_AppendResult(interp, argv[0], ": yvalue must be a scalar or a list",
-		       (char *) NULL);
+                       (char *) NULL);
       goto error;
     }
     dly = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dlx));
@@ -2753,7 +2763,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     tinfo.tfunc = (TEXT_FUNC) dlgTextFloat;
     if (strcmp(format,"")) {
       if (tinfo.format != format)
-	strcpy(tinfo.format,format);
+        strcpy(tinfo.format,format);
     }
     else {
       strcpy(tinfo.format,TextTable[DLG_FLOATS].format);
@@ -2761,7 +2771,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     break;
   default:
     Tcl_AppendResult(interp, argv[0], ": cannot draw text for elements of \"",
-		     argv[3], "\"", (char *) NULL);
+                     argv[3], "\"", (char *) NULL);
     goto error;
   }
 
@@ -2774,7 +2784,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     int l = strlen(argv[5])-1;
     float scale = 1.0;
     if (argv[5][l] == 's' || argv[5][l] == 'S') {
-      scale = getxscale();
+      scale = getxscale(ctx);
       argv[5][l] = 0;
     }
     if (Tcl_GetDouble(interp, argv[5], &size) != TCL_OK)
@@ -2797,46 +2807,46 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
       goto error;
     if (dpoints < 0) {
       Tcl_AppendResult(interp, argv[0], 
-		       ": number of decimal points must be nonnegative", 
-		       (char *) NULL);
+                       ": number of decimal points must be nonnegative", 
+                       (char *) NULL);
       goto error;
     }
     else {
       switch (DYN_LIST_DATATYPE(dldata)) {
       case DF_FLOAT:
-	tinfo.format = format;
-	sprintf(format, "%%.%df", dpoints);
-	break;
+        tinfo.format = format;
+        sprintf(format, "%%.%df", dpoints);
+        break;
       }
     }
   }
   
-  status = dlgDrawText(dlx, dly, dldata, &tinfo);
+  status = dlgDrawText(ctx, dlx, dly, dldata, &tinfo);
 
   switch (status) {
   case DLG_NOWINDOW:
     Tcl_AppendResult(interp, argv[0], 
-		     ": no graphics window open", (char *) NULL);
+                     ": no graphics window open", (char *) NULL);
     goto error;
     break;
   case DLG_BADARGS:
     Tcl_AppendResult(interp, argv[0], 
-		     ": bad arguments", (char *) NULL);
+                     ": bad arguments", (char *) NULL);
     goto error;
     break;
   case DLG_ARGMISMATCH:
     Tcl_AppendResult(interp, argv[0], 
-		     ": lists must be same length", (char *) NULL);
+                     ": lists must be same length", (char *) NULL);
     goto error;
     break;
   case DLG_NOMEMORY:
     Tcl_AppendResult(interp, argv[0], 
-		     ": unable to allocate memory", (char *) NULL);
+                     ": unable to allocate memory", (char *) NULL);
     goto error;
     break;
   case DLG_BADCOLORSPEC:
     Tcl_AppendResult(interp, argv[0], 
-		     ": color list of incorrect length specified", (char *) NULL);
+                     ": color list of incorrect length specified", (char *) NULL);
     goto error;
     break;
   default:
@@ -2852,12 +2862,9 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
   if (dltt) dfuFreeDynList(dltt);
   return TCL_ERROR;
 }
-
-int dlgDrawText(DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
-		TEXT_INFO *tinfo)
+int dlgDrawText(CgraphContext *ctx, DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
+                TEXT_INFO *tinfo)
 {
-/*  if (!getpoint()) return DLG_NOWINDOW; */
-  
   switch (DYN_LIST_DATATYPE(dlx)) {
   case DF_STRING:
   case DF_LIST:
@@ -2900,12 +2907,12 @@ int dlgDrawText(DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
       DYN_LIST_DATATYPE(dly) == DF_FLOAT) {
     float *x = (float *) DYN_LIST_VALS(dlx);
     float *y = (float *) DYN_LIST_VALS(dly);
-    (*(tinfo->tfunc))(DYN_LIST_N(dlx), x, y, DYN_LIST_VALS(data), tinfo);
+    (*(tinfo->tfunc))(ctx, DYN_LIST_N(dlx), x, y, DYN_LIST_VALS(data), tinfo);
     return DLG_OK;
   }
 
   else if (DYN_LIST_DATATYPE(dlx) == DF_LONG &&
-	   DYN_LIST_DATATYPE(dly) == DF_FLOAT) {
+           DYN_LIST_DATATYPE(dly) == DF_FLOAT) {
     int i;
     float *x = (float *) calloc(DYN_LIST_N(dlx), sizeof(float));
     int   *xv = (int *) DYN_LIST_VALS(dlx);
@@ -2917,14 +2924,14 @@ int dlgDrawText(DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
       x[i] = (float) xv[i];
     }
     
-    (*(tinfo->tfunc))(DYN_LIST_N(dlx), x, y, DYN_LIST_VALS(data), tinfo);
+    (*(tinfo->tfunc))(ctx, DYN_LIST_N(dlx), x, y, DYN_LIST_VALS(data), tinfo);
 
     free ((void *) x);
     return DLG_OK;
   }
 
   else if (DYN_LIST_DATATYPE(dlx) == DF_FLOAT &&
-	   DYN_LIST_DATATYPE(dly) == DF_LONG) {
+           DYN_LIST_DATATYPE(dly) == DF_LONG) {
     int i;
     float *x = (float *) DYN_LIST_VALS(dlx);
     float *y = (float *) calloc(DYN_LIST_N(dly), sizeof(float));
@@ -2936,14 +2943,14 @@ int dlgDrawText(DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
       y[i] = (float) yv[i];
     }
     
-    (*(tinfo->tfunc))(DYN_LIST_N(dlx), x, y, DYN_LIST_VALS(data), tinfo);
+    (*(tinfo->tfunc))(ctx, DYN_LIST_N(dlx), x, y, DYN_LIST_VALS(data), tinfo);
 
     free ((void *) y);
     return DLG_OK;
   }
 
   else if (DYN_LIST_DATATYPE(dlx) == DF_LONG &&
-	   DYN_LIST_DATATYPE(dly) == DF_LONG) {
+           DYN_LIST_DATATYPE(dly) == DF_LONG) {
     int i;
     float *x = (float *) calloc(DYN_LIST_N(dlx), sizeof(float));
     int   *xv = (int *) DYN_LIST_VALS(dlx);
@@ -2957,7 +2964,7 @@ int dlgDrawText(DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
       y[i] = (float) yv[i];
     }
     
-    (*(tinfo->tfunc))(DYN_LIST_N(dlx), x, y, DYN_LIST_VALS(data), tinfo);
+    (*(tinfo->tfunc))(ctx, DYN_LIST_N(dlx), x, y, DYN_LIST_VALS(data), tinfo);
 
     free ((void *) x);
     free ((void *) y);
@@ -2966,8 +2973,7 @@ int dlgDrawText(DYN_LIST *dlx, DYN_LIST *dly, DYN_LIST *data,
   else return DLG_BADARGS;
 }
 
-
-int dlgTextString(int n, float *x, float *y, char **strings, TEXT_INFO *tinfo)
+static int dlgTextString(CgraphContext *ctx, int n, float *x, float *y, char **strings, TEXT_INFO *tinfo)
 {
   int i;
   float oldsize;
@@ -2977,30 +2983,30 @@ int dlgTextString(int n, float *x, float *y, char **strings, TEXT_INFO *tinfo)
   char oldfont[64], *fontname;
   char msg[128];		/* drawtextf has an arbitrary limit of 128 */
 
-  oldclip = setclip(0);
-  oldsize = getfontsize();
-  fontname =  getfontname();
+  oldclip = setclip(ctx, 0);
+  oldsize = getfontsize(ctx);
+  fontname = getfontname(ctx);
   if (fontname) strcpy(oldfont, fontname);
-  setfont(tinfo->font, tinfo->size);
-  oldjust = setjust(tinfo->just);
-  oldori = setorientation(tinfo->ori);
+  setfont(ctx, tinfo->font, tinfo->size);
+  oldjust = setjust(ctx, tinfo->just);
+  oldori = setorientation(ctx, tinfo->ori);
   
   if (!tinfo->colors) {
-    if (tinfo->color >= 0) oldcolor = setcolor(tinfo->color);
+    if (tinfo->color >= 0) oldcolor = setcolor(ctx, tinfo->color);
   } else {
     colors = (int *) DYN_LIST_VALS(tinfo->colors);
-    oldcolor = setcolor(0);
+    oldcolor = setcolor(ctx, 0);
     multicolors = 1;
   }
   for (i = 0; i < n; i++) {
-    moveto(x[i], y[i]);
+    moveto(ctx, x[i], y[i]);
 
-    if (multicolors) setcolor(colors[i]);
+    if (multicolors) setcolor(ctx, colors[i]);
 
     /* If no newlines, just print */
     if (strchr(strings[i],'\n') == NULL) {
       strncpy(msg, strings[i], 127);
-      drawtextf(tinfo->format, msg);
+      drawtextf(ctx, tinfo->format, msg);
     }
     
     else {
@@ -3012,36 +3018,36 @@ int dlgTextString(int n, float *x, float *y, char **strings, TEXT_INFO *tinfo)
       lastchar = strptr+strlen(curstring);
 
       while (strptr < lastchar && 
-	     (curptr = strchr(strptr, '\n')) != NULL) {
-	*curptr = '\0';
-	strncpy(msg, strptr, 127);
-	drawtextf(tinfo->format, msg);
-	strptr = curptr+1;
-	switch (tinfo->ori) {
-	case 0:	  moverel(0.0, -tinfo->spacing); break;
-	case 1:	  moverel(tinfo->spacing, 0.0); break;
-	case 2:	  moverel(0.0, tinfo->spacing); break;
-	case 3:	  moverel(-tinfo->spacing, 0.0); break;
-	}
+             (curptr = strchr(strptr, '\n')) != NULL) {
+        *curptr = '\0';
+        strncpy(msg, strptr, 127);
+        drawtextf(ctx, tinfo->format, msg);
+        strptr = curptr+1;
+        switch (tinfo->ori) {
+        case 0:	  moverel(ctx, 0.0, -tinfo->spacing); break;
+        case 1:	  moverel(ctx, tinfo->spacing, 0.0); break;
+        case 2:	  moverel(ctx, 0.0, tinfo->spacing); break;
+        case 3:	  moverel(ctx, -tinfo->spacing, 0.0); break;
+        }
       }
       if (strptr < lastchar) {
-	strncpy(msg, strptr, 127);
-	drawtextf(tinfo->format, msg);
+        strncpy(msg, strptr, 127);
+        drawtextf(ctx, tinfo->format, msg);
       }
       free((void *) curstring);
     }
   }
-  if (tinfo->colors || tinfo->color >= 0) setcolor(oldcolor);
+  if (tinfo->colors || tinfo->color >= 0) setcolor(ctx, oldcolor);
 
-  setorientation(oldori);
-  setjust(oldjust);
-  if (fontname) setfont(oldfont, oldsize);
-  setclip(oldclip);
+  setorientation(ctx, oldori);
+  setjust(ctx, oldjust);
+  if (fontname) setfont(ctx, oldfont, oldsize);
+  setclip(ctx, oldclip);
 
   return 1;
 }
 
-int dlgTextInt(int n, float *x, float *y, int *ints, TEXT_INFO *tinfo)
+static int dlgTextInt(CgraphContext *ctx, int n, float *x, float *y, int *ints, TEXT_INFO *tinfo)
 {
   int i;
   float oldsize;
@@ -3050,39 +3056,39 @@ int dlgTextInt(int n, float *x, float *y, int *ints, TEXT_INFO *tinfo)
   int *colors, multicolors = 0;
   char oldfont[64], *fontname;
   
-  oldclip = setclip(0);
-  oldsize = getfontsize();
-  fontname = getfontname();
+  oldclip = setclip(ctx, 0);
+  oldsize = getfontsize(ctx);
+  fontname = getfontname(ctx);
   if (fontname) strcpy(oldfont, fontname);
 
-  setfont(tinfo->font, tinfo->size);
-  oldjust = setjust(tinfo->just);
-  oldori = setorientation(tinfo->ori);
+  setfont(ctx, tinfo->font, tinfo->size);
+  oldjust = setjust(ctx, tinfo->just);
+  oldori = setorientation(ctx, tinfo->ori);
 
   if (!tinfo->colors) {
-    if (tinfo->color >= 0) oldcolor = setcolor(tinfo->color);
+    if (tinfo->color >= 0) oldcolor = setcolor(ctx, tinfo->color);
   } else {
     colors = (int *) DYN_LIST_VALS(tinfo->colors);
-    oldcolor = setcolor(0);
+    oldcolor = setcolor(ctx, 0);
     multicolors = 1;
   }
 
   for (i = 0; i < n; i++) {
-    moveto(x[i], y[i]);
-    if (multicolors) setcolor(colors[i]);
-    drawtextf(tinfo->format, ints[i]);
+    moveto(ctx, x[i], y[i]);
+    if (multicolors) setcolor(ctx, colors[i]);
+    drawtextf(ctx, tinfo->format, ints[i]);
   }
   
-  if (tinfo->colors || tinfo->color >= 0) setcolor(oldcolor);
-  setorientation(oldori);
-  setjust(oldjust);
-  if (fontname) setfont(oldfont, oldsize);
-  setclip(oldclip);
+  if (tinfo->colors || tinfo->color >= 0) setcolor(ctx, oldcolor);
+  setorientation(ctx, oldori);
+  setjust(ctx, oldjust);
+  if (fontname) setfont(ctx, oldfont, oldsize);
+  setclip(ctx, oldclip);
   
   return 1;
 }
 
-int dlgTextFloat(int n, float *x, float *y, float *floats, TEXT_INFO *tinfo)
+static int dlgTextFloat(CgraphContext *ctx, int n, float *x, float *y, float *floats, TEXT_INFO *tinfo)
 {
   int i;
   float oldsize;
@@ -3091,39 +3097,37 @@ int dlgTextFloat(int n, float *x, float *y, float *floats, TEXT_INFO *tinfo)
   int oldori, oldcolor = 0;
   char oldfont[64], *fontname;
   
-  oldclip = setclip(0);
-  oldsize = getfontsize();
-  fontname = getfontname();
+  oldclip = setclip(ctx, 0);
+  oldsize = getfontsize(ctx);
+  fontname = getfontname(ctx);
   if (fontname) strcpy(oldfont, fontname);
     
-  setfont(tinfo->font, tinfo->size);
-  oldjust = setjust(tinfo->just);
-  oldori = setorientation(tinfo->ori);
+  setfont(ctx, tinfo->font, tinfo->size);
+  oldjust = setjust(ctx, tinfo->just);
+  oldori = setorientation(ctx, tinfo->ori);
   
   if (!tinfo->colors) {
-    if (tinfo->color >= 0) oldcolor = setcolor(tinfo->color);
+    if (tinfo->color >= 0) oldcolor = setcolor(ctx, tinfo->color);
   } else {
     colors = (int *) DYN_LIST_VALS(tinfo->colors);
-    oldcolor = setcolor(0);
+    oldcolor = setcolor(ctx, 0);
     multicolors = 1;
   }
 
   for (i = 0; i < n; i++) {
-    moveto(x[i], y[i]);
-    if (multicolors) setcolor(colors[i]);
-    drawtextf(tinfo->format, floats[i]);
+    moveto(ctx, x[i], y[i]);
+    if (multicolors) setcolor(ctx, colors[i]);
+    drawtextf(ctx, tinfo->format, floats[i]);
   }
   
-  if (tinfo->colors || tinfo->color >= 0) setcolor(oldcolor);
-  setorientation(oldori);
-  setjust(oldjust);
-  if (fontname) setfont(oldfont, oldsize);
-  setclip(oldclip);
+  if (tinfo->colors || tinfo->color >= 0) setcolor(ctx, oldcolor);
+  setorientation(ctx, oldori);
+  setjust(ctx, oldjust);
+  if (fontname) setfont(ctx, oldfont, oldsize);
+  setclip(ctx, oldclip);
 
   return 1;
 }
-
-
 
 /************************************************************************/
 /*                           Helper Functions                           */
@@ -3183,8 +3187,11 @@ static int dlgGetTextInfo(int i, TEXT_INFO *tinfo)
  *****************************************************************************/
 
 static int tclPostscriptDynList (ClientData data, Tcl_Interp *interp,
-				 int argc, char *argv[])
+                                 int argc, char *argv[])
 {
+  CgraphContext *ctx = getDlgContext(interp);
+  if (!ctx) return TCL_ERROR;
+  
   int i, j;
   char *psfile;
   double x, y, width, height = 0.0; /* height is optional            */
@@ -3201,49 +3208,49 @@ static int tclPostscriptDynList (ClientData data, Tcl_Interp *interp,
   for (i = 1; i < argc; i++) {
     if (argv[i][0] == '-') {
       if (!strcmp(argv[i],"-lwidth")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no frame width specified", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &lwidth) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no frame width specified", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &lwidth) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       if (!strcmp(argv[i],"-lcolor")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no frame color specified", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &lcolor) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no frame color specified", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &lcolor) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       if (!strcmp(argv[i],"-center")) {
-	center = 1;
-	for (j = i+1; j < argc; j++) argv[j-1] = argv[j];
-	argc-=1;
+        center = 1;
+        for (j = i+1; j < argc; j++) argv[j-1] = argv[j];
+        argc-=1;
       }
       if (!strcmp(argv[i],"-nops")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": invalid nops arg", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &nops) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": invalid nops arg", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &nops) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
     }
   }
 
   if (argc < 5) {
     Tcl_AppendResult(interp, "usage:\t", argv[0], " x y psfile width [height]",
-		     "[-lwidth (0)]", (char *) NULL);
+                     "[-lwidth (0)]", (char *) NULL);
     return TCL_ERROR;
   }
 
@@ -3258,7 +3265,7 @@ static int tclPostscriptDynList (ClientData data, Tcl_Interp *interp,
 
   if (height == 0.0) {		/* set automatically */
     int status;
-    float bbaspect = 1.0, aspect = getuaspect();
+    float bbaspect = 1.0, aspect = getuaspect(ctx);
     double bblx, bbly, bbux, bbuy;
 
     if (strstr(psfile, ".raw")) {
@@ -3298,48 +3305,47 @@ static int tclPostscriptDynList (ClientData data, Tcl_Interp *interp,
     imgdata = (unsigned char *) calloc(nbytes, 1);
     if (!imgdata) {
       Tcl_AppendResult(interp, "error allocating space for image \"", 
-		       filename, "\"", NULL);
+                       filename, "\"", NULL);
       fclose(infp);
       return TCL_ERROR;
     }
     if (fread(imgdata, 1, nbytes, infp) != nbytes) {
       Tcl_AppendResult(interp, "error reading data from file \"", 
-		       filename, "\"", NULL);
+                       filename, "\"", NULL);
       free(imgdata);
       fclose(infp);
       return TCL_ERROR;
     }
     fclose(infp);
-    moveto(x, y);
-    place_image(w, h, d, imgdata, width, height);
+    moveto(ctx, x, y);
+    place_image(ctx, w, h, d, imgdata, width, height);
     free(imgdata);
   }
   else if (!nops) {
-    moveto(x, y);
-    postscript(psfile, width, height);
+    moveto(ctx, x, y);
+    postscript(ctx, psfile, width, height);
   }
 
   /* add border if specified lwidth */
   if (lwidth) {
     int oldclip;
     int oldcolor = -1, oldwidth;
-    if (lcolor >= 0) oldcolor = setcolor(lcolor);
-    oldwidth = setlwidth(lwidth);
+    if (lcolor >= 0) oldcolor = setcolor(ctx, lcolor);
+    oldwidth = setlwidth(ctx, lwidth);
 
-    oldclip = setclip(0);
-    moveto(x, y);
-    lineto(x+width, y);
-    lineto(x+width, y+height);
-    lineto(x, y+height);
-    lineto(x, y);
-    setclip(oldclip);
+    oldclip = setclip(ctx, 0);
+    moveto(ctx, x, y);
+    lineto(ctx, x+width, y);
+    lineto(ctx, x+width, y+height);
+    lineto(ctx, x, y+height);
+    lineto(ctx, x, y);
+    setclip(ctx, oldclip);
     
-    if (oldcolor >= 0) setcolor(oldcolor);
-    setlwidth(oldwidth);
+    if (oldcolor >= 0) setcolor(ctx, oldcolor);
+    setlwidth(ctx, oldwidth);
   }
 
   Tcl_SetObjResult(interp, Tcl_NewDoubleObj(height));
-
   return TCL_OK;
 }
 
@@ -3432,8 +3438,11 @@ static int tclFindImageData(Tcl_Interp *interp, char *name,
  *****************************************************************************/
 
 static int tclImagePlace (ClientData data, Tcl_Interp *interp,
-			  int argc, char *argv[])
+                          int argc, char *argv[])
 {
+  CgraphContext *ctx = getDlgContext(interp);
+  if (!ctx) return TCL_ERROR;
+  
   int i, j;
   double x, y, width, height = 0.0; /* height is optional            */
   int lwidth = 0;		/* in 100's of a point (like above)  */
@@ -3455,65 +3464,65 @@ static int tclImagePlace (ClientData data, Tcl_Interp *interp,
   for (i = 1; i < argc; i++) {
     if (argv[i][0] == '-') {
       if (!strcmp(argv[i],"-lwidth")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no frame width specified", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &lwidth) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no frame width specified", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &lwidth) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       if (!strcmp(argv[i],"-width")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no image width specified", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &w) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no image width specified", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &w) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       if (!strcmp(argv[i],"-height")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no image height specified", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &h) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no image height specified", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &h) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       if (!strcmp(argv[i],"-lcolor")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no frame color specified", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &lcolor) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no frame color specified", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &lcolor) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       if (!strcmp(argv[i],"-center")) {
-	center = 1;
-	for (j = i+1; j < argc; j++) argv[j-1] = argv[j];
-	argc-=1;
+        center = 1;
+        for (j = i+1; j < argc; j++) argv[j-1] = argv[j];
+        argc-=1;
       }
       if (!strcmp(argv[i],"-noclip")) {
-	noclip = 1;
-	for (j = i+1; j < argc; j++) argv[j-1] = argv[j];
-	argc-=1;
+        noclip = 1;
+        for (j = i+1; j < argc; j++) argv[j-1] = argv[j];
+        argc-=1;
       }
     }
   }
 
   if (argc < 5) {
     Tcl_AppendResult(interp, "usage:\t", argv[0], " x y image width [height]",
-		     "[-lwidth (0)]", (char *) NULL);
+                     "[-lwidth (0)]", (char *) NULL);
     return TCL_ERROR;
   }
   
@@ -3530,7 +3539,7 @@ static int tclImagePlace (ClientData data, Tcl_Interp *interp,
   }
 
   if (height == 0.0) {		/* set automatically */
-    float bbaspect, aspect = getuaspect();
+    float bbaspect, aspect = getuaspect(ctx);
     bbaspect = w/(float) h;
     height = width*aspect/(bbaspect);
   }
@@ -3540,27 +3549,27 @@ static int tclImagePlace (ClientData data, Tcl_Interp *interp,
     y-=height/2.0;
   }
   
-  moveto(x, y);
-  if (noclip) oldclip = setclip(0);
-  ref = place_image(w, h, d, imagedata, width, height);
-  if (noclip) setclip(oldclip);
+  moveto(ctx, x, y);
+  if (noclip) oldclip = setclip(ctx, 0);
+  ref = place_image(ctx, w, h, d, imagedata, width, height);
+  if (noclip) setclip(ctx, oldclip);
 
   /* add border if specified lwidth */
   if (lwidth) {
     int oldcolor = -1, oldwidth;
-    if (lcolor >= 0) oldcolor = setcolor(lcolor);
-    oldwidth = setlwidth(lwidth);
+    if (lcolor >= 0) oldcolor = setcolor(ctx, lcolor);
+    oldwidth = setlwidth(ctx, lwidth);
 
-    oldclip = setclip(0);
-    moveto(x, y);
-    lineto(x+width, y);
-    lineto(x+width, y+height);
-    lineto(x, y+height);
-    lineto(x, y);
-    setclip(oldclip);
+    oldclip = setclip(ctx, 0);
+    moveto(ctx, x, y);
+    lineto(ctx, x+width, y);
+    lineto(ctx, x+width, y+height);
+    lineto(ctx, x, y+height);
+    lineto(ctx, x, y);
+    setclip(ctx, oldclip);
     
-    if (oldcolor >= 0) setcolor(oldcolor);
-    setlwidth(oldwidth);
+    if (oldcolor >= 0) setcolor(ctx, oldcolor);
+    setlwidth(ctx, oldwidth);
   }
 
   Tcl_Obj *listPtr = Tcl_NewListObj(0, NULL);
@@ -3571,6 +3580,7 @@ static int tclImagePlace (ClientData data, Tcl_Interp *interp,
 
   return TCL_OK;
 }
+
 
 
 /*****************************************************************************
@@ -3590,8 +3600,11 @@ static int tclImagePlace (ClientData data, Tcl_Interp *interp,
  *****************************************************************************/
 
 static int tclImageReplace (ClientData data, Tcl_Interp *interp,
-			    int argc, char *argv[])
+                            int argc, char *argv[])
 {
+  CgraphContext *ctx = getDlgContext(interp);
+  if (!ctx) return TCL_ERROR;
+  
   int i, j, ref;
   int w = 0;
   int h = 0;
@@ -3602,26 +3615,26 @@ static int tclImageReplace (ClientData data, Tcl_Interp *interp,
   for (i = 1; i < argc; i++) {
     if (argv[i][0] == '-') {
       if (!strcmp(argv[i],"-width")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no image width specified", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &w) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no image width specified", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &w) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
       if (!strcmp(argv[i],"-height")) {
-	if (i+1 == argc) {
-	  Tcl_AppendResult(interp, argv[0], 
-			   ": no image height specified", (char *) NULL);
-	  return TCL_ERROR;
-	}
-	if (Tcl_GetInt(interp, argv[i+1], &h) != TCL_OK) return TCL_ERROR;
-	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
-	argc-=2;
-	i-=1;
+        if (i+1 == argc) {
+          Tcl_AppendResult(interp, argv[0], 
+                           ": no image height specified", (char *) NULL);
+          return TCL_ERROR;
+        }
+        if (Tcl_GetInt(interp, argv[i+1], &h) != TCL_OK) return TCL_ERROR;
+        for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
+        argc-=2;
+        i-=1;
       }
     }
   }
@@ -3636,7 +3649,7 @@ static int tclImageReplace (ClientData data, Tcl_Interp *interp,
   if (tclFindImageData(interp, argv[2], &w, &h, &d, &imagedata) != TCL_OK) 
     return TCL_ERROR;
 
-  replace_image(ref, w, h, d, imagedata);
+  replace_image(ctx, ref, w, h, d, imagedata);
   return TCL_OK;
 }
 

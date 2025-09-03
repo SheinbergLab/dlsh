@@ -7,12 +7,18 @@
 extern "C" {
 #endif
 
-void gbuf_dump(char *buffer, int n, int type, FILE *fp);
-int gbuf_dump_ascii(unsigned char *gbuf, int bufsize, FILE *fp);
-int gbuf_dump_ps(unsigned char *gbuf, int bufsize, int type, FILE *OutFP);
+/* Forward declaration */
+typedef struct CgraphContext CgraphContext;
 
-void playback_gbuf(unsigned char *gbuf, int bufsize);
-void playback_gfile(FILE *fp);
+void gbuf_dump(CgraphContext *ctx, char *buffer, int n, int type, FILE *fp);
+int gbuf_dump_ascii(unsigned char *gbuf, int bufsize, FILE *fp);
+int gbuf_dump_ps(CgraphContext *ctx, unsigned char *gbuf, int bufsize, int type, FILE *OutFP);
+
+/* PDF dump function - requires context for image access */
+int gbuf_dump_pdf(CgraphContext *ctx, char *gbuf, int bufsize, char *filename);
+
+void playback_gbuf(CgraphContext *ctx, unsigned char *gbuf, int bufsize);
+void playback_gfile(CgraphContext *ctx, FILE *fp);
 
 void read_gheader(FILE *InFP, FILE *OutFP);
 void read_gline(char, FILE *InFP, FILE *OutFP);
@@ -139,8 +145,9 @@ int gread_gpoly_to_string(char type, GPointList *gpl, GBUF_STRING *str);
 int gread_gtext_to_string(char type, GText *gtx, GBUF_STRING *str);
 int gread_gattr_to_string(char type, GAttr *gtr, GBUF_STRING *str);
 
-int gbuf_dump_fig(unsigned char *gbuf, int bufsize, int type, FILE *OutFP);
-int gfile_to_fig(FILE *InFP, int type, FILE *OutFP);
+int gbuf_dump_fig(CgraphContext *ctx, unsigned char *gbuf, int bufsize, int type, FILE *OutFP);
+int gfile_to_fig(CgraphContext *ctx, FILE *InFP, int type, FILE *OutFP);
+int gfile_to_ps(CgraphContext *ctx, FILE *InFP, int type, FILE *OutFP);
 
 void fig_init(int type, float w, float h, FILE *fp);
 void fig_check_path(int type, int *filling, int *stroking, FILE *fp);
@@ -154,6 +161,11 @@ void fig_startline(int type, float x0, float y0, int style,
 void fig_lineto(int type, float x0, float y0, FILE *fp);
 void fig_text(int type, float x, float y, char *str, char *fontname,
 	float fontsize, int just, int orientation, FILE *fp);
+
+/* Context-aware functions that need updating */
+int gbClearAndPlayback(CgraphContext *ctx);
+void gbSetPageOrientation(CgraphContext *ctx, char ori);
+void gbSetPageFill(CgraphContext *ctx, int status);
 
 #ifdef __cplusplus
 }
