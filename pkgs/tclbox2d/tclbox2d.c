@@ -1020,28 +1020,26 @@ B2_API float b2RevoluteJoint_GetMaxMotorTorque( b2JointId jointId );
 #endif
 
 static void PlankoCleanupCallback(ClientData clientData, Tcl_Interp *interp) {
+  BOX2D_INFO *b2info = (BOX2D_INFO *) clientData;
+  if (!b2info) return;
   
-    Tcl_MutexUnlock(&Box2D_Mutex);  // Force unlock in case held
-    
-    BOX2D_INFO *b2info = (BOX2D_INFO *) clientData;
-
-    if (b2info) {
-      // Clean up all worlds in this interpreter
-      Tcl_HashEntry *entryPtr;
-      Tcl_HashSearch search;
-      
-      for (entryPtr = Tcl_FirstHashEntry(&b2info->Box2DTable, &search);
-	   entryPtr != NULL;
-	   entryPtr = Tcl_NextHashEntry(&search)) {
-	BOX2D_WORLD *bw = (BOX2D_WORLD *) Tcl_GetHashValue(entryPtr);
-	if (bw) {
-	  Box2DDelete(bw);
-	}
-      }
-      
-      Tcl_DeleteHashTable(&b2info->Box2DTable);
-      free(b2info);
+  // Clean up this interpreter's worlds
+  Tcl_HashEntry *entryPtr;
+  Tcl_HashSearch search;
+  
+  for (entryPtr = Tcl_FirstHashEntry(&b2info->Box2DTable, &search);
+       entryPtr != NULL;
+       entryPtr = Tcl_NextHashEntry(&search)) {
+    BOX2D_WORLD *bw = (BOX2D_WORLD *) Tcl_GetHashValue(entryPtr);
+    if (bw) {
+      // Box2DDelete already handles mutex for b2DestroyWorld
+      Box2DDelete(bw);
     }
+  }
+  
+  Tcl_DeleteHashTable(&b2info->Box2DTable);
+  
+  free(b2info);
 }
 
 #ifndef WIN32
