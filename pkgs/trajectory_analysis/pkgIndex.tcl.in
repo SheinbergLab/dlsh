@@ -1,0 +1,5 @@
+# Package index file for trajectory_analysis
+# Generated automatically by CMake
+
+# Package trajectory_analysis @TRAJECTORY_VERSION@
+package ifneeded trajectory_analysis 1.1 [list load [file join $dir trajectory_analysis[info sharedlibextension]] trajectory_analysis]
