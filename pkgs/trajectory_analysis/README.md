@@ -63,9 +63,9 @@ package require trajectory_analysis
 
 ### Commands
 
-#### 1. `trajectory_analyze` - Basic KDE Analysis
+#### `trajectory_analyze` - Comprehensive Trajectory Analysis
 
-Analyzes a single set of trajectories to find collision hotspots.
+Analyzes trajectories with support for multiple analysis modes and types.
 
 ```tcl
 trajectory_analyze traj_list ?options?
@@ -77,75 +77,68 @@ trajectory_analyze traj_list ?options?
 - `-bandwidth_y BW` - Vertical smoothing bandwidth (default: 5.0)
 - `-angle_threshold RAD` - Minimum angle for turn detection (default: 0.5)
 - `-threshold VAL` - Peak detection threshold (default: 0.01)
+- `-mode MODE` - Analysis mode: `density`, `uncertainty`, or `combined` (default: `combined`)
+- `-analysis_type TYPE` - What to analyze: `turns` or `path` (default: `turns`)
+- `-variance_radius R` - Radius for variance computation (default: 2.0)
+- `-variance_weight W` - Weight of variance in combined mode (default: 2.0)
 - `-bounds {x_min x_max y_min y_max}` - Explicit analysis bounds
 
-**Returns:** DYN_GROUP containing:
-- `peaks_x`, `peaks_y` - Peak locations
-- `peak_values` - Peak intensities
-- `kde_grid` - Full heat map
-- `grid_info` - Boundary information
-- `metadata` - Analysis parameters
+**Analysis Modes:**
+- `density` - Traditional KDE of trajectory points
+- `uncertainty` - Directional variance heat map  
+- `combined` - Variance-weighted density estimation
+
+**Analysis Types:**
+- `turns` - Analyze trajectory turn points (collision locations)
+- `path` - Analyze all trajectory points (full motion paths)
 
 **Example:**
 ```tcl
 # Load trajectory data into DYN_LIST
 set trajectories [load_trajectory_data "experiment_01.dat"]
 
-# Analyze with default parameters
+# Basic density analysis of turns (collision points)
 set results [trajectory_analyze $trajectories]
 
-# Analyze with custom parameters and explicit bounds
+# Analyze full trajectory paths instead of turns
+set path_results [trajectory_analyze $trajectories \
+    -analysis_type path \
+    -mode density]
+
+# Combined variance-weighted analysis
+set combined_results [trajectory_analyze $trajectories \
+    -mode combined \
+    -analysis_type turns \
+    -variance_radius 3.0 \
+    -variance_weight 1.5]
+
+# Pure uncertainty analysis
+set uncertainty_results [trajectory_analyze $trajectories \
+    -mode uncertainty]
+
+# With explicit bounds for reproducibility
 set results [trajectory_analyze $trajectories \
     -grid_size 150 \
     -bandwidth_x 3.0 \
     -bandwidth_y 3.0 \
-    -angle_threshold 0.3 \
+    -analysis_type turns \
     -bounds {0 100 0 50}]
 
-# Extract peaks
+# Extract peaks and metadata
 set peaks_x [dyn_group_get $results peaks_x]
 set peaks_y [dyn_group_get $results peaks_y]
+set analysis_type [dyn_list_get $results metadata analysis_type]
+set mode [dyn_list_get $results metadata mode]
 ```
 
-#### 2. `trajectory_analyze_enhanced` - Advanced Analysis with Uncertainty
+**Returns:** DYN_GROUP containing:
+- `peaks_x`, `peaks_y` - Peak locations
+- `peak_values` - Peak intensities
+- `analysis_grid` - Full heat map (named `kde_grid` for density mode)
+- `grid_info` - Boundary information
+- `metadata` - Analysis parameters including `analysis_type`, `mode`, `peak_count`
 
-Provides enhanced analysis including directional variance and trajectory uncertainty.
-
-```tcl
-trajectory_analyze_enhanced traj_list ?options?
-```
-
-**Options:**
-- All options from `trajectory_analyze`, plus:
-- `-variance_radius R` - Radius for variance computation (default: 2.0)
-- `-variance_weight W` - Weight of variance in combined mode (default: 2.0)
-- `-mode MODE` - Analysis mode: `density`, `uncertainty`, or `combined` (default: `combined`)
-
-**Modes:**
-- `density` - Traditional KDE of turn points
-- `uncertainty` - Directional variance heat map
-- `combined` - Variance-weighted density estimation
-
-**Returns:** DYN_GROUP with same structure as `trajectory_analyze`, plus:
-- Additional metadata about analysis mode and variance parameters
-
-**Example:**
-```tcl
-# Density-only analysis
-set density_results [trajectory_analyze_enhanced $trajectories -mode density]
-
-# Uncertainty-only analysis
-set uncertainty_results [trajectory_analyze_enhanced $trajectories -mode uncertainty]
-
-# Combined analysis with custom parameters
-set combined_results [trajectory_analyze_enhanced $trajectories \
-    -mode combined \
-    -variance_radius 3.0 \
-    -variance_weight 1.5 \
-    -bounds {0 100 0 50}]
-```
-
-#### 3. `trajectory_compare` - Comparative Analysis
+#### `trajectory_compare` - Comparative Analysis
 
 Compares two sets of trajectories and computes statistical differences.
 
@@ -160,6 +153,7 @@ trajectory_compare traj_list1 traj_list2 ?options?
 - `-angle_threshold RAD` - Minimum angle for turn detection (default: 0.5)
 - `-comparison_mode MODE` - Comparison type: `difference`, `ratio`, or `both` (default: `both`)
 - `-significance_thresh VAL` - Threshold for significant differences (default: 0.01)
+- `-analysis_type TYPE` - What to analyze: `turns` or `path` (default: `turns`)
 - `-bounds {x_min x_max y_min y_max}` - Explicit analysis bounds
 
 **Returns:** DYN_GROUP containing:
@@ -179,19 +173,26 @@ trajectory_compare traj_list1 traj_list2 ?options?
 set traj_control [load_trajectory_data "control.dat"]
 set traj_experimental [load_trajectory_data "experimental.dat"]
 
-# Compare with default parameters
+# Compare turns (collision points) - default
 set comparison [trajectory_compare $traj_control $traj_experimental]
+
+# Compare full paths instead
+set path_comparison [trajectory_compare $traj_control $traj_experimental \
+    -analysis_type path]
 
 # Compare with explicit bounds (ensures same coordinate system)
 set comparison [trajectory_compare $traj_control $traj_experimental \
     -comparison_mode both \
+    -analysis_type turns \
     -significance_thresh 0.05 \
     -bounds {0 100 0 50}]
 
-# Extract comparison metrics
+# Extract comparison metrics and metadata
 set correlation [dyn_list_get $comparison metadata correlation]
 set mean_diff [dyn_list_get $comparison metadata mean_difference]
+set analysis_type [dyn_list_get $comparison metadata analysis_type]
 
+puts "Comparing: $analysis_type"
 puts "Spatial correlation: $correlation"
 puts "Mean difference: $mean_diff"
 ```
@@ -245,9 +246,40 @@ This is especially important for:
 
 ## Algorithm Details
 
+### Analysis Modes
+
+**Density Mode**:
+- Traditional KDE using only trajectory points
+- Fast and straightforward collision hotspot detection
+- Best for: Simple visualization and peak finding
+
+**Uncertainty Mode**:
+- Computes directional variance across trajectories
+- Shows where trajectories diverge in direction
+- Best for: Understanding trajectory variability
+
+**Combined Mode** (default):
+- Variance-weighted KDE blending density and uncertainty
+- Higher variance areas get more weight
+- Best for: Robust analysis accounting for trajectory consistency
+
+### Analysis Types
+
+**Turns Type** (default):
+- Detects points where trajectory direction changes > `angle_threshold`
+- Represents collision/bounce locations
+- Sparse point distribution focusing on discrete events
+- Best for: Identifying where balls hit planks
+
+**Path Type**:
+- Uses all trajectory points, not just turns
+- Represents complete motion paths  
+- Dense point distribution showing full trajectory coverage
+- Best for: Continuous tracking or gaze comparison studies
+
 ### Turn Detection
 
-Trajectories are analyzed to find "turn points" where the direction changes by more than `angle_threshold`. These points typically correspond to ball collisions with planks.
+Trajectories are analyzed to find "turn points" where the direction changes by more than `angle_threshold`. These points typically correspond to ball collisions with planks. Only used when `-analysis_type turns` is selected.
 
 ### Kernel Density Estimation
 
@@ -276,7 +308,12 @@ Identifies local maxima in the KDE grid above the specified threshold, represent
 
 ## Version History
 
-### v1.1 (Current)
+### v1.2 (Current)
+- Added `-mode` option to `trajectory_analyze` for turns vs path analysis
+- Supports gaze tracking research comparing different attention hypotheses
+- Path mode analyzes full trajectory density for continuous tracking studies
+
+### v1.1
 - Added explicit bounds support for all three commands
 - Enhanced comparison capabilities
 - Improved documentation

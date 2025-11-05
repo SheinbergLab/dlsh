@@ -31,7 +31,7 @@
 #endif
 
 // Module version
-#define TRAJECTORY_VERSION "1.1"
+#define TRAJECTORY_VERSION "1.2"
 
 // Structure for 2D points
 typedef struct {
@@ -115,6 +115,12 @@ static DYN_GROUP* createResultGroup(Point2D *peaks,
                                    double *peak_values, int peak_count,
                                    KDEGrid *grid);
 
+static void applySaturationToGrid(KDEGrid *grid, double gamma, const char *saturation_mode);
+static void applyPowerLawSaturation(KDEGrid *grid, double gamma);
+static void applyLogSaturation(KDEGrid *grid, double scale);
+static void applySigmoidSaturation(KDEGrid *grid, double midpoint_percentile, double steepness);
+static double computePercentile(double *values, int count, double percentile);
+
 // New comparison functions
 static KDEGrid* allocateKDEGrid(int width, int height, 
                                double x_min, double x_max, 
@@ -128,7 +134,8 @@ static ComparisonResult* compareKDEGrids(KDEGrid *grid1, KDEGrid *grid2,
                                         const char *comparison_mode,
                                         double significance_threshold);
 static DYN_GROUP* createComparisonResultGroup(ComparisonResult *comp_result,
-                                             const char *comparison_mode);
+                                             const char *comparison_mode,
+                                             const char *analysis_type);
 static void freeComparisonResult(ComparisonResult *result);
 static void computeBoundingBox(Point2D *points, int count,
                               double *x_min, double *x_max,
@@ -146,6 +153,148 @@ static double gaussian2D(double x, double y, double sigma_x, double sigma_y) {
     double norm = 1.0 / (2.0 * M_PI * sigma_x * sigma_y);
     return norm * exp(-(term1 + term2));
 }
+
+
+static double computePercentile(double *values, int count, double percentile) {
+    if (count == 0) return 0.0;
+    
+    // Create sorted copy
+    double *sorted = malloc(count * sizeof(double));
+    if (!sorted) return 0.0;
+    
+    memcpy(sorted, values, count * sizeof(double));
+    
+    // Simple insertion sort (could use qsort for large arrays)
+    for (int i = 1; i < count; i++) {
+        double key = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && sorted[j] > key) {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = key;
+    }
+    
+    int index = (int)(percentile * count);
+    if (index >= count) index = count - 1;
+    if (index < 0) index = 0;
+    
+    double result = sorted[index];
+    free(sorted);
+    
+    return result;
+}
+
+/*
+ * Apply power law saturation to grid
+ * gamma < 1.0 compresses high values, revealing alternative paths
+ * gamma = 1.0 is linear (no change)
+ * gamma > 1.0 enhances high values
+ */
+static void applyPowerLawSaturation(KDEGrid *grid, double gamma) {
+    if (gamma == 1.0) return;  // No transformation needed
+    
+    int total_cells = grid->width * grid->height;
+    
+    // Find max value for normalization
+    double max_val = 0.0;
+    for (int i = 0; i < total_cells; i++) {
+        if (grid->values[i] > max_val) {
+            max_val = grid->values[i];
+        }
+    }
+    
+    if (max_val == 0.0) return;  // Empty grid
+    
+    // Apply power law transformation
+    for (int i = 0; i < total_cells; i++) {
+        double normalized = grid->values[i] / max_val;
+        grid->values[i] = pow(normalized, gamma) * max_val;
+    }
+}
+
+/*
+ * Apply logarithmic saturation to grid
+ * Naturally compresses high values while preserving low values
+ */
+static void applyLogSaturation(KDEGrid *grid, double scale) {
+    int total_cells = grid->width * grid->height;
+    
+    // Find max value to determine appropriate scaling
+    double max_val = 0.0;
+    for (int i = 0; i < total_cells; i++) {
+        if (grid->values[i] > max_val) {
+            max_val = grid->values[i];
+        }
+    }
+    
+    if (max_val == 0.0) return;
+    
+    // Apply log transformation: log(1 + x/scale)
+    // Scale controls compression strength
+    for (int i = 0; i < total_cells; i++) {
+        grid->values[i] = scale * log(1.0 + grid->values[i] / scale);
+    }
+}
+
+/*
+ * Apply sigmoid saturation to grid
+ * Creates smooth S-curve compression with adjustable midpoint and steepness
+ */
+static void applySigmoidSaturation(KDEGrid *grid, double midpoint_percentile, 
+                                   double steepness) {
+  int total_cells = grid->width * grid->height;
+  
+  // Find max value
+  double max_val = 0.0;
+  for (int i = 0; i < total_cells; i++) {
+    if (grid->values[i] > max_val) {
+      max_val = grid->values[i];
+    }
+  }
+  
+  if (max_val == 0.0) return;
+  
+  // Find midpoint for adaptive scaling
+  double midpoint = computePercentile(grid->values, total_cells, midpoint_percentile);
+  if (midpoint == 0.0) midpoint = max_val * 0.18;
+  
+  // Scale factor for compression
+  double scale = steepness / midpoint;
+  
+  // Apply Reinhard tone mapping (HDR-style compression)
+  for (int i = 0; i < total_cells; i++) {
+    double x = grid->values[i];
+    double scaled = x * scale;
+    
+    // Reinhard: compresses high values smoothly
+    double compressed = scaled / (1.0 + scaled);
+    
+    // Rescale to preserve magnitude
+    grid->values[i] = compressed * max_val * (1.0 + scale);
+  }
+}
+
+/*
+ * Main saturation dispatcher function
+ */
+static void applySaturationToGrid(KDEGrid *grid, double gamma, const char *saturation_mode) {
+    if (!grid || !saturation_mode) return;
+    
+    if (strcmp(saturation_mode, "power") == 0) {
+        applyPowerLawSaturation(grid, gamma);
+    } else if (strcmp(saturation_mode, "log") == 0) {
+        // For log mode, gamma acts as scale parameter
+        applyLogSaturation(grid, gamma);
+    } else if (strcmp(saturation_mode, "sigmoid") == 0) {
+        // For sigmoid mode, gamma acts as steepness parameter
+        // Use 50th percentile (median) as midpoint
+        applySigmoidSaturation(grid, 0.5, gamma);
+    }
+    // "none" or unrecognized modes do nothing
+}
+
+
 
 /*
  * Helper function to normalize angle to [-PI, PI]
@@ -770,7 +919,8 @@ static void mergeBoundingBoxes(double x1_min, double x1_max, double y1_min, doub
  * Uses dfu_helpers for simplified data management
  */
 static DYN_GROUP* createComparisonResultGroup(ComparisonResult *comp_result,
-                                             const char *comparison_mode) {
+                                             const char *comparison_mode,
+                                             const char *analysis_type) {
     if (!comp_result) return NULL;
     
     DYN_GROUP *result_group = dfuCreateGroup(10);
@@ -779,7 +929,7 @@ static DYN_GROUP* createComparisonResultGroup(ComparisonResult *comp_result,
     // Create metadata list
     DYN_LIST *metadata = dfuCreateMetadataList("metadata");
     if (metadata) {
-        dfuAddMetadata(metadata, "analysis_type", "trajectory_comparison");
+        dfuAddMetadata(metadata, "analysis_type", analysis_type);
         dfuAddMetadata(metadata, "comparison_mode", comparison_mode);
         dfuAddMetadataDouble(metadata, "correlation", comp_result->correlation);
         
@@ -1032,6 +1182,9 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
     double angle_threshold = 0.5;
     const char *comparison_mode = "both";
     double significance_threshold = 0.01;
+    const char *analysis_type = "turns";  // turns or path
+    const char *saturation_mode = "none";
+    double gamma = 1.0;
     
     // Optional explicit bounds
     int use_explicit_bounds = 0;
@@ -1044,7 +1197,8 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
                         "traj_list1 traj_list2 ?-grid_size N? "
                         "?-bandwidth_x BW? ?-bandwidth_y BW? "
                         "?-angle_threshold RAD? ?-comparison_mode MODE? "
-                        "?-significance_thresh VAL? "
+                        "?-significance_thresh VAL? ?-analysis_type TYPE? "
+                        "?-saturation MODE? ?-gamma VAL? "
                         "?-bounds {x_min x_max y_min y_max}?");
         return TCL_ERROR;
     }
@@ -1084,13 +1238,36 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
                             TCL_STATIC);
                 return TCL_ERROR;
             }
+        } else if (strcmp(option, "-saturation") == 0) {
+            saturation_mode = Tcl_GetString(objv[i+1]);
+            if (strcmp(saturation_mode, "none") != 0 &&
+                strcmp(saturation_mode, "power") != 0 &&
+                strcmp(saturation_mode, "log") != 0 &&
+                strcmp(saturation_mode, "sigmoid") != 0) {
+                Tcl_SetResult(interp, 
+                            "Saturation mode must be 'none', 'power', 'log', or 'sigmoid'", 
+                            TCL_STATIC);
+                return TCL_ERROR;
+            }
+        } else if (strcmp(option, "-gamma") == 0) {
+            if (Tcl_GetDoubleFromObj(interp, objv[i+1], &gamma) != TCL_OK) {
+                return TCL_ERROR;
+            }
         } else if (strcmp(option, "-significance_thresh") == 0) {
             if (Tcl_GetDoubleFromObj(interp, objv[i+1], &significance_threshold) != TCL_OK) {
                 return TCL_ERROR;
             }
+        } else if (strcmp(option, "-analysis_type") == 0) {
+            analysis_type = Tcl_GetString(objv[i+1]);
+            if (strcmp(analysis_type, "turns") != 0 &&
+                strcmp(analysis_type, "path") != 0) {
+                Tcl_SetResult(interp, "Analysis type must be 'turns' or 'path'",
+                            TCL_STATIC);
+                return TCL_ERROR;
+            }
         } else if (strcmp(option, "-bounds") == 0) {
             // Parse bounds list: {x_min x_max y_min y_max}
-            Tcl_Size bounds_objc;
+	  Tcl_Size bounds_objc;
             Tcl_Obj **bounds_objv;
             
             if (Tcl_ListObjGetElements(interp, objv[i+1], &bounds_objc, &bounds_objv) != TCL_OK) {
@@ -1145,58 +1322,98 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
         return TCL_ERROR;
     }
     
-    // Compute turns for both sets
-    Point2D *all_turns1 = NULL;
-    Point2D *all_turns2 = NULL;
+    // Collect points based on analysis type
+    Point2D *all_points1 = NULL;
+    Point2D *all_points2 = NULL;
     int total_turns1 = 0;
     int total_turns2 = 0;
     
-    for (int i = 0; i < trajectory_count1; i++) {
-        Point2D *turns;
-        int turn_count;
-        
-        if (computeTrajectoryTurns(&trajectories1[i], &turns, &turn_count,
-                                  angle_threshold)) {
-            if (turn_count > 0) {
-                all_turns1 = realloc(all_turns1, 
-                                    (total_turns1 + turn_count) * sizeof(Point2D));
-                if (all_turns1) {
-                    memcpy(&all_turns1[total_turns1], turns, 
-                          turn_count * sizeof(Point2D));
-                    total_turns1 += turn_count;
+    if (strcmp(analysis_type, "path") == 0) {
+        // Path mode: collect ALL trajectory points from set 1
+        for (int i = 0; i < trajectory_count1; i++) {
+            if (trajectories1[i].count > 0) {
+                all_points1 = realloc(all_points1,
+                                    (total_turns1 + trajectories1[i].count) * sizeof(Point2D));
+                if (all_points1) {
+                    memcpy(&all_points1[total_turns1], trajectories1[i].points,
+                          trajectories1[i].count * sizeof(Point2D));
+                    total_turns1 += trajectories1[i].count;
                 }
-                free(turns);
             }
         }
-    }
-    
-    for (int i = 0; i < trajectory_count2; i++) {
-        Point2D *turns;
-        int turn_count;
         
-        if (computeTrajectoryTurns(&trajectories2[i], &turns, &turn_count,
-                                  angle_threshold)) {
-            if (turn_count > 0) {
-                all_turns2 = realloc(all_turns2, 
-                                    (total_turns2 + turn_count) * sizeof(Point2D));
-                if (all_turns2) {
-                    memcpy(&all_turns2[total_turns2], turns, 
-                          turn_count * sizeof(Point2D));
-                    total_turns2 += turn_count;
+        // Path mode: collect ALL trajectory points from set 2
+        for (int i = 0; i < trajectory_count2; i++) {
+            if (trajectories2[i].count > 0) {
+                all_points2 = realloc(all_points2,
+                                    (total_turns2 + trajectories2[i].count) * sizeof(Point2D));
+                if (all_points2) {
+                    memcpy(&all_points2[total_turns2], trajectories2[i].points,
+                          trajectories2[i].count * sizeof(Point2D));
+                    total_turns2 += trajectories2[i].count;
                 }
-                free(turns);
             }
         }
-    }
-    
-    if (total_turns1 == 0 || total_turns2 == 0) {
-        freeTrajectories(trajectories1, trajectory_count1);
-        freeTrajectories(trajectories2, trajectory_count2);
-        free(all_turns1);
-        free(all_turns2);
-        Tcl_SetResult(interp, "No turns found in one or both trajectory sets", 
-                     TCL_STATIC);
-        return TCL_ERROR;
+        
+        if (total_turns1 == 0 || total_turns2 == 0) {
+            freeTrajectories(trajectories1, trajectory_count1);
+            freeTrajectories(trajectories2, trajectory_count2);
+            free(all_points1);
+            free(all_points2);
+            Tcl_SetResult(interp, "No points found in one or both trajectory sets", 
+                         TCL_STATIC);
+            return TCL_ERROR;
+        }
+    } else {
+        // Turns mode: compute turns for set 1
+        for (int i = 0; i < trajectory_count1; i++) {
+            Point2D *turns;
+            int turn_count;
+            
+            if (computeTrajectoryTurns(&trajectories1[i], &turns, &turn_count,
+                                      angle_threshold)) {
+                if (turn_count > 0) {
+                    all_points1 = realloc(all_points1, 
+                                        (total_turns1 + turn_count) * sizeof(Point2D));
+                    if (all_points1) {
+                        memcpy(&all_points1[total_turns1], turns, 
+                              turn_count * sizeof(Point2D));
+                        total_turns1 += turn_count;
+                    }
+                    free(turns);
+                }
+            }
+        }
+        
+        // Turns mode: compute turns for set 2
+        for (int i = 0; i < trajectory_count2; i++) {
+            Point2D *turns;
+            int turn_count;
+            
+            if (computeTrajectoryTurns(&trajectories2[i], &turns, &turn_count,
+                                      angle_threshold)) {
+                if (turn_count > 0) {
+                    all_points2 = realloc(all_points2, 
+                                        (total_turns2 + turn_count) * sizeof(Point2D));
+                    if (all_points2) {
+                        memcpy(&all_points2[total_turns2], turns, 
+                              turn_count * sizeof(Point2D));
+                        total_turns2 += turn_count;
+                    }
+                    free(turns);
+                }
+            }
+        }
+        
+        if (total_turns1 == 0 || total_turns2 == 0) {
+            freeTrajectories(trajectories1, trajectory_count1);
+            freeTrajectories(trajectories2, trajectory_count2);
+            free(all_points1);
+            free(all_points2);
+            Tcl_SetResult(interp, "No turns found in one or both trajectory sets", 
+                         TCL_STATIC);
+            return TCL_ERROR;
+        }
     }
     
     // Find bounding boxes and merge them
@@ -1212,8 +1429,8 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
         y_max = explicit_y_max;
     } else {
         // Auto-compute from data
-        computeBoundingBox(all_turns1, total_turns1, &x1_min, &x1_max, &y1_min, &y1_max);
-        computeBoundingBox(all_turns2, total_turns2, &x2_min, &x2_max, &y2_min, &y2_max);
+        computeBoundingBox(all_points1, total_turns1, &x1_min, &x1_max, &y1_min, &y1_max);
+        computeBoundingBox(all_points2, total_turns2, &x2_min, &x2_max, &y2_min, &y2_max);
         
         mergeBoundingBoxes(x1_min, x1_max, y1_min, y1_max,
                           x2_min, x2_max, y2_min, y2_max,
@@ -1229,12 +1446,12 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
     }
     
     // Compute KDE for both sets using the same grid
-    KDEGrid *kde1 = computeKDE2D(all_turns1, total_turns1, 
+    KDEGrid *kde1 = computeKDE2D(all_points1, total_turns1, 
                                 grid_size, grid_size,
                                 bandwidth_x, bandwidth_y,
                                 x_min, x_max, y_min, y_max);
     
-    KDEGrid *kde2 = computeKDE2D(all_turns2, total_turns2,
+    KDEGrid *kde2 = computeKDE2D(all_points2, total_turns2,
                                 grid_size, grid_size,
                                 bandwidth_x, bandwidth_y,
                                 x_min, x_max, y_min, y_max);
@@ -1244,10 +1461,16 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
         if (kde2) freeKDEGrid(kde2);
         freeTrajectories(trajectories1, trajectory_count1);
         freeTrajectories(trajectories2, trajectory_count2);
-        free(all_turns1);
-        free(all_turns2);
+        free(all_points1);
+        free(all_points2);
         Tcl_SetResult(interp, "Failed to compute KDE grids", TCL_STATIC);
         return TCL_ERROR;
+    }
+
+    // Apply saturation to both grids if requested (for path analysis)
+    if (strcmp(analysis_type, "path") == 0 && strcmp(saturation_mode, "none") != 0) {
+        applySaturationToGrid(kde1, gamma, saturation_mode);
+        applySaturationToGrid(kde2, gamma, saturation_mode);
     }
     
     // Perform comparison
@@ -1261,21 +1484,21 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
     if (!comp_result) {
         freeTrajectories(trajectories1, trajectory_count1);
         freeTrajectories(trajectories2, trajectory_count2);
-        free(all_turns1);
-        free(all_turns2);
+        free(all_points1);
+        free(all_points2);
         Tcl_SetResult(interp, "Failed to compare KDE grids", TCL_STATIC);
         return TCL_ERROR;
     }
     
     // Create result group
-    DYN_GROUP *result = createComparisonResultGroup(comp_result, comparison_mode);
+    DYN_GROUP *result = createComparisonResultGroup(comp_result, comparison_mode, analysis_type);
     
     if (!result) {
         freeComparisonResult(comp_result);
         freeTrajectories(trajectories1, trajectory_count1);
         freeTrajectories(trajectories2, trajectory_count2);
-        free(all_turns1);
-        free(all_turns2);
+        free(all_points1);
+        free(all_points2);
         Tcl_SetResult(interp, "Failed to create result group", TCL_STATIC);
         return TCL_ERROR;
     }
@@ -1284,8 +1507,8 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
     freeComparisonResult(comp_result);
     freeTrajectories(trajectories1, trajectory_count1);
     freeTrajectories(trajectories2, trajectory_count2);
-    free(all_turns1);
-    free(all_turns2);
+    free(all_points1);
+    free(all_points2);
     
     // Put result in Tcl interpreter
     if (tclPutGroup(interp, result) != TCL_OK) {
@@ -1299,208 +1522,6 @@ static int TrajectoryCompareCmd(ClientData clientData, Tcl_Interp *interp,
 /*
  * Basic trajectory analysis command (original functionality)
  */
-static int TrajectoryAnalyzeCmd(ClientData clientData, Tcl_Interp *interp,
-                               int objc, Tcl_Obj *const objv[]) {
-    (void)clientData;
-    
-    // Default parameters
-    int grid_size = 100;
-    double bandwidth_x = 5.0;
-    double bandwidth_y = 5.0;
-    double angle_threshold = 0.5;
-    double threshold = 0.01;
-    
-    // Optional explicit bounds
-    int use_explicit_bounds = 0;
-    double explicit_x_min = 0.0, explicit_x_max = 0.0;
-    double explicit_y_min = 0.0, explicit_y_max = 0.0;
-    
-    if (objc < 2) {
-        Tcl_WrongNumArgs(interp, 1, objv, 
-                        "traj_list ?-grid_size N? ?-bandwidth_x BW? "
-                        "?-bandwidth_y BW? ?-angle_threshold RAD? ?-threshold VAL? "
-                        "?-bounds {x_min x_max y_min y_max}?");
-        return TCL_ERROR;
-    }
-    
-    // Parse options
-    for (int i = 2; i < objc; i += 2) {
-        if (i + 1 >= objc) {
-            Tcl_SetResult(interp, "Missing value for option", TCL_STATIC);
-            return TCL_ERROR;
-        }
-        
-        const char *option = Tcl_GetString(objv[i]);
-        
-        if (strcmp(option, "-grid_size") == 0) {
-            if (Tcl_GetIntFromObj(interp, objv[i+1], &grid_size) != TCL_OK) {
-                return TCL_ERROR;
-            }
-        } else if (strcmp(option, "-bandwidth_x") == 0) {
-            if (Tcl_GetDoubleFromObj(interp, objv[i+1], &bandwidth_x) != TCL_OK) {
-                return TCL_ERROR;
-            }
-        } else if (strcmp(option, "-bandwidth_y") == 0) {
-            if (Tcl_GetDoubleFromObj(interp, objv[i+1], &bandwidth_y) != TCL_OK) {
-                return TCL_ERROR;
-            }
-        } else if (strcmp(option, "-angle_threshold") == 0) {
-            if (Tcl_GetDoubleFromObj(interp, objv[i+1], &angle_threshold) != TCL_OK) {
-                return TCL_ERROR;
-            }
-        } else if (strcmp(option, "-threshold") == 0) {
-            if (Tcl_GetDoubleFromObj(interp, objv[i+1], &threshold) != TCL_OK) {
-                return TCL_ERROR;
-            }
-        } else if (strcmp(option, "-bounds") == 0) {
-            // Parse bounds list: {x_min x_max y_min y_max}
-            Tcl_Size bounds_objc;
-            Tcl_Obj **bounds_objv;
-            
-            if (Tcl_ListObjGetElements(interp, objv[i+1], &bounds_objc, &bounds_objv) != TCL_OK) {
-                return TCL_ERROR;
-            }
-            
-            if (bounds_objc != 4) {
-                Tcl_SetResult(interp, "Bounds must be {x_min x_max y_min y_max}", TCL_STATIC);
-                return TCL_ERROR;
-            }
-            
-            if (Tcl_GetDoubleFromObj(interp, bounds_objv[0], &explicit_x_min) != TCL_OK ||
-                Tcl_GetDoubleFromObj(interp, bounds_objv[1], &explicit_x_max) != TCL_OK ||
-                Tcl_GetDoubleFromObj(interp, bounds_objv[2], &explicit_y_min) != TCL_OK ||
-                Tcl_GetDoubleFromObj(interp, bounds_objv[3], &explicit_y_max) != TCL_OK) {
-                return TCL_ERROR;
-            }
-            
-            use_explicit_bounds = 1;
-        } else {
-            Tcl_AppendResult(interp, "Unknown option: ", option, NULL);
-            return TCL_ERROR;
-        }
-    }
-    
-    // Get trajectory data
-    char *traj_name = Tcl_GetString(objv[1]);
-    DYN_LIST *trajectory_list;
-    
-    if (tclFindDynList(interp, traj_name, &trajectory_list) != TCL_OK) {
-        return TCL_ERROR;
-    }
-    
-    // Extract trajectories
-    Trajectory *trajectories;
-    int trajectory_count;
-    
-    if (!extractTrajectoriesFromDynList(interp, trajectory_list,
-                                       &trajectories, &trajectory_count)) {
-        return TCL_ERROR;
-    }
-    
-    // Compute turns
-    Point2D *all_turns = NULL;
-    int total_turns = 0;
-    
-    for (int i = 0; i < trajectory_count; i++) {
-        Point2D *turns;
-        int turn_count;
-        
-        if (computeTrajectoryTurns(&trajectories[i], &turns, &turn_count,
-                                  angle_threshold)) {
-            if (turn_count > 0) {
-                all_turns = realloc(all_turns, 
-                                   (total_turns + turn_count) * sizeof(Point2D));
-                if (all_turns) {
-                    memcpy(&all_turns[total_turns], turns, 
-                          turn_count * sizeof(Point2D));
-                    total_turns += turn_count;
-                }
-                free(turns);
-            }
-        }
-    }
-    
-    if (total_turns == 0) {
-        freeTrajectories(trajectories, trajectory_count);
-        Tcl_SetResult(interp, "No turns found in trajectories", TCL_STATIC);
-        return TCL_ERROR;
-    }
-    
-    // Find bounding box
-    double x_min, x_max, y_min, y_max;
-    
-    if (use_explicit_bounds) {
-        // Use user-provided bounds
-        x_min = explicit_x_min;
-        x_max = explicit_x_max;
-        y_min = explicit_y_min;
-        y_max = explicit_y_max;
-    } else {
-        // Auto-compute from data
-        computeBoundingBox(all_turns, total_turns, &x_min, &x_max, &y_min, &y_max);
-        
-        // Add padding
-        double x_range = x_max - x_min;
-        double y_range = y_max - y_min;
-        x_min -= x_range * 0.1;
-        x_max += x_range * 0.1;
-        y_min -= y_range * 0.1;
-        y_max += y_range * 0.1;
-    }
-    
-    // Compute KDE
-    KDEGrid *kde = computeKDE2D(all_turns, total_turns, grid_size, grid_size,
-                               bandwidth_x, bandwidth_y,
-                               x_min, x_max, y_min, y_max);
-    
-    if (!kde) {
-        free(all_turns);
-        freeTrajectories(trajectories, trajectory_count);
-        Tcl_SetResult(interp, "Failed to compute KDE grid", TCL_STATIC);
-        return TCL_ERROR;
-    }
-    
-    // Find peaks
-    Point2D *peaks;
-    double *peak_values;
-    int peak_count;
-    
-    if (!findKDEPeaks(kde, &peaks, &peak_values, &peak_count, threshold)) {
-        free(all_turns);
-        freeTrajectories(trajectories, trajectory_count);
-        freeKDEGrid(kde);
-        Tcl_SetResult(interp, "Failed to find peaks", TCL_STATIC);
-        return TCL_ERROR;
-    }
-    
-    // Create result group
-    DYN_GROUP *result = createResultGroup(peaks, peak_values, peak_count, kde);
-    
-    if (!result) {
-        free(peaks);
-        free(peak_values);
-        free(all_turns);
-        freeTrajectories(trajectories, trajectory_count);
-        freeKDEGrid(kde);
-        Tcl_SetResult(interp, "Failed to create result group", TCL_STATIC);
-        return TCL_ERROR;
-    }
-    
-    // Cleanup
-    free(peaks);
-    free(peak_values);
-    free(all_turns);
-    freeTrajectories(trajectories, trajectory_count);
-    freeKDEGrid(kde);
-    
-    // Put result in Tcl interpreter
-    if (tclPutGroup(interp, result) != TCL_OK) {
-        dfuFreeDynGroup(result);
-        return TCL_ERROR;
-    }
-    
-    return TCL_OK;
-}
 
 /*
  * Helper functions for cleanup
@@ -1542,7 +1563,7 @@ static void freeKDEGrid(KDEGrid *grid) {
  *   -variance_weight W   Weight factor for variance in combined mode (default: 2.0)
  *   ... plus all standard trajectory_analyze options
  */
-static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *interp,
+static int TrajectoryAnalyzeCmd(ClientData clientData, Tcl_Interp *interp,
                                        int objc, Tcl_Obj *const objv[]) {
     (void)clientData;
     
@@ -1555,6 +1576,9 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
     double variance_radius = 2.0;
     double variance_weight = 2.0;
     const char *analysis_mode = "combined"; // density, uncertainty, or combined
+    const char *analysis_type = "turns";     // turns or path
+    const char *saturation_mode = "none";
+    double gamma = 1.0;
     
     // Optional explicit bounds
     int use_explicit_bounds = 0;
@@ -1562,10 +1586,10 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
     double explicit_y_min = 0.0, explicit_y_max = 0.0;
     
     if (objc < 2) {
-        Tcl_WrongNumArgs(interp, 1, objv,
+       Tcl_WrongNumArgs(interp, 1, objv,
                         "traj_list ?-grid_size N? ?-bandwidth_x BW? ?-bandwidth_y BW? "
                         "?-angle_threshold RAD? ?-threshold VAL? ?-variance_radius R? "
-                        "?-variance_weight W? ?-mode MODE? "
+                        "?-variance_weight W? ?-mode MODE? ?-analysis_type TYPE? "
                         "?-bounds {x_min x_max y_min y_max}?");
         return TCL_ERROR;
     }
@@ -1616,9 +1640,17 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
                             TCL_STATIC);
                 return TCL_ERROR;
             }
+        } else if (strcmp(option, "-analysis_type") == 0) {
+            analysis_type = Tcl_GetString(objv[i+1]);
+            if (strcmp(analysis_type, "turns") != 0 &&
+                strcmp(analysis_type, "path") != 0) {
+                Tcl_SetResult(interp, "Analysis type must be 'turns' or 'path'",
+                            TCL_STATIC);
+                return TCL_ERROR;
+            }
         } else if (strcmp(option, "-bounds") == 0) {
             // Parse bounds list: {x_min x_max y_min y_max}
-	   Tcl_Size bounds_objc;
+	  Tcl_Size bounds_objc;
             Tcl_Obj **bounds_objv;
             
             if (Tcl_ListObjGetElements(interp, objv[i+1], &bounds_objc, &bounds_objv) != TCL_OK) {
@@ -1638,9 +1670,16 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
             }
             
             use_explicit_bounds = 1;
+        } else if (strcmp(option, "-saturation") == 0) {      
+	  saturation_mode = Tcl_GetString(objv[i+1]);         
+        } else if (strcmp(option, "-gamma") == 0) {           
+	  if (Tcl_GetDoubleFromObj(interp, objv[i+1], &gamma) != TCL_OK) {  
+	    gamma = 1.0;    
+	  }                 
+	  
         } else {
-            Tcl_AppendResult(interp, "Unknown option: ", option, NULL);
-            return TCL_ERROR;
+	  Tcl_AppendResult(interp, "Unknown option: ", option, NULL);
+	  return TCL_ERROR;
         }
     }
     
@@ -1661,38 +1700,59 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
         return TCL_ERROR;
     }
     
-    // For density and combined modes, we need turn points
-    Point2D *all_turns = NULL;
+    // For density and combined modes, we need points (either turns or full path)
+    Point2D *all_points = NULL;
     int total_turns = 0;
     
     if (strcmp(analysis_mode, "density") == 0 || strcmp(analysis_mode, "combined") == 0) {
-        // Compute turns for all trajectories
-        for (int i = 0; i < trajectory_count; i++) {
-            Point2D *turns;
-            int turn_count;
-            
-            // Convert to simple trajectory for turn computation
-            Trajectory simple_traj;
-            simple_traj.points = trajectories[i].points;
-            simple_traj.count = trajectories[i].count;
-            simple_traj.capacity = trajectories[i].capacity;
-            
-            if (computeTrajectoryTurns(&simple_traj, &turns, &turn_count, angle_threshold)) {
-                if (turn_count > 0) {
-                    all_turns = realloc(all_turns, (total_turns + turn_count) * sizeof(Point2D));
-                    if (all_turns) {
-                        memcpy(&all_turns[total_turns], turns, turn_count * sizeof(Point2D));
-                        total_turns += turn_count;
+        if (strcmp(analysis_type, "path") == 0) {
+            // Path mode: collect ALL trajectory points
+            for (int i = 0; i < trajectory_count; i++) {
+                if (trajectories[i].count > 0) {
+                    all_points = realloc(all_points,
+                                        (total_turns + trajectories[i].count) * sizeof(Point2D));
+                    if (all_points) {
+                        memcpy(&all_points[total_turns], trajectories[i].points,
+                              trajectories[i].count * sizeof(Point2D));
+                        total_turns += trajectories[i].count;
                     }
-                    free(turns);
                 }
             }
-        }
-        
-        if (total_turns == 0 && strcmp(analysis_mode, "density") == 0) {
-            freeEnhancedTrajectories(trajectories, trajectory_count);
-            Tcl_SetResult(interp, "No turns found in trajectories", TCL_STATIC);
-            return TCL_ERROR;
+            
+            if (total_turns == 0) {
+                freeEnhancedTrajectories(trajectories, trajectory_count);
+                Tcl_SetResult(interp, "No points found in trajectories", TCL_STATIC);
+                return TCL_ERROR;
+            }
+        } else {
+            // Turns mode: compute turns for all trajectories
+            for (int i = 0; i < trajectory_count; i++) {
+                Point2D *turns;
+                int turn_count;
+                
+                // Convert to simple trajectory for turn computation
+                Trajectory simple_traj;
+                simple_traj.points = trajectories[i].points;
+                simple_traj.count = trajectories[i].count;
+                simple_traj.capacity = trajectories[i].capacity;
+                
+                if (computeTrajectoryTurns(&simple_traj, &turns, &turn_count, angle_threshold)) {
+                    if (turn_count > 0) {
+                        all_points = realloc(all_points, (total_turns + turn_count) * sizeof(Point2D));
+                        if (all_points) {
+                            memcpy(&all_points[total_turns], turns, turn_count * sizeof(Point2D));
+                            total_turns += turn_count;
+                        }
+                        free(turns);
+                    }
+                }
+            }
+            
+            if (total_turns == 0 && strcmp(analysis_mode, "density") == 0) {
+                freeEnhancedTrajectories(trajectories, trajectory_count);
+                Tcl_SetResult(interp, "No turns found in trajectories", TCL_STATIC);
+                return TCL_ERROR;
+            }
         }
     }
     
@@ -1708,7 +1768,7 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
     } else {
         // Auto-compute from data
         if (total_turns > 0) {
-            computeBoundingBox(all_turns, total_turns, &x_min, &x_max, &y_min, &y_max);
+            computeBoundingBox(all_points, total_turns, &x_min, &x_max, &y_min, &y_max);
         } else {
             // For uncertainty-only mode, find bounding box from all trajectory points
             int first_point = 1;
@@ -1749,23 +1809,49 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
     } else if (strcmp(analysis_mode, "combined") == 0) {
         // Combined density + uncertainty analysis
         result_grid = computeVarianceWeightedKDE(trajectories, trajectory_count,
-                                               all_turns, total_turns,
+                                               all_points, total_turns,
                                                grid_size, grid_size,
                                                bandwidth_x, bandwidth_y,
                                                x_min, x_max, y_min, y_max,
                                                variance_radius, variance_weight);
-    } else {
+    }
+    else {
         // Default to density-only analysis
-        result_grid = computeKDE2D(all_turns, total_turns, grid_size, grid_size,
+        result_grid = computeKDE2D(all_points, total_turns, grid_size, grid_size,
                                  bandwidth_x, bandwidth_y,
                                  x_min, x_max, y_min, y_max);
     }
     
     if (!result_grid) {
-        if (all_turns) free(all_turns);
+        if (all_points) free(all_points);
         freeEnhancedTrajectories(trajectories, trajectory_count);
         Tcl_SetResult(interp, "Failed to compute analysis grid", TCL_STATIC);
         return TCL_ERROR;
+    }
+
+    if (strcmp(analysis_type, "path") == 0 && strcmp(analysis_mode, "density") == 0) {
+      // Extract saturation parameters from command line
+      const char *saturation_mode = "none";
+      double gamma = 1.0;
+      
+      // Scan through command line arguments for saturation options
+      for (int i = 2; i < objc; i += 2) {
+	if (i + 1 >= objc) break;
+	const char *opt = Tcl_GetString(objv[i]);
+        
+	if (strcmp(opt, "-saturation") == 0) {
+	  saturation_mode = Tcl_GetString(objv[i + 1]);
+	} else if (strcmp(opt, "-gamma") == 0) {
+	  if (Tcl_GetDoubleFromObj(interp, objv[i + 1], &gamma) != TCL_OK) {
+	    gamma = 1.0;  // Use default on parse error
+	  }
+	}
+      }
+      
+      // Apply saturation transformation to the grid
+      if (strcmp(saturation_mode, "none") != 0) {
+	applySaturationToGrid(result_grid, gamma, saturation_mode);
+      }
     }
     
     // Find peaks
@@ -1774,7 +1860,7 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
     int peak_count;
     
     if (!findKDEPeaks(result_grid, &peaks, &peak_values, &peak_count, threshold)) {
-        if (all_turns) free(all_turns);
+        if (all_points) free(all_points);
         freeEnhancedTrajectories(trajectories, trajectory_count);
         freeKDEGrid(result_grid);
         Tcl_SetResult(interp, "Failed to find peaks", TCL_STATIC);
@@ -1786,7 +1872,7 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
     if (!result) {
         free(peaks);
         free(peak_values);
-        if (all_turns) free(all_turns);
+        if (all_points) free(all_points);
         freeEnhancedTrajectories(trajectories, trajectory_count);
         freeKDEGrid(result_grid);
         Tcl_SetResult(interp, "Failed to create result group", TCL_STATIC);
@@ -1796,12 +1882,31 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
     // Add metadata
     DYN_LIST *metadata = dfuCreateMetadataList("metadata");
     if (metadata) {
-        dfuAddMetadata(metadata, "analysis_type", "trajectory_enhanced");
-        dfuAddMetadata(metadata, "mode", analysis_mode);
+        dfuAddMetadata(metadata, "analysis_type", analysis_type);  // "turns" or "path"
+        dfuAddMetadata(metadata, "mode", analysis_mode);           // "density", "uncertainty", "combined"
         dfuAddMetadataDouble(metadata, "variance_radius", variance_radius);
         if (strcmp(analysis_mode, "combined") == 0) {
             dfuAddMetadataDouble(metadata, "variance_weight", variance_weight);
         }
+	if (strcmp(analysis_type, "path") == 0 && strcmp(analysis_mode, "density") == 0) {
+	  // Add saturation parameters to metadata
+	  const char *saturation_mode = "none";
+	  double gamma = 1.0;
+	  
+	  for (int i = 2; i < objc; i += 2) {
+            if (i + 1 >= objc) break;
+            const char *opt = Tcl_GetString(objv[i]);
+            if (strcmp(opt, "-saturation") == 0) {
+	      saturation_mode = Tcl_GetString(objv[i + 1]);
+            } else if (strcmp(opt, "-gamma") == 0) {
+	      Tcl_GetDoubleFromObj(interp, objv[i + 1], &gamma);
+            }
+	  }
+	  
+	  dfuAddMetadata(metadata, "saturation_mode", saturation_mode);
+	  dfuAddMetadataDouble(metadata, "gamma", gamma);
+	}
+	
         dfuAddMetadataInt(metadata, "peak_count", peak_count);
         dfuAddDynGroupExistingList(result, "metadata", metadata);
     }
@@ -1843,7 +1948,7 @@ static int TrajectoryAnalyzeEnhancedCmd(ClientData clientData, Tcl_Interp *inter
     // Cleanup
     free(peaks);
     free(peak_values);
-    if (all_turns) free(all_turns);
+    if (all_points) free(all_points);
     freeEnhancedTrajectories(trajectories, trajectory_count);
     freeKDEGrid(result_grid);
     
@@ -1867,10 +1972,6 @@ int DLLEXPORT Trajectory_analysis_Init(Tcl_Interp *interp) {
     // Create commands
     Tcl_CreateObjCommand(interp, "trajectory_analyze",
                         TrajectoryAnalyzeCmd, NULL, NULL);
-    
-    // Create enhanced command with directional variance
-    Tcl_CreateObjCommand(interp, "trajectory_analyze_enhanced",
-                        TrajectoryAnalyzeEnhancedCmd, NULL, NULL);
     
     // Create comparison command
     Tcl_CreateObjCommand(interp, "trajectory_compare",
