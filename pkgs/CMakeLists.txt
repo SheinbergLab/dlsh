@@ -135,6 +135,7 @@ if(APPLE)
     endif()
 endif()
 
+add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/trajectory_analysis)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/curve)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/tclbox2d)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/dbscan)
