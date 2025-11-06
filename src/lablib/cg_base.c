@@ -75,7 +75,7 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
     }
     
     // Use cleaned buffer for string conversion
-    char *result_string = gbuf_dump_ascii_to_string(clean_buffer, clean_size);
+    char *result_string = gbuf_dump_ascii_to_string(ctx, clean_buffer, clean_size);
     free(clean_buffer); // Clean up the temporary cleaned buffer
     
     if (!result_string) {
@@ -113,7 +113,7 @@ static int cgDumpWindow(ClientData clientData, Tcl_Interp *interp,
     }
     
     // Use cleaned buffer for JSON conversion
-    char *result_string = gbuf_dump_json_direct(clean_buffer, clean_size);
+    char *result_string = gbuf_dump_json_direct(ctx, clean_buffer, clean_size);
     free(clean_buffer); // Clean up the temporary cleaned buffer
     
     if (!result_string) {

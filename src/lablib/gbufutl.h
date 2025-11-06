@@ -129,13 +129,14 @@ void gbuf_string_reset(GBUF_STRING *str);   /* Clear content but keep buffer */
 unsigned char *gbuf_clean(unsigned char *input_gbuf, int input_size, int *output_size);
 
 /* String output functions - ASCII command output only */
-char *gbuf_dump_ascii_to_string(unsigned char *gbuf, int bufsize);
+  char *gbuf_dump_ascii_to_string(CgraphContext *ctx, unsigned char *gbuf, int bufsize);
 
 /* JSON output (using libjansson) */
-char *gbuf_dump_json_direct(unsigned char *gbuf, int bufsize);
+char *gbuf_dump_json_direct(CgraphContext *ctx, unsigned char *gbuf, int bufsize);
 
 /* Lower-level string output functions */
-int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING *str);
+  int gbuf_dump_ascii_to_gbuf_string(CgraphContext *ctx,
+				     unsigned char *gbuf, int bufsize, GBUF_STRING *str);
 
 /* String versions of read functions */
 int gread_gheader_to_string(GHeader *hdr, GBUF_STRING *str);

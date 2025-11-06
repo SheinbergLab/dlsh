@@ -204,8 +204,8 @@ extern void gbuf_dump(CgraphContext *ctx, char *buffer, int n, int type, FILE *f
 extern int gbuf_dump_ps(CgraphContext *ctx, unsigned char *gbuf, int bufsize, int type, FILE *OutFP);
 
   extern int gbuf_dump_ascii(unsigned char *gbuf, int bufsize, FILE *fp);
-extern char *gbuf_dump_ascii_to_string(unsigned char *data, int nbytes);
-extern char *gbuf_dump_json_direct(unsigned char *data, int nbytes);
+  extern char *gbuf_dump_ascii_to_string(CgraphContext *ctx, unsigned char *data, int nbytes);
+  extern char *gbuf_dump_json_direct(CgraphContext *ctx, unsigned char *data, int nbytes);
 extern unsigned char *gbuf_clean(unsigned char *data, int nbytes, int *clean_size);
 
 /* 

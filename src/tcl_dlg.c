@@ -614,6 +614,7 @@ static int tclNiceDpoints             (ClientData, Tcl_Interp *, int, char **);
 static int tclNiceNum                 (ClientData, Tcl_Interp *, int, char **);
 static int tclRGBColors               (ClientData, Tcl_Interp *, int, char **);
 static int tclRGB2Hex                 (ClientData, Tcl_Interp *, int, char **);
+static int tclImageData2Photo         (ClientData, Tcl_Interp *, int, char **);
 static int tclPolarLAB2RGBColors      (ClientData, Tcl_Interp *, int, char **);
 static int tclHeatmap                 (ClientData, Tcl_Interp *, int, char **);
 static int tclDLGHelp                 (ClientData, Tcl_Interp *, int, char **);
@@ -660,6 +661,9 @@ static TCL_COMMANDS DLGcommands[] = {
   { "dlg_rgb2hex",   tclRGB2Hex, NULL,
       "turn list of R G B values to Tcl #RRGGBB hex format" },
 
+  { "dlg_imagedata2photo", tclImageData2Photo, NULL,
+    "convert image to tcl hex format for photos" },
+  
   { "dlg_polarlabcolors",   tclPolarLAB2RGBColors, (void *) DLG_MULTI_COLORS,
       "generate color indices from polar LAB (LCH) color specs" },
   { "dlg_polarlabcolor",    tclPolarLAB2RGBColors, (void *) DLG_SINGLE_COLOR ,
@@ -5104,6 +5108,131 @@ static int tclRGB2Hex (ClientData data, Tcl_Interp *interp,
   return(tclPutList(interp, newlist));
 }
 
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    tclImageData2Photo
+ *
+ * TCL FUNCTION
+ *    dlg_imagedata2photo
+ *
+ * DESCRIPTION
+ *    Converts image data (char DynList) to a list of hex color strings
+ *    for Tk photo images. Handles RGB (depth=3), RGBA (depth=4), and 
+ *    grayscale (depth=1). Depth is inferred from data size if not provided.
+ *
+ * ARGS
+ *    dlg_imagedata2photo data_dl width height ?depth?
+ *
+ * RETURNS
+ *    List of lists - each inner list is a row of hex colors
+ *
+ *****************************************************************************/
+static int tclImageData2Photo(ClientData data, Tcl_Interp *interp,
+                              int argc, char *argv[])
+{
+    DYN_LIST *data_dl;
+    int width, height, depth;
+    unsigned char *pixels;
+    int total_pixels, data_size, inferred_depth;
+    Tcl_Obj *result_list, *row_list;
+    char color_buf[16];
+    int row, col, idx;
+    unsigned char r, g, b, a;
+    
+    if (argc < 4 || argc > 5) {
+        Tcl_AppendResult(interp, "usage: ", argv[0], 
+                        " data_dl width height ?depth?", NULL);
+        return TCL_ERROR;
+    }
+    
+    if (tclFindDynList(interp, argv[1], &data_dl) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    if (DYN_LIST_DATATYPE(data_dl) != DF_CHAR) {
+        Tcl_AppendResult(interp, argv[0], ": data must be a char list", NULL);
+        return TCL_ERROR;
+    }
+    
+    if (Tcl_GetInt(interp, argv[2], &width) != TCL_OK ||
+        Tcl_GetInt(interp, argv[3], &height) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    total_pixels = width * height;
+    data_size = DYN_LIST_N(data_dl);
+    
+    if (argc == 5) {
+        // Depth explicitly provided
+        if (Tcl_GetInt(interp, argv[4], &depth) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    } else {
+        // Infer depth from data size
+        if (data_size % total_pixels != 0) {
+            Tcl_AppendResult(interp, argv[0], 
+                            ": data size is not a multiple of width*height", NULL);
+            return TCL_ERROR;
+        }
+        depth = data_size / total_pixels;
+    }
+    
+    if (depth != 1 && depth != 3 && depth != 4) {
+        Tcl_AppendResult(interp, argv[0], 
+                        ": depth must be 1, 3, or 4 (got ", NULL);
+        char depth_str[16];
+        snprintf(depth_str, sizeof(depth_str), "%d", depth);
+        Tcl_AppendResult(interp, depth_str, ")", NULL);
+        return TCL_ERROR;
+    }
+    
+    if (data_size != total_pixels * depth) {
+        Tcl_AppendResult(interp, argv[0], 
+                        ": data size doesn't match width*height*depth", NULL);
+        return TCL_ERROR;
+    }
+    
+    pixels = (unsigned char *) DYN_LIST_VALS(data_dl);
+    result_list = Tcl_NewListObj(0, NULL);
+    
+    for (row = 0; row < height; row++) {
+        row_list = Tcl_NewListObj(0, NULL);
+        
+        for (col = 0; col < width; col++) {
+            idx = (row * width + col) * depth;
+            
+            switch (depth) {
+                case 1: // Grayscale
+                    r = g = b = pixels[idx];
+                    break;
+                    
+                case 3: // RGB
+                    r = pixels[idx];
+                    g = pixels[idx + 1];
+                    b = pixels[idx + 2];
+                    break;
+                    
+                case 4: // RGBA (ignore alpha for now)
+                    r = pixels[idx];
+                    g = pixels[idx + 1];
+                    b = pixels[idx + 2];
+                    a = pixels[idx + 3];
+                    // Could handle alpha blending here if needed
+                    break;
+            }
+            
+            snprintf(color_buf, sizeof(color_buf), "#%02x%02x%02x", r, g, b);
+            Tcl_ListObjAppendElement(interp, row_list, 
+                                    Tcl_NewStringObj(color_buf, -1));
+        }
+        
+        Tcl_ListObjAppendElement(interp, result_list, row_list);
+    }
+    
+    Tcl_SetObjResult(interp, result_list);
+    return TCL_OK;
+}
 
 static void LCH_to_RGB(double L, double C, double H,
 		      int *rr, int *gg, int *bb)

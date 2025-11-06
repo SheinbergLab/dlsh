@@ -32,7 +32,7 @@
 #include "rawapi.h"
 #include "color.h"
 #include "lablib.h"
-
+#include "b64.h"
 #include "lodepng.h"
 
 float GB_Version = 2.0;
@@ -47,6 +47,9 @@ static float PS_curx, PS_cury;
 static char PDF_Stroking = 0, PDF_Filling = 0, PDF_Moveto = 0;
 static float PDF_linetox, PDF_linetoy;
 static float PDF_curx, PDF_cury;
+
+static float ASCII_curx = 0.0;
+static float ASCII_cury = 0.0;
 
 static float PSColorTableVals[][4] = {
 /* R    G    B   Grey -- currently we use the grey approx. */
@@ -3012,12 +3015,12 @@ void gbuf_string_reset(GBUF_STRING *str)
 
 /* High-level string output function */
 
-char *gbuf_dump_ascii_to_string(unsigned char *gbuf, int bufsize)
+char *gbuf_dump_ascii_to_string(CgraphContext *ctx, unsigned char *gbuf, int bufsize)
 {
     GBUF_STRING *str = gbuf_string_create(bufsize * 2); /* rough estimate */
     if (!str) return NULL;
     
-    if (gbuf_dump_ascii_to_gbuf_string(gbuf, bufsize, str)) {
+    if (gbuf_dump_ascii_to_gbuf_string(ctx, gbuf, bufsize, str)) {
         return gbuf_string_detach(str);
     } else {
         gbuf_string_free(str);
@@ -3072,7 +3075,6 @@ int gread_gline_to_string(char type, GLine *gln, GBUF_STRING *str)
             else 
                 gbuf_string_append(str, "fcircle\t"); 
             break;
-        case G_IMAGE: gbuf_string_append(str, "image\t"); break;
     }
     
     gbuf_string_append(str, "%6.2f %6.2f %6.2f %6.2f\n",
@@ -3089,11 +3091,22 @@ int gread_gpoint_to_string(char type, GPoint *gpt, GBUF_STRING *str)
     
     extern int FlipEvents;
     if (FlipEvents) flip_gpoint(gpoint);
+
+    float x = GPOINT_X(gpoint);
+    float y = GPOINT_Y(gpoint);
     
     switch(type) {
         case G_POINT: gbuf_string_append(str, "point\t"); break;
-        case G_LINETO: gbuf_string_append(str, "lineto\t"); break;
-        case G_MOVETO: gbuf_string_append(str, "moveto\t"); break;
+        case G_LINETO:
+	  gbuf_string_append(str, "lineto\t");
+	  ASCII_curx = x;
+	  ASCII_cury = y;
+	  break;
+        case G_MOVETO:
+	  gbuf_string_append(str, "moveto\t");
+	  ASCII_curx = x;
+	  ASCII_cury = y;
+	  break;
     }
     
     gbuf_string_append(str, "%6.2f %6.2f\n",
@@ -3221,8 +3234,56 @@ int gread_gattr_to_string(char type, GAttr *gtr, GBUF_STRING *str)
     return GATTR_S;
 }
 
+int gread_gimage_to_string(CgraphContext *ctx, GLine *gln, GBUF_STRING *str)
+{
+    GLine gli, *gline = &gli;
+    memcpy(gline, gln, GLINE_S);
+    
+    extern int FlipEvents;
+    if (FlipEvents) flip_gline(gline);
+    
+    extern float ASCII_curx, ASCII_cury;
+    
+    int image_id = (int)GLINE_X1(gline);
+    float scalex = GLINE_X0(gline);
+    float scaley = GLINE_Y0(gline);
+    
+    // Calculate bounding box in window coordinates
+    // Top-left is at current position, bottom-right is offset by scale factors
+    float x0 = ASCII_curx;
+    float y0 = ASCII_cury;
+    float x1 = ASCII_curx + scalex;
+    float y1 = ASCII_cury + scaley;
+    
+    // Output as bounding box (like other drawing commands)
+    gbuf_string_append(str, "drawimage\t%6.2f %6.2f %6.2f %6.2f %d",
+                      x0, y0, x1, y1, image_id);
+    
+    // Append inline base64 image data
+    if (ctx) {
+        GBUF_IMAGE *img = gbFindImage(ctx, image_id);
+        if (img) {
+            size_t data_size = img->w * img->h * img->d;
+            int b64_size = base64size(data_size);
+            char *b64_data = (char *)malloc(b64_size + 1);
+            
+            if (b64_data) {
+                int result = base64encode(img->data, data_size, b64_data, b64_size + 1);
+                if (result == 1) {
+                    gbuf_string_append(str, " %d %d %d {%s}",
+                                      img->w, img->h, img->d, b64_data);
+                }
+                free(b64_data);
+            }
+        }
+    }
+    gbuf_string_append(str, "\n");
+    
+    return GLINE_S;
+}
+
 /* Main ASCII dump to string function */
-int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING *str)
+int gbuf_dump_ascii_to_gbuf_string(CgraphContext *ctx, unsigned char *gbuf, int bufsize, GBUF_STRING *str)
 {
     int c;
     int i, advance_bytes = 0, *tptr;
@@ -3244,8 +3305,10 @@ int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING
             case G_LINE:
             case G_FILLEDRECT:
             case G_CIRCLE:
-            case G_IMAGE:
                 advance_bytes = gread_gline_to_string(c, (GLine *) &gbuf[i], str);
+                break;
+            case G_IMAGE:
+                advance_bytes = gread_gimage_to_string(ctx, (GLine *) &gbuf[i], str);
                 break;
             case G_LINETO:
             case G_MOVETO:
@@ -3274,10 +3337,10 @@ int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING
                 break;
             default:
                 gbuf_string_append(str, "unknown event type %d\n", c);
-                advance_bytes = 1; /* skip unknown byte */
+                advance_bytes = 1;
                 break;
         }
-        if (advance_bytes <= 0) break; /* prevent infinite loop */
+        if (advance_bytes <= 0) break;
     }
     return 1;
 }
@@ -3286,12 +3349,16 @@ int gbuf_dump_ascii_to_gbuf_string(unsigned char *gbuf, int bufsize, GBUF_STRING
 /*                            JSON Functions                             */
 /*************************************************************************/
 
-char *gbuf_dump_json_direct(unsigned char *gbuf, int bufsize) 
+char *gbuf_dump_json_direct(CgraphContext *ctx,
+			    unsigned char *gbuf, int bufsize) 
 {
     json_t *root, *commands_array;
     char *result_string;
     int c, i, advance_bytes = 0, *tptr;
     extern int TimeStamped, CurrentTimeStamp;
+
+    float JSON_curx = 0.0;
+    float JSON_cury = 0.0;
     
     /* Create root JSON object */
     root = json_object();
@@ -3404,7 +3471,11 @@ char *gbuf_dump_json_direct(unsigned char *gbuf, int bufsize)
                 GPoint gpnt, *gpoint = &gpnt;
                 memcpy(gpoint, &gbuf[i], GPOINT_S);
                 if (FlipEvents) flip_gpoint(gpoint);
-                
+
+		// Update current position
+                JSON_curx = GPOINT_X(gpoint);
+                JSON_cury = GPOINT_Y(gpoint);
+		
                 json_object_set_new(command_obj, "cmd", json_string("moveto"));
                 json_array_append_new(args_array, json_real(GPOINT_X(gpoint)));
                 json_array_append_new(args_array, json_real(GPOINT_Y(gpoint)));
@@ -3417,7 +3488,11 @@ char *gbuf_dump_json_direct(unsigned char *gbuf, int bufsize)
                 GPoint gpnt, *gpoint = &gpnt;
                 memcpy(gpoint, &gbuf[i], GPOINT_S);
                 if (FlipEvents) flip_gpoint(gpoint);
-                
+		
+		// Update current position
+                JSON_curx = GPOINT_X(gpoint);
+                JSON_cury = GPOINT_Y(gpoint);
+   		
                 json_object_set_new(command_obj, "cmd", json_string("lineto"));
                 json_array_append_new(args_array, json_real(GPOINT_X(gpoint)));
                 json_array_append_new(args_array, json_real(GPOINT_Y(gpoint)));
@@ -3610,37 +3685,77 @@ char *gbuf_dump_json_direct(unsigned char *gbuf, int bufsize)
 				break;
 			}
 			
-			case G_TIMESTAMP: {
-				GAttr gatr, *gattr = &gatr;
-				memcpy(gattr, &gbuf[i], GATTR_S);
-				if (FlipEvents) flip_gattr(gattr);
-				
-				json_object_set_new(command_obj, "cmd", json_string("timestamp"));
-				json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
-				
-				advance_bytes = GATTR_S;
-				break;
-			}
-			
-			case G_IMAGE: {
-				GLine gli, *gline = &gli;
-				memcpy(gline, &gbuf[i], GLINE_S);
-				if (FlipEvents) flip_gline(gline);
-				
-				json_object_set_new(command_obj, "cmd", json_string("image"));
-				json_array_append_new(args_array, json_real(GLINE_X0(gline)));
-				json_array_append_new(args_array, json_real(GLINE_Y0(gline)));
-				json_array_append_new(args_array, json_real(GLINE_X1(gline)));
-				json_array_append_new(args_array, json_real(GLINE_Y1(gline)));
-				
-				advance_bytes = GLINE_S;
-				break;
-			}            
-            default:
-                json_object_set_new(command_obj, "cmd", json_string("unknown"));
-                json_object_set_new(command_obj, "type", json_integer(c));
-                advance_bytes = 1;
-                break;
+	case G_TIMESTAMP: {
+	  GAttr gatr, *gattr = &gatr;
+	  memcpy(gattr, &gbuf[i], GATTR_S);
+	  if (FlipEvents) flip_gattr(gattr);
+	  
+	  json_object_set_new(command_obj, "cmd", json_string("timestamp"));
+	  json_array_append_new(args_array, json_integer(GATTR_VAL(gattr)));
+	  
+	  advance_bytes = GATTR_S;
+	  break;
+	}
+	case G_IMAGE: {
+	  GBUF_IMAGE *img;
+	  GLine gli, *gline = &gli;
+	  memcpy(gline, &gbuf[i], GLINE_S);
+	  if (FlipEvents) flip_gline(gline);
+          
+	  int image_id = (int)GLINE_X1(gline);
+	  float scalex = GLINE_X0(gline);
+	  float scaley = GLINE_Y0(gline);
+          
+	  // Calculate bounding box using current position
+	  float x0 = JSON_curx;
+	  float y0 = JSON_cury;
+	  float x1 = JSON_curx + scalex;
+	  float y1 = JSON_cury + scaley;
+          
+	  json_object_set_new(command_obj, "cmd", json_string("drawimage"));
+	  json_array_append_new(args_array, json_real(x0));
+	  json_array_append_new(args_array, json_real(y0));
+	  json_array_append_new(args_array, json_real(x1));
+	  json_array_append_new(args_array, json_real(y1));
+	  json_array_append_new(args_array, json_integer(image_id));
+          
+	  // Fetch and encode the actual image
+	  if ((img = gbFindImage(ctx, image_id))) {
+	    json_t *img_obj = json_object();
+	    json_object_set_new(img_obj, "id", json_integer(image_id));
+	    json_object_set_new(img_obj, "width", json_integer(img->w));
+	    json_object_set_new(img_obj, "height", json_integer(img->h));
+	    json_object_set_new(img_obj, "depth", json_integer(img->d));
+            
+	    // Calculate sizes for base64 encoding
+	    size_t data_size = img->w * img->h * img->d;
+	    int b64_size = base64size(data_size);
+	    char *b64_data = (char *)malloc(b64_size + 1);
+            
+	    if (b64_data) {
+	      int result = base64encode(img->data, data_size, b64_data, b64_size + 1);
+	      if (result == 1) {
+		json_object_set_new(img_obj, "data", json_string(b64_data));
+	      } else {
+		json_object_set_new(img_obj, "data", json_string(""));
+	      }
+	      free(b64_data);
+	    } else {
+	      json_object_set_new(img_obj, "data", json_string(""));
+	    }
+            
+	    json_object_set_new(command_obj, "image_data", img_obj);
+	  }
+          
+	  advance_bytes = GLINE_S;
+	  break;
+	}
+	  
+	default:
+	  json_object_set_new(command_obj, "cmd", json_string("unknown"));
+	  json_object_set_new(command_obj, "type", json_integer(c));
+	  advance_bytes = 1;
+	  break;
         }
         
         /* Add args array to command object */
