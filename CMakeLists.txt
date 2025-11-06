@@ -133,7 +133,8 @@ add_library(dlsh SHARED
     src/lablib/rawapi.c 
     src/lablib/lodepng.c 
     src/lablib/lz4utils.c 
-    src/lablib/dslog.c 
+    src/lablib/dslog.c
+    src/lablib/b64.c
 )
 
 set_target_properties(dlsh PROPERTIES PUBLIC_HEADER "src/dfana.h;src/tcl_dl.h;src/lablib/cgraph.h;src/lablib/gbuf.h;src/lablib/utilc.h;src/dgmsgpack.h")
