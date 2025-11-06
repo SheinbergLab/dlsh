@@ -174,9 +174,9 @@ static inline int dfuAddMetadataInt(DYN_LIST *metadata, const char *key,
  * Returns NULL if not found
  * Note: Returns pointer to internal string - do not free!
  */
-static inline const char* dfuGetMetadataValue(DYN_LIST *metadata, const char *key) {
-    if (!metadata || !key) return NULL;
-    if (DYN_LIST_DATATYPE(metadata) != DF_STRING) return NULL;
+static inline const char* dfuGetMetadataValue(DYN_LIST *metadata, const char *key, const char *default_value) {
+    if (!metadata || !key) return default_value;
+    if (DYN_LIST_DATATYPE(metadata) != DF_STRING) return default_value;
     
     int n = DYN_LIST_N(metadata);
     char **strings = (char **)DYN_LIST_VALS(metadata);
@@ -188,7 +188,7 @@ static inline const char* dfuGetMetadataValue(DYN_LIST *metadata, const char *ke
         }
     }
     
-    return NULL;
+    return default_value;
 }
 
 /*
@@ -196,10 +196,10 @@ static inline const char* dfuGetMetadataValue(DYN_LIST *metadata, const char *ke
  * Returns 0.0 if not found or conversion fails
  */
 static inline double dfuGetMetadataDouble(DYN_LIST *metadata, const char *key) {
-    const char *str = dfuGetMetadataValue(metadata, key);
-    if (!str) return 0.0;
-    
-    return atof(str);
+  const char *str = dfuGetMetadataValue(metadata, key, NULL);
+  if (!str) return 0.0;
+  
+  return atof(str);
 }
 
 /*
@@ -207,10 +207,10 @@ static inline double dfuGetMetadataDouble(DYN_LIST *metadata, const char *key) {
  * Returns 0 if not found or conversion fails
  */
 static inline int dfuGetMetadataInt(DYN_LIST *metadata, const char *key) {
-    const char *str = dfuGetMetadataValue(metadata, key);
-    if (!str) return 0;
+  const char *str = dfuGetMetadataValue(metadata, key, NULL);
+  if (!str) return 0;
     
-    return atoi(str);
+  return atoi(str);
 }
 
 /*
@@ -289,6 +289,17 @@ static inline void dfuPrintMetadata(DYN_LIST *metadata) {
     for (int i = 0; i < n - 1; i += 2) {
         printf("  %s: %s\n", strings[i], strings[i + 1]);
     }
+}
+
+
+static inline DYN_LIST *dfuGetGroupList(DYN_GROUP *g, char *name)
+{
+  int i;
+  for (i = 0; i < DYN_GROUP_N(g); i++) {
+    if (!strcmp(name, DYN_LIST_NAME(DYN_GROUP_LIST(g, i))))
+      return DYN_GROUP_LIST(g, i);
+  }
+  return NULL;
 }
 
 #endif /* DFU_HELPERS_H */
