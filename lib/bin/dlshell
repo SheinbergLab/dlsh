@@ -336,65 +336,6 @@ namespace eval gbuf {
             [expr {$sx+1}] [expr {$sy+1}] -fill $currentColor -outline $currentColor
     }
 
-    proc drawimage {x0 y0 x1 y1 image_id {w ""} {h ""} {d ""} {b64_data ""}} {
-	variable canvas
-	variable imageCache
-	
-	# Cache image data if provided inline
-	if {$w ne "" && $h ne "" && $d ne "" && $b64_data ne ""} {
-	    if {![info exists imageCache($image_id)]} {
-		set img_dict [dict create \
-				  id $image_id \
-				  width $w \
-				  height $h \
-				  depth $d \
-				  data $b64_data]
-		cacheImageData $img_dict
-	    }
-	}
-    
-	# Render the image
-	if {[info exists imageCache($image_id)]} {
-	    set original_photo $imageCache($image_id)
-	    
-	    # Transform coordinates
-	    set sx0 [transformX $x0]
-	    set sy0 [transformY $y0]
-	    set sx1 [transformX $x1]
-	    set sy1 [transformY $y1]
-	    
-	    # After Y-flip, sy0 might be > sy1, so use min/max
-	    set left [expr {min($sx0, $sx1)}]
-	    set top [expr {min($sy0, $sy1)}]
-	    set right [expr {max($sx0, $sx1)}]
-	    set bottom [expr {max($sy0, $sy1)}]
-	    
-	    set desired_width [expr {int($right - $left)}]
-	    set desired_height [expr {int($bottom - $top)}]
-	    
-	    # Get native image size
-	    set native_width [image width $original_photo]
-	    set native_height [image height $original_photo]
-	    
-	    # Calculate integer zoom factors
-	    set zoom_x [expr {max(1, int(ceil(double($desired_width) / $native_width)))}]
-	    set zoom_y [expr {max(1, int(ceil(double($desired_height) / $native_height)))}]
-	    
-	    # Create or reuse scaled photo
-	    set scaled_name "${image_id}_${zoom_x}x${zoom_y}"
-	    
-	    if {![info exists imageCache($scaled_name)]} {
-		set scaled_photo [image create photo]
-		$scaled_photo copy $original_photo -zoom $zoom_x $zoom_y
-		set imageCache($scaled_name) $scaled_photo
-	    }
-	    
-	    # Draw at top-left corner
-	    $canvas create image $left $top -image $imageCache($scaled_name) -anchor nw
-	}
-    }    
-
-    
     proc cacheImageData {img_dict} {
 	variable imageCache
 	
@@ -413,21 +354,124 @@ namespace eval gbuf {
 	dl_local dl [dl_clist]
 	dl_fromString64 $b64_data $dl
 	
-	# Create Tk photo image
+	# Create a dynamic group to store the image data
+	set dg [dg_create]
+	dl_set $dg:width [dl_ilist $w]
+	dl_set $dg:height [dl_ilist $h]
+	dl_set $dg:imagebytes $dl
+	
+	# Create Tk photo image at original size
 	set photo [image create photo -width $w -height $h]
 	
-	# Convert image data to color list (depth auto-inferred!)
-	set img_data [dlg_imagedata2photo $dl $w $h]
+	# Create impro image, flip it, then convert to colors
+	package require impro
+	dl_local orig_img [dl_llist [dl_ilist $w $h] $dl]
+	set impro_img [img_imgfromlist $orig_img]
+	set flipped_img [img_mirrory $impro_img]
+	dl_local flipped_pixels [img_imgtolist $flipped_img]
+	img_delete $impro_img $flipped_img
+	
+	# Convert image data to color list
+	set img_data [dlg_imagedata2photo $flipped_pixels $w $h]
 	
 	# Put all the data at once
 	$photo put $img_data
 	
-	# Cache the photo image
+	# Cache the photo and the dynamic group
 	set imageCache($id) $photo
+	set imageCache(${id}_dg) $dg
     }
     
-    proc setclipregion {x1 y1 x2 y2} {
-        # Clipping not implemented for canvas
+    proc drawimage {x0 y0 x1 y1 image_id {w ""} {h ""} {d ""} {b64_data ""}} {
+	variable canvas
+	variable imageCache
+	
+	# Cache image data if provided inline
+	if {$w ne "" && $h ne "" && $d ne "" && $b64_data ne ""} {
+	    if {![info exists imageCache($image_id)]} {
+		set img_dict [dict create \
+				  id $image_id \
+				  width $w \
+				  height $h \
+				  depth $d \
+				  data $b64_data]
+		cacheImageData $img_dict
+	    }
+	}
+	
+	# Render the image
+	if {[info exists imageCache($image_id)]} {
+	    # Transform coordinates
+	    set sx0 [transformX $x0]
+	    set sy0 [transformY $y0]
+	    set sx1 [transformX $x1]
+	    set sy1 [transformY $y1]
+	    
+	    # After Y-flip, sy0 might be > sy1, so use min/max
+	    set left [expr {min($sx0, $sx1)}]
+	    set top [expr {min($sy0, $sy1)}]
+	    set right [expr {max($sx0, $sx1)}]
+	    set bottom [expr {max($sy0, $sy1)}]
+	    
+	    set desired_width [expr {int($right - $left)}]
+	    set desired_height [expr {int($bottom - $top)}]
+	    
+	    # Get original dimensions from dynamic group
+	    set dg $imageCache(${image_id}_dg)
+	    set native_width [dl_get $dg:width 0]
+	    set native_height [dl_get $dg:height 0]
+	    
+	    # Check if we need to resize
+	    if {$desired_width == $native_width && $desired_height == $native_height} {
+		# No resize needed
+		$canvas create image $left $top -image $imageCache($image_id) -anchor nw
+		return
+	    }
+	    
+	    # Check cache for this size
+	    set scaled_name "${image_id}_${desired_width}x${desired_height}"
+	    
+	    if {![info exists imageCache($scaled_name)]} {
+		# Use impro to resize and flip
+		package require impro
+		
+		# Get original image bytes from dynamic group
+		set pixel_dl $dg:imagebytes
+		
+		# Create DynList in impro format: [dims_list pixel_data]
+		dl_local orig_img [dl_llist [dl_ilist $native_width $native_height] $pixel_dl]
+		
+		# Convert to impro image
+		set impro_img [img_imgfromlist $orig_img]
+		
+		# Resize using impro (nearest neighbor interp = 1)
+		set resized_impro_img [img_resize $impro_img $desired_width $desired_height 1]
+		
+		# Flip vertically for correct orientation
+		set flipped_img [img_mirrory $resized_impro_img]
+		
+		# Convert back to DynList
+		dl_local resized_pixels [img_imgtolist $flipped_img]
+		
+		# Clean up impro images
+		img_delete $impro_img $resized_impro_img $flipped_img
+		
+		# Create Tk photo at new size
+		set scaled_photo [image create photo -width $desired_width -height $desired_height]
+		
+		# Convert to color format
+		set img_data [dlg_imagedata2photo $resized_pixels $desired_width $desired_height]
+		
+		# Put the data
+		$scaled_photo put $img_data
+		
+		# Cache it
+		set imageCache($scaled_name) $scaled_photo
+	    }
+	    
+	    # Draw the scaled image
+	    $canvas create image $left $top -image $imageCache($scaled_name) -anchor nw
+	}
     }
     
     proc clearwin {} {
@@ -436,11 +480,21 @@ namespace eval gbuf {
 	
 	$canvas delete all
 	
-	# Clean up cached images to free memory
+	# Clean up cached images and dynamic groups
 	foreach id [array names imageCache] {
-	    image delete $imageCache($id)
+	    if {[string match "*_dg" $id]} {
+		# Delete the dynamic group
+		dg_delete $imageCache($id)
+	    } elseif {[image type $imageCache($id)] eq "photo"} {
+		# Delete the photo image
+		image delete $imageCache($id)
+	    }
 	    unset imageCache($id)
 	}
+    }
+    
+    proc setclipregion {x1 y1 x2 y2} {
+        # Clipping not implemented for canvas
     }
     
     proc gsave {} {
