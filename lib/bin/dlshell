@@ -33,7 +33,8 @@ namespace eval gbuf {
     variable canvasHeight 480
     variable lastAsciiData ""
     variable resizeAfterId ""
-
+    variable cacheCount 0
+    
     variable imageCache      ;# NEW: Array to cache decoded photo images
     array set imageCache {}
     
@@ -338,6 +339,7 @@ namespace eval gbuf {
 
     proc cacheImageData {img_dict} {
 	variable imageCache
+	variable cacheCount
 	
 	set id [dict get $img_dict id]
 	
@@ -355,7 +357,7 @@ namespace eval gbuf {
 	dl_fromString64 $b64_data $dl
 	
 	# Create a dynamic group to store the image data
-	set dg [dg_create]
+	set dg [dg_create imgcache[incr cacheCount]]
 	dl_set $dg:width [dl_ilist $w]
 	dl_set $dg:height [dl_ilist $h]
 	dl_set $dg:imagebytes $dl
@@ -363,16 +365,15 @@ namespace eval gbuf {
 	# Create Tk photo image at original size
 	set photo [image create photo -width $w -height $h]
 	
-	# Create impro image, flip it, then convert to colors
+	# Create impro image, then convert to colors
 	package require impro
 	dl_local orig_img [dl_llist [dl_ilist $w $h] $dl]
 	set impro_img [img_imgfromlist $orig_img]
-	set flipped_img [img_mirrory $impro_img]
-	dl_local flipped_pixels [img_imgtolist $flipped_img]
-	img_delete $impro_img $flipped_img
+	dl_local img_pixels [img_imgtolist $impro_img]
+	img_delete $impro_img
 	
 	# Convert image data to color list
-	set img_data [dlg_imagedata2photo $flipped_pixels $w $h]
+	set img_data [dlg_imagedata2photo $img_pixels $w $h]
 	
 	# Put all the data at once
 	$photo put $img_data
@@ -447,14 +448,11 @@ namespace eval gbuf {
 		# Resize using impro (nearest neighbor interp = 1)
 		set resized_impro_img [img_resize $impro_img $desired_width $desired_height 1]
 		
-		# Flip vertically for correct orientation
-		set flipped_img [img_mirrory $resized_impro_img]
-		
 		# Convert back to DynList
-		dl_local resized_pixels [img_imgtolist $flipped_img]
+		dl_local resized_pixels [img_imgtolist $resized_impro_img]
 		
 		# Clean up impro images
-		img_delete $impro_img $resized_impro_img $flipped_img
+		img_delete $impro_img $resized_impro_img
 		
 		# Create Tk photo at new size
 		set scaled_photo [image create photo -width $desired_width -height $desired_height]
