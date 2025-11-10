@@ -2301,7 +2301,11 @@ int DLLEXPORT Trajectory_analysis_Init(Tcl_Interp *interp) {
     if (Tcl_InitStubs(interp, "8.5-", 0) == NULL) {
         return TCL_ERROR;
     }
-    
+
+    if (Tcl_PkgRequire(interp, "dlsh", "1.2", 0) == NULL) {
+      return TCL_ERROR;
+    }
+
     // Create commands
     Tcl_CreateObjCommand(interp, "trajectory_analyze",
                         TrajectoryAnalyzeCmd, NULL, NULL);
