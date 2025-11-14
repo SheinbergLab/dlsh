@@ -378,7 +378,7 @@ static DYN_LIST *add_dpoint_to_list(DYN_LIST *dl, ds_datapoint_t *dpoint)
     break;
   case DSERV_DOUBLE:
     n = dpoint->data.len/sizeof(double);
-    if (!dl) dl = dfuCreateDynList(DF_LONG, n);
+    if (!dl) dl = dfuCreateDynList(DF_FLOAT, n);
     if (!dl) return NULL;
     d = (double *) dpoint->data.buf;
     for (i = 0; i < n; i++) {
