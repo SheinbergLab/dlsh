@@ -18,6 +18,7 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/lib/local/spec TYPE LIB COMPONENT dlsh-zip
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/lib/local/spikes TYPE LIB COMPONENT dlsh-zip)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/lib/local/stimcompose TYPE LIB COMPONENT dlsh-zip)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/lib/local/xCorr TYPE LIB COMPONENT dlsh-zip)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/lib/local/spritesheet TYPE LIB COMPONENT dlsh-zip)
 
 #
 # Add our non-public dependencies to dlsh.zip
@@ -145,6 +146,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/impro)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/mdns)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/points)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/postgres)
+add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/spritesheet)
 
 #
 # Add dlsh itself to dlsh.zip
