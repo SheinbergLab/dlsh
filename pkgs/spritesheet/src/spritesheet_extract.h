@@ -29,13 +29,40 @@ struct Image {
     int spectrum() const { return channels; }
 };
 
+struct ImageSize {
+    int width;
+    int height;
+};
+
+ImageSize get_image_size(const std::string& path);
+
 // Load image from file
 Image load_image(const std::string& path);
 
+// Shape detection structures
 struct Point {
-    float x, y;
-    Point(float x_ = 0, float y_ = 0) : x(x_), y(y_) {}
+    double x, y;
+     Point(double x_ = 0, double y_ = 0) : x(x_), y(y_) {}
 };
+
+struct CircleCandidate {
+    Point center;
+    double radius;
+    double fit_error;  // Normalized variance from perfect circle
+};
+
+struct Box {
+    Point min, max;
+    double width, height;
+    double aspect_ratio;
+};
+
+// Shape detection functions
+CircleCandidate fit_circle(const std::vector<Point>& points);
+bool is_roughly_circular(const std::vector<Point>& points, double threshold = 0.1);
+Box fit_bounding_box(const std::vector<Point>& points);
+bool is_roughly_rectangular(const std::vector<Point>& points, double corner_tolerance = 0.15);
+
 
 struct Polygon {
     std::vector<Point> vertices;

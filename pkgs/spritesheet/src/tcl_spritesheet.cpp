@@ -94,56 +94,85 @@ static bool parse_collision_params(Tcl_Interp* interp,
 }
 
 // XML to JSON conversion
-static json xml_to_aseprite_json(const std::string& xml_path) {
-    XMLDocument doc;
-    if (doc.LoadFile(xml_path.c_str()) != XML_SUCCESS) {
+json xml_to_aseprite_json(const std::string& xml_path) {
+    tinyxml2::XMLDocument doc;
+    if (doc.LoadFile(xml_path.c_str()) != tinyxml2::XML_SUCCESS) {
         throw std::runtime_error("Failed to load XML file");
     }
     
-    XMLElement* atlas = doc.FirstChildElement("TextureAtlas");
+    auto* atlas = doc.FirstChildElement("TextureAtlas");
     if (!atlas) {
-        throw std::runtime_error("Missing TextureAtlas element");
+        throw std::runtime_error("No TextureAtlas element found");
     }
     
     const char* image_path = atlas->Attribute("imagePath");
     if (!image_path) {
-        throw std::runtime_error("Missing imagePath attribute");
+        throw std::runtime_error("No imagePath attribute");
     }
     
-    json output;
-    output["meta"]["image"] = image_path;
-    output["meta"]["format"] = "xml_atlas";
+    // Get directory from XML path
+    std::string xml_dir = xml_path;
+    size_t last_slash = xml_dir.find_last_of("/\\");
+    if (last_slash != std::string::npos) {
+        xml_dir = xml_dir.substr(0, last_slash + 1);
+    } else {
+        xml_dir = "";
+    }
+    std::string full_image_path = xml_dir + image_path;
     
-    json frames_obj = json::object();
+    // Get texture dimensions - try XML attributes first
+    int texture_w = 0, texture_h = 0;
+    atlas->QueryIntAttribute("width", &texture_w);
+    atlas->QueryIntAttribute("height", &texture_h);
     
-    for (XMLElement* sub = atlas->FirstChildElement("SubTexture");
-         sub != nullptr;
+    // If not in XML, load the image to get dimensions
+    if (texture_w == 0 || texture_h == 0) {
+        try {
+            spritesheet::ImageSize size = spritesheet::get_image_size(full_image_path);
+            texture_w = size.width;
+            texture_h = size.height;
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("Cannot determine texture size: ") + e.what());
+        }
+    }
+    
+    json result;
+    json frames;
+    
+    // Parse all SubTexture elements
+    for (auto* sub = atlas->FirstChildElement("SubTexture"); 
+         sub; 
          sub = sub->NextSiblingElement("SubTexture")) {
         
-        std::string name = sub->Attribute("name");
+        const char* name = sub->Attribute("name");
+        if (!name) continue;
         
-        json frame_data;
-        frame_data["frame"]["x"] = sub->IntAttribute("x");
-        frame_data["frame"]["y"] = sub->IntAttribute("y");
-        frame_data["frame"]["w"] = sub->IntAttribute("width");
-        frame_data["frame"]["h"] = sub->IntAttribute("height");
+        int x = 0, y = 0, w = 0, h = 0;
+        sub->QueryIntAttribute("x", &x);
+        sub->QueryIntAttribute("y", &y);
+        sub->QueryIntAttribute("width", &w);
+        sub->QueryIntAttribute("height", &h);
         
-        if (sub->Attribute("frameX")) {
-            frame_data["spriteSourceSize"]["x"] = sub->IntAttribute("frameX");
-            frame_data["spriteSourceSize"]["y"] = sub->IntAttribute("frameY");
-            frame_data["sourceSize"]["w"] = sub->IntAttribute("frameWidth");
-            frame_data["sourceSize"]["h"] = sub->IntAttribute("frameHeight");
-            frame_data["trimmed"] = true;
-        } else {
-            frame_data["trimmed"] = false;
-        }
-        
-        frames_obj[name] = frame_data;
+        frames[name] = {
+            {"frame", {
+                {"x", x},
+                {"y", y},
+                {"w", w},
+                {"h", h}
+            }}
+        };
     }
     
-    output["frames"] = frames_obj;
+    result["frames"] = frames;
+    result["meta"] = {
+        {"image", image_path},
+        {"size", {
+            {"w", texture_w},
+            {"h", texture_h}
+        }}
+    };
     
-    return output;
+    return result;
 }
 
 // collision::extract
@@ -283,6 +312,16 @@ static int Tcl_ExtractCollisionJson(ClientData, Tcl_Interp* interp,
     }
 }
 
+// Helper: Convert Polygon vertices to Point vector for shape detection
+static std::vector<spritesheet::Point> fixture_to_points(const Polygon& poly) {
+    std::vector<spritesheet::Point> points;
+    points.reserve(poly.vertices.size());
+    for (const auto& v : poly.vertices) {
+        points.push_back(spritesheet::Point(v.x, v.y));
+    }
+    return points;
+}
+
 static int Tcl_ProcessSpritesheetJson(ClientData, Tcl_Interp* interp,
                                       int objc, Tcl_Obj* const objv[]) {
     if (objc < 2) {
@@ -386,15 +425,51 @@ static int Tcl_ProcessSpritesheetJson(ClientData, Tcl_Interp* interp,
             
             json fixtures = json::array();
             for (const auto& fix : coll.fixtures) {
-                json vertices = json::array();
-                for (const auto& v : fix.vertices) {
-                    vertices.push_back({{"x", v.x}, {"y", v.y}});
+                // Convert to points for shape detection
+                std::vector<spritesheet::Point> hull_points = fixture_to_points(fix);
+                
+                // AUTO-DETECT SHAPE TYPE
+                std::string shape_type = "polygon";  // Default
+                json shape_data;
+                
+                // Try circle detection first
+                if (spritesheet::is_roughly_circular(hull_points, 0.1)) {
+                    spritesheet::CircleCandidate circle = spritesheet::fit_circle(hull_points);
+                    
+                    shape_type = "circle";
+                    shape_data = {
+                        {"center_x", circle.center.x},
+                        {"center_y", circle.center.y},
+                        {"radius", circle.radius}
+                    };
+                    
+                } else if (spritesheet::is_roughly_rectangular(hull_points, 0.15)) {
+                    spritesheet::Box box = spritesheet::fit_bounding_box(hull_points);
+                    
+                    shape_type = "box";
+                    shape_data = {
+                        {"x", box.min.x},
+                        {"y", box.min.y},
+                        {"w", box.width},
+                        {"h", box.height}
+                    };
+                    
+                } else {
+                    // Polygon - use original vertices
+                    json vertices = json::array();
+                    for (const auto& v : fix.vertices) {
+                        vertices.push_back({{"x", v.x}, {"y", v.y}});
+                    }
+                    shape_data = vertices;
                 }
+                
                 fixtures.push_back({
-                    {"vertices", vertices},
+                    {"shape", shape_type},
+                    {"data", shape_data},
                     {"convex", fix.is_convex},
                     {"vertex_count", fix.vertices.size()}
                 });
+                
                 total_fixtures++;
             }
             
@@ -656,15 +731,51 @@ static int Tcl_ProcessXmlSpritesheet(ClientData, Tcl_Interp* interp,
             
             json fixtures = json::array();
             for (const auto& fix : coll.fixtures) {
-                json vertices = json::array();
-                for (const auto& v : fix.vertices) {
-                    vertices.push_back({{"x", v.x}, {"y", v.y}});
+                // Convert to points for shape detection
+                std::vector<spritesheet::Point> hull_points = fixture_to_points(fix);
+                
+                // AUTO-DETECT SHAPE TYPE
+                std::string shape_type = "polygon";  // Default
+                json shape_data;
+                
+                // Try circle detection first
+                if (spritesheet::is_roughly_circular(hull_points, 0.1)) {
+                    spritesheet::CircleCandidate circle = spritesheet::fit_circle(hull_points);
+                    
+                    shape_type = "circle";
+                    shape_data = {
+                        {"center_x", circle.center.x},
+                        {"center_y", circle.center.y},
+                        {"radius", circle.radius}
+                    };
+                    
+                } else if (spritesheet::is_roughly_rectangular(hull_points, 0.15)) {
+                    spritesheet::Box box = spritesheet::fit_bounding_box(hull_points);
+                    
+                    shape_type = "box";
+                    shape_data = {
+                        {"x", box.min.x},
+                        {"y", box.min.y},
+                        {"w", box.width},
+                        {"h", box.height}
+                    };
+                    
+                } else {
+                    // Polygon - use original vertices
+                    json vertices = json::array();
+                    for (const auto& v : fix.vertices) {
+                        vertices.push_back({{"x", v.x}, {"y", v.y}});
+                    }
+                    shape_data = vertices;
                 }
+                
                 fixtures.push_back({
-                    {"vertices", vertices},
+                    {"shape", shape_type},
+                    {"data", shape_data},
                     {"convex", fix.is_convex},
                     {"vertex_count", fix.vertices.size()}
                 });
+                
                 total_fixtures++;
             }
             

@@ -8,6 +8,139 @@
 
 namespace spritesheet {
 
+// Fit a circle to a set of points
+CircleCandidate fit_circle(const std::vector<Point>& points) {
+    if (points.empty()) {
+        return {{0, 0}, 0, 1.0};
+    }
+    
+    // Compute centroid
+    Point center = {0, 0};
+    for (const auto& p : points) {
+        center.x += p.x;
+        center.y += p.y;
+    }
+    center.x /= points.size();
+    center.y /= points.size();
+    
+    // Compute average distance to center (radius)
+    double avg_radius = 0;
+    for (const auto& p : points) {
+        double dx = p.x - center.x;
+        double dy = p.y - center.y;
+        avg_radius += std::sqrt(dx * dx + dy * dy);
+    }
+    avg_radius /= points.size();
+    
+    if (avg_radius < 1e-6) {
+        return {center, 0, 1.0};
+    }
+    
+    // Compute fit error (normalized standard deviation from average radius)
+    double variance = 0;
+    for (const auto& p : points) {
+        double dx = p.x - center.x;
+        double dy = p.y - center.y;
+        double dist = std::sqrt(dx * dx + dy * dy);
+        double diff = dist - avg_radius;
+        variance += diff * diff;
+    }
+    
+    double std_dev = std::sqrt(variance / points.size());
+    double normalized_error = std_dev / avg_radius;
+    
+    return {center, avg_radius, normalized_error};
+}
+
+// Check if points approximate a circle
+bool is_roughly_circular(const std::vector<Point>& points, double threshold) {
+    // Need at least 8 points for a good circle fit
+    if (points.size() < 8) {
+        return false;
+    }
+    
+    CircleCandidate circle = fit_circle(points);
+    
+    // If radius is too small, probably not a meaningful circle
+    if (circle.radius < 3.0) {
+        return false;
+    }
+    
+    // If normalized error < threshold, it's circular
+    return circle.fit_error < threshold;
+}
+
+// Fit axis-aligned bounding box
+Box fit_bounding_box(const std::vector<Point>& points) {
+    if (points.empty()) {
+        return {{0, 0}, {0, 0}, 0, 0, 1.0};
+    }
+    
+    Point min = {1e9, 1e9};
+    Point max = {-1e9, -1e9};
+    
+    for (const auto& p : points) {
+        min.x = std::min(min.x, p.x);
+        min.y = std::min(min.y, p.y);
+        max.x = std::max(max.x, p.x);
+        max.y = std::max(max.y, p.y);
+    }
+    
+    double w = max.x - min.x;
+    double h = max.y - min.y;
+    double aspect = (h > 1e-6) ? (w / h) : 1.0;
+    
+    return {min, max, w, h, aspect};
+}
+
+// Check if points approximate a rectangle
+bool is_roughly_rectangular(const std::vector<Point>& points, double corner_tolerance) {
+    // Must have exactly 4 vertices for a box
+    if (points.size() != 4) {
+        return false;
+    }
+    
+    Box box = fit_bounding_box(points);
+    
+    // Need reasonable dimensions
+    if (box.width < 3.0 || box.height < 3.0) {
+        return false;
+    }
+    
+    // Expected corners of the bounding box
+    Point expected_corners[4] = {
+        {box.min.x, box.min.y},  // Bottom-left
+        {box.max.x, box.min.y},  // Bottom-right
+        {box.max.x, box.max.y},  // Top-right
+        {box.min.x, box.max.y}   // Top-left
+    };
+    
+    // Check if all actual points are near expected corners
+    int corners_matched = 0;
+    double max_dim = std::max(box.width, box.height);
+    double tolerance = corner_tolerance * max_dim;
+    
+    for (const auto& expected : expected_corners) {
+        bool found_match = false;
+        for (const auto& actual : points) {
+            double dx = actual.x - expected.x;
+            double dy = actual.y - expected.y;
+            double dist = std::sqrt(dx * dx + dy * dy);
+            
+            if (dist < tolerance) {
+                found_match = true;
+                break;
+            }
+        }
+        if (found_match) {
+            corners_matched++;
+        }
+    }
+    
+    // All 4 corners must match
+    return corners_matched == 4;
+}
+
 // ============================================================================
 // Image Implementation
 // ============================================================================
@@ -51,6 +184,18 @@ Image load_image(const std::string& path) {
     return img;
 }
 
+ImageSize get_image_size(const std::string& path) {
+    int w, h, channels;
+    stbi_set_flip_vertically_on_load(0);
+    unsigned char* img = stbi_load(path.c_str(), &w, &h, &channels, 4);
+    
+    if (!img) {
+        throw std::runtime_error(std::string("Cannot load image: ") + path);
+    }
+    
+    stbi_image_free(img);
+    return {w, h};
+}
 // ============================================================================
 // Basic Image Operations
 // ============================================================================
