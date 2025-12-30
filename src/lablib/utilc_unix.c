@@ -143,7 +143,7 @@ int file_size(char *filename)
  *
  */
 
-#if !defined(__QNX__) &&  !defined(WIN32) && !defined(__APPLE_CC__)
+#if 0
 int find_matching_files(char *template, char *path)
 {
   static FileList *fl = &FileMatchList;             /* global structure */
