@@ -77,6 +77,71 @@ int raninit()
 #endif
 }
 
+/*
+ * ranset(int seed)
+ *   If seed > 0: use that seed directly
+ *   If seed <= 0: auto-seed from system entropy (like raninit)
+ *   Returns the seed that was used
+ */
+
+int ranset(int seed)
+{
+    if (seed > 0) {
+        /* Use provided seed directly */
+        my_rseed = seed;
+    }
+    else {
+        /* Auto-seed from system entropy */
+#ifdef WIN32
+        __int64 timeval;
+        if (!QueryPerformanceFrequency((LARGE_INTEGER *) &timeval)) {
+            struct tm time;
+            mktime(&time);
+            my_rseed = (int) ((time.tm_sec*time.tm_sec) + time.tm_min +
+                              time.tm_hour*time.tm_mday);
+        }
+        else {
+            QueryPerformanceCounter((LARGE_INTEGER *) &timeval);
+            my_rseed = (int) timeval;
+        }
+#elif defined(LINUX) || defined(MACOS) || defined(FREEBSD)
+        FILE *fp;
+        if ((fp = fopen("/dev/urandom", "r")) == NULL) {
+            my_rseed = 1234567;
+        }
+        else {
+            fread(&my_rseed, sizeof(int), 1, fp);
+            fclose(fp);
+        }
+#else
+        struct timeval time;
+        struct timezone tz;
+        gettimeofday(&time, &tz);
+#ifndef QNX
+        my_rseed = (int) ((time.tv_sec*time.tv_sec) + time.tv_usec);
+#else
+        my_rseed = (int) ((time.tv_sec*time.tv_sec) + time.tv_usec);
+#endif
+#endif
+    }
+
+    /* Seed all the generators */
+#if defined(LINUX) || defined(MACOS) || defined(FREEBSD)
+    srand48(my_rseed);
+#endif
+    srand(my_rseed);
+    
+    return my_rseed;
+}
+
+/*
+ * ranget() - return current seed value
+ */
+int ranget(void)
+{
+    return my_rseed;
+}
+
 int ran(int n)
 {
 #if defined (OS2) || defined(WIN32)

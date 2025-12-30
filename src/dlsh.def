@@ -164,6 +164,8 @@ EXPORTS
 	rand_choose
 	file_basename
 	raninit
+        ranset
+        ranget
 	gzopen
 	gzclose
 	gzread

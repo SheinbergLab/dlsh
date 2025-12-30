@@ -19,6 +19,8 @@ extern void InitString (char *s, int size);
 extern char *SetExtension (char *, char *, char *);
 extern void ParseFileName (char *, char *, char *);
 
+extern int ranget(void);
+extern int ranset(int);
 extern int raninit(void);                    /* initialize random seed */
 extern int ran(int);
 extern int ran_range(int, int);              /* uniform int in [lo,hi] */
