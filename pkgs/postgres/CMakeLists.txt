@@ -1,50 +1,115 @@
 cmake_minimum_required(VERSION 3.15)
-
 project(postgres)
 
 set(CMAKE_BUILD_TYPE Release)
-
 add_definitions(-fPIC -DUSE_TCL_STUBS)
 
-set(TCLLIB tclstub)
-find_library(LIBJANSSON NAMES "libjansson.a")
-
+# Platform definitions
 if(WIN32)
-    include_directories(c:/usr/local/include)
-    link_directories(c:/usr/local/lib)
+    # Windows-specific
 elseif(APPLE)
     add_definitions(-DMACOS -Dunix -DLINUX)
-    include_directories(/usr/local/include /opt/homebrew/include/ /opt/homebrew/include/tcl-tk /opt/homebrew/include/postgresql@17)
-    link_directories(/usr/local/lib /opt/homebrew/lib /opt/homebrew/lib/postgresql@17)
 else()
     add_definitions(-DLINUX)
-    include_directories(${APP_DIR} /usr/local/include /usr/include/postgresql)
-    link_directories(/usr/local/lib /usr/lib/postgresql)
 endif()
-
-include_directories(${TCL_INCLUDE_DIR} ${PROJECT_SOURCE_DIR})
 
 ###############################
 # postgres
 ###############################
 add_library(postgres SHARED src/postgres.c)
 
+# Use in-tree tclstub and jansson from parent build
+target_link_libraries(postgres PRIVATE tclstub jansson)
+
+# TCL includes from in-tree build
+if(tcl_SOURCE_DIR)
+    target_include_directories(postgres PRIVATE 
+        ${tcl_SOURCE_DIR}/generic
+        ${tcl_SOURCE_DIR}/libtommath
+    )
+    if(WIN32)
+        target_include_directories(postgres PRIVATE ${tcl_SOURCE_DIR}/win)
+    else()
+        target_include_directories(postgres PRIVATE ${tcl_SOURCE_DIR}/unix)
+    endif()
+endif()
+
+# Jansson includes from in-tree build
+if(jansson_SOURCE_DIR)
+    target_include_directories(postgres PRIVATE 
+        ${jansson_SOURCE_DIR}/src
+        ${jansson_BINARY_DIR}/include
+    )
+endif()
+
+###############################
+# Find libpq (PostgreSQL client library)
+###############################
+# Try pkg-config first (works with cross-compilation if properly configured)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBPQ QUIET libpq)
+endif()
+
+if(NOT LIBPQ_FOUND)
+    # Manual search - check common locations
+    find_path(LIBPQ_INCLUDE_DIR libpq-fe.h
+        HINTS
+            ${CMAKE_SYSROOT}/usr/include/postgresql
+            ${CMAKE_SYSROOT}/usr/include
+        PATHS
+            /usr/include/postgresql
+            /usr/local/include
+            /opt/homebrew/include/postgresql@17
+            /opt/homebrew/include/postgresql
+    )
+    find_library(LIBPQ_LIBRARY NAMES pq
+        HINTS
+            ${CMAKE_SYSROOT}/usr/lib
+            ${CMAKE_SYSROOT}/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}
+        PATHS
+            /usr/lib
+            /usr/lib/x86_64-linux-gnu
+            /usr/lib/aarch64-linux-gnu
+            /usr/local/lib
+            /opt/homebrew/lib/postgresql@17
+            /opt/homebrew/lib
+    )
+    
+    if(LIBPQ_INCLUDE_DIR AND LIBPQ_LIBRARY)
+        set(LIBPQ_FOUND TRUE)
+        set(LIBPQ_INCLUDE_DIRS ${LIBPQ_INCLUDE_DIR})
+        set(LIBPQ_LIBRARIES ${LIBPQ_LIBRARY})
+        message(STATUS "Found libpq: ${LIBPQ_LIBRARY}")
+    else()
+        message(FATAL_ERROR "libpq not found. Install with: apt install libpq-dev (or libpq-dev:amd64 for cross)")
+    endif()
+endif()
+
+target_include_directories(postgres PRIVATE ${LIBPQ_INCLUDE_DIRS})
+target_link_libraries(postgres PRIVATE ${LIBPQ_LIBRARIES})
+
+# Windows-specific linker settings
 if(WIN32)
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(TCLLIB tclstub.lib)
-    set(CMAKE_EXE_MODULE_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /NODEFAULTLIB:libcmt /NODEFAULTLIB:MSCVRT /def:${DEF_FILE}")
-    set(APP_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../build_win64/tacothread.lib")
-endif()
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set_target_properties(postgres PROPERTIES
+            LINK_FLAGS "/NODEFAULTLIB:libcmt /NODEFAULTLIB:MSCVRT"
+        )
+    endif()
 elseif(APPLE)
-    set(LIBPQ pq)
-    set(TCLLIB tclstub)
-    set(BUNDLE_LOAD "-dynamiclib")
-else()
-    set(LIBPQ pq)
-    set(TCLLIB tclstub)
+    set_target_properties(postgres PROPERTIES
+        LINK_FLAGS "-dynamiclib"
+    )
 endif()
 
-target_link_libraries(postgres ${TCLLIB} ${LIBJANSSON} ${LIBPQ})
-
-install(TARGETS postgres LIBRARY DESTINATION lib/postgres/${TCL_OS}/${TCL_MACHINE} COMPONENT dlsh-zip)
-install(DIRECTORY ${PROJECT_SOURCE_DIR} DESTINATION lib COMPONENT dlsh-zip FILES_MATCHING PATTERN *.tcl PATTERN "**/src" EXCLUDE)
+# Install
+install(TARGETS postgres 
+    LIBRARY DESTINATION lib/postgres/${TCL_OS}/${TCL_MACHINE} 
+    COMPONENT dlsh-zip
+)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/ 
+    DESTINATION lib/postgres 
+    COMPONENT dlsh-zip 
+    FILES_MATCHING PATTERN *.tcl
+    PATTERN "src" EXCLUDE
+)
