@@ -244,6 +244,7 @@ static int tclLoadPackage             (ClientData, Tcl_Interp *, int, char **);
 static int tclDateToDays              (ClientData, Tcl_Interp *, int, char **); 
 static int tclDaysToDate              (ClientData, Tcl_Interp *, int, char **); 
 static int tclNoOp                    (ClientData, Tcl_Interp *, int, char **);
+static int tclSetRandomSeed           (ClientData, Tcl_Interp *, int, char **);
 
 static TCL_COMMANDS DLcommands[] = {
   { "dg_exists",           tclDynGroupExists,     NULL, 
@@ -413,6 +414,8 @@ static TCL_COMMANDS DLcommands[] = {
       "generate list of ones" },
   { "dl_ones",             tclGenerateDynList,    (void *) DL_ONES,
       "generate list of ones" },
+  { "dl_srand",            tclSetRandomSeed,      (void *) NULL,
+      "initialize random number generators"},      
   { "dl_irand",            tclGenerateDynList,    (void *) DL_IRAND,
       "generate uniformly distributed random integers" },
   { "dl_urand",            tclGenerateDynList,    (void *) DL_URAND,
@@ -6269,6 +6272,45 @@ static int tclMathFuncOneArg (ClientData data, Tcl_Interp *interp,
   }
 }
 
+
+/*
+ * Tcl command: dl_srand
+ * 
+ * Usage:
+ *   dl_srand           - returns current seed
+ *   dl_srand 0         - auto-seed from system entropy, returns new seed
+ *   dl_srand <n>       - set seed to n (n > 0), returns n
+ *
+ */
+
+/* Declare external functions from randvars.c */
+extern int ranset(int seed);
+extern int ranget(void);
+
+static int tclSetRandomSeed(ClientData clientData, Tcl_Interp *interp,
+                       int argc, char *argv[])
+{
+    int seed, result;
+    
+    if (argc == 1) {
+        /* No argument - return current seed */
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(ranget()));
+        return TCL_OK;
+    }
+    
+    if (argc != 2) {
+        Tcl_AppendResult(interp, "usage: ", argv[0], " [seed]", NULL);
+        return TCL_ERROR;
+    }
+    
+    if (Tcl_GetInt(interp, argv[1], &seed) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    result = ranset(seed);
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(result));
+    return TCL_OK;
+}
 
 /*****************************************************************************
  *
