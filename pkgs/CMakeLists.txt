@@ -151,7 +151,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/spritesheet)
 #
 # Add dlsh itself to dlsh.zip
 #
-install(TARGETS dlsh LIBRARY DESTINATION lib/dlsh/${TCL_OS}/${TCL_MACHINE} COMPONENT dlsh-zip)
+install(TARGETS dlsh LIBRARY DESTINATION lib/dlsh/${TCL_OS}/${TCL_MACHINE} COMPONENT dlsh-zip PUBLIC_HEADER DESTINATION include)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/lib/ DESTINATION lib/dlsh COMPONENT dlsh-zip FILES_MATCHING PATTERN *.tcl PATTERN "**/local" EXCLUDE)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/lib/bin DESTINATION lib/dlsh COMPONENT dlsh-zip FILES_MATCHING PATTERN *.tcl)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/lib/examples DESTINATION lib/dlsh COMPONENT dlsh-zip)
