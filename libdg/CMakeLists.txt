@@ -31,7 +31,9 @@ add_library(dg
   ../src/dlarith.c
 )
 
-add_subdirectory( test )
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    add_subdirectory( test )
+endif()
 
 set(CPACK_PACKAGE_NAME dg)
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Utils for reading dynamic groups.")
