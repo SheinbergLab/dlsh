@@ -748,14 +748,12 @@ static int Box2DSetRestitutionCmd(ClientData clientData, Tcl_Interp *interp,
 /**********************          Joints           **********************/
 /***********************************************************************/
 
-
 static int Box2DRevoluteJointCreateCmd(ClientData clientData, Tcl_Interp *interp,
 				       int objc, Tcl_Obj * const objv[])
 {
   BOX2D_WORLD *bw;
   b2BodyId bodyA;
   b2BodyId bodyB;
-
   char joint_name[32];
   Tcl_HashEntry *entryPtr;
   int newentry;
@@ -765,26 +763,20 @@ static int Box2DRevoluteJointCreateCmd(ClientData clientData, Tcl_Interp *interp
 		     " world bodyA bodyB", NULL);
     return TCL_ERROR;
   }
-
   if (find_Box2D(interp, Tcl_GetString(objv[1]), &bw) != TCL_OK) return TCL_ERROR;
   if (find_body(bw, Tcl_GetString(objv[2]), &bodyA) != TCL_OK) return TCL_ERROR;
   if (find_body(bw, Tcl_GetString(objv[3]), &bodyB) != TCL_OK) return TCL_ERROR;
 
-  /* check this, was get GetWorldCenter for 2.4 */
   b2Vec2 pivot = b2Body_GetWorldCenterOfMass(bodyA);
   b2RevoluteJointDef jointDef = b2DefaultRevoluteJointDef();
-  jointDef.base.bodyIdA = bodyA;
-  jointDef.base.bodyIdB = bodyB;
-  jointDef.base.localFrameA.p =
-    b2Body_GetLocalPoint(jointDef.base.bodyIdA, pivot);
-  jointDef.base.localFrameB.p =
-    b2Body_GetLocalPoint(jointDef.base.bodyIdB, pivot);
-
+  jointDef.bodyIdA = bodyA;
+  jointDef.bodyIdB = bodyB;
+  jointDef.localAnchorA = b2Body_GetLocalPoint(bodyA, pivot);
+  jointDef.localAnchorB = b2Body_GetLocalPoint(bodyB, pivot);
   b2JointId jointID = b2CreateRevoluteJoint(bw->worldId, &jointDef);
+
   snprintf(joint_name, sizeof(joint_name), "joint%d", bw->jointCount++); 
   entryPtr = Tcl_CreateHashEntry(&bw->jointTable, joint_name, &newentry);
-
-  /* the joint is an opaque structure, so to hash create copy and add to table */
   b2JointId *joint = (b2JointId *) malloc(sizeof(b2JointId));
   *joint = jointID;
   Tcl_SetHashValue(entryPtr, joint);
@@ -792,7 +784,6 @@ static int Box2DRevoluteJointCreateCmd(ClientData clientData, Tcl_Interp *interp
   Tcl_SetObjResult(interp, Tcl_NewStringObj(joint_name, -1));
   return(TCL_OK);
 }
-
 
 /// Enable/disable the revolute joint spring
 // B2_API void b2RevoluteJoint_EnableSpring( b2JointId jointId, bool enableSpring );
