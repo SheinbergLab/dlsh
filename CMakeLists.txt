@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Allow older cmake_minimum_required in FetchContent dependencies (jansson, etc.)
+# CMake 4.x is stricter about this
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 if(NOT DEFINED PROJECT_VERSION)
   set(PROJECT_VERSION 0.0.0)
 endif()
@@ -76,7 +82,7 @@ set_target_properties(tclstub PROPERTIES
 
 #----- msgpack-c (use system library) -----
 # msgpack-c has tricky include paths that don't work well with FetchContent
-# Install with: apt install libmsgpack-dev (or libmsgpack-dev:amd64 for cross)
+# Install with: apt install libmsgpack-dev, or brew install msgpack
 find_package(PkgConfig QUIET)
 set(MSGPACK_FOUND FALSE)
 
@@ -85,12 +91,25 @@ if(PkgConfig_FOUND)
     if(NOT MSGPACK_FOUND)
         pkg_check_modules(MSGPACK QUIET msgpack)
     endif()
+    if(MSGPACK_FOUND)
+        # Use LDFLAGS which includes -L path, not just LIBRARIES
+        set(MSGPACK_LIBRARIES ${MSGPACK_LDFLAGS})
+        message(STATUS "Found MessagePack via pkg-config: ${MSGPACK_LIBRARIES}")
+    endif()
 endif()
 
 if(NOT MSGPACK_FOUND)
     # Fallback: try to find manually
-    find_path(MSGPACK_INCLUDE_DIR msgpack.h)
-    find_library(MSGPACK_LIBRARY NAMES msgpackc msgpack-c msgpack)
+    find_path(MSGPACK_INCLUDE_DIR msgpack.h
+        HINTS
+            /opt/homebrew/include
+            /usr/local/include
+    )
+    find_library(MSGPACK_LIBRARY NAMES msgpack-c msgpackc msgpack
+        HINTS
+            /opt/homebrew/lib
+            /usr/local/lib
+    )
     
     if(MSGPACK_INCLUDE_DIR AND MSGPACK_LIBRARY)
         set(MSGPACK_FOUND TRUE)
