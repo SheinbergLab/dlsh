@@ -1,0 +1,19 @@
+package require dlsh
+package require zeegrid
+package require tkdnd
+
+proc showgroups { files } {
+  foreach file $files { showgroup $file }
+}
+
+proc showgroup { file } {
+  set g [dg_read $file]
+  set table [zg::view $g]
+  set toplevel [winfo parent [winfo parent $table]]
+  tkdnd::drop_target register $toplevel *
+  bind $toplevel <<Drop:DND_Files>> {showgroups %D}
+  wm title $toplevel $file
+}
+
+showgroup [lindex $argv 0]
+wm withdraw .

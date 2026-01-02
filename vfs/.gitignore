@@ -1,0 +1,11 @@
+# Compiled shared libraries in platform directories
+# These are built by CI and should not be checked in
+# The directory structure is preserved via .gitkeep files
+
+# Shared libraries (in platform-specific subdirs)
+*.so
+*.dylib
+*.dll
+
+# macOS metadata
+.DS_Store

@@ -1,0 +1,24 @@
+#!/usr/local/bin/dlsh
+#
+# NAME
+#   imgshow
+#
+# DESCRIPTION
+#   Load and display (multiple) raw images using tcl_impro/expect/display
+#
+
+if { $argc < 1 } { 
+    puts stderr "usage: $argv0 image_0 \[image_1 ... image_n\]"
+    return 0
+}
+
+load_Impro                                    ;# image utils
+
+foreach file $argv {
+    set name [file root [file tail $file]]
+    img_load $file $name
+    img_show $name
+    img_delete $name
+}
+
+

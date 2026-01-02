@@ -1,0 +1,129 @@
+#!/usr/local/bin/dlsh
+
+########################################################################
+#
+# NAME
+#  colorgraphs
+#
+# DESCRIPTION
+#   Example script showing how to incorporate images into a plot.
+# Gaussian and gamma curves are created and plotted along with color 
+# coded bars.
+#
+# AUTHOR
+#  DLS, 4-96
+#
+########################################################################
+
+proc doplot {} {
+    create_lut			;# Create the color coded lut
+    dlp_setpanels 2 1		;# 2 rows and 1 column for plots
+    dlp_subplot [gaussplot] 0	;# Plot the gaussian plot on top
+    dlp_subplot [gammaplot] 1	;# Plot the gamma plot on bottom
+    dlp_clean			;# Clean up the plots
+    dl_clean			;# Clean up temporary lists
+    delete_lut			;# Delete the color coded lut
+}
+
+proc gaussplot {} {
+    global colors
+    set xmin -4
+    set xmax 4
+    set xrng [expr $xmax-$xmin]
+    set res 0.02
+
+    set p [dlp_newplot]
+
+    dl_set x [dl_series $xmin $xmax $res]
+    dl_set y [dl_gaussian x 1.0 0.0 1.0]
+
+    dlp_addXData $p x
+    dlp_addYData $p y
+    dlp_setxrange $p $xmin $xmax
+    dlp_setyrange $p -.25 1.1
+    dlp_set $p title "Gaussian Distribution"
+    dlp_draw $p lines 0 -linecolor $colors(yellow) -fillcolor $colors(gray)
+
+    colorbar [dl_char [dl_mult y 255]] lut gauss.eps
+    dlp_cmd $p "dlp_postscriptAt \$thisplot $xmin -.25 gauss.eps $xrng .25"
+
+    dl_delete x y
+    return $p
+}
+
+proc gammaplot {} {
+    global colors
+    set xmin 0.01
+    set xmax 4
+    set xrng [expr $xmax-$xmin]
+    set res 0.01
+
+    set p [dlp_newplot]
+
+    dl_set x [dl_series $xmin $xmax $res]
+    dl_set y [dl_gamma x 4 4]
+
+    dlp_addXData $p x
+    dlp_addYData $p y
+    dlp_setxrange $p $xmin $xmax
+    dlp_setyrange $p -.25 1.1
+    dlp_set $p title "Gamma Distribution"
+    dlp_draw $p lines 0 -linecolor $colors(yellow) -fillcolor $colors(gray)
+
+    colorbar [dl_char [dl_mult y 255]] lut gamma.eps
+    dlp_cmd $p "dlp_postscriptAt \$thisplot $xmin -.25 gamma.eps $xrng .25"
+
+    dl_delete x y
+    return $p
+}
+
+proc colorbar { data lut outname } {
+    set width [dl_length $data]
+    set height 1
+
+    # open a pipe to convert, in order to create an eps image
+    set f [open "|convert -size ${width}x${height} -interlace plane rgb:- \
+	    $outname" w]
+
+    # write the three channels to the pipe
+    dli_write -channel $f \
+	    [dl_select lut:r $data] \
+	    [dl_select lut:g $data] \
+	    [dl_select lut:b $data]
+
+    # close the pipe
+    close $f
+}
+
+##########################################################################
+#                          LUT Functions
+##########################################################################
+
+proc create_lut { {name lut} } {
+    if { [dg_exists $name] } { dg_delete $name }
+    dg_create $name
+
+    dl_set t [dl_div [dl_series 0 255] 255.]
+    set add dg_addExistingList
+    $add $name [dl_char [dl_mult 255 [dl_gaussian t 1.0 .75 .2]]] r
+    $add $name [dl_char [dl_mult 255 [dl_gaussian t 1.0 .5 .25]]] g
+    $add $name [dl_char [dl_mult 255 [dl_gaussian t 1.0 .2 0.3]]] b
+    return $name
+}
+
+proc delete_lut { {name lut} } {
+    dg_delete $name
+}
+
+##########################################################################
+#                          "Main" Routine
+##########################################################################
+
+doplot
+dumpwin postscript colorbars.ps
+exec rm gauss.eps gamma.eps
+if { [file tail [info nameofexecutable]] == "dlsh" } {
+    exit
+} else {
+    flushwin
+}

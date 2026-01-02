@@ -1,0 +1,142 @@
+package provide spec 0.9
+
+namespace eval ::spec {
+    
+    proc compCoh_frmFEeg {in1 in2} {
+	dl_local lin1 $in1
+	dl_local lin2 $in2
+	dl_local pow1 [::helpspec::compPow $lin1]
+	dl_local pow2 [::helpspec::compPow $lin2]
+	dl_local sqrtprodpow [dl_mult [dl_sqrt $pow1] [dl_sqrt $pow2]]
+	dl_local cs [::helpspec::complexMult $lin1 $lin2]
+	dl_local modcs [dl_collapse  [dl_means [dl_transpose [dl_choose $cs [dl_llist [dl_ilist 0]]]]]]
+	dl_return [dl_div $modcs $sqrtprodpow]
+    }
+    
+    proc coherency {g chs args} {
+	# %HELP%
+	#    use:
+	#       To compute the squared coherency between two eeg sources
+	# 	Enter the group containing the eeg and a tcl list of eeg channels (can only be two)
+	# 	Then specify the following OPTIONAL arguements:
+	# 	 -align <stimon>; this is the column that all times are relative to,
+	# 	 -start <0>; time to start the eeg grab
+	# 	 -stop <250>; time to stop the eeg grab
+	# 	 -subslct <none>; enter name of list in group for subselection
+	#        -sortby <none>; enter name of list in group for sorting; this means that analysis will be run for each value of the
+	#             sortby variable separately.
+	# 	 -limit <none>; enter a dl list that must be of same length as eeg for limiting all subsequent
+	# 	      operations; this is applied before subselection.
+	#        -plot <0>; 1 will plot in current window, 2 creates a new window
+	# %END%
+	if {[llength $chs] != 2} {
+	    puts "Error: coherence can only work on two eeg channels"
+	    return ""
+	}
+	if {![array exists ::spec::cohereVar]} {
+	    ::helpspec::buildCohereArray; #build the array if it doesn't exist, otherwise user needs to reset to get defaults
+	}
+	if {[llength $args]} {::helpspec::parseArgsCohere "$args"}; #update Cohere Array
+	#Now we will loop through for each item in the sortby list, if this is used:
+	set loopnum 1
+	set wg [dg_copy $g]
+	if {![string match $::spec::cohereVar(limit) "none"]} {
+	    dg_delete $wg
+	    set wg [dg_copySelected $g $::spec::cohereVar(limit) 1]
+	}
+	set out [dg_create]
+	dl_set $out:sortby [dl_llist]
+	dl_set $out:cond [dl_llist]
+	dl_set $out:coherency [dl_llist]
+	if {![string match $::spec::cohereVar(sortby) "none"]} {set loopnum [dl_length [dl_unique $g:$::spec::cohereVar(sortby)]]}
+	for {set i 0} {$i < $loopnum} {incr i} {
+	    dl_local tempcond [dl_llist]
+	    dl_local tempcoherency [dl_llist]
+	    if {[string match  $::spec::cohereVar(sortby) "none"]} {
+		dl_append $out:sortby [dl_slist "none"] 
+		set sb_wg [dg_copy $wg]
+	    } else {
+		dl_append $out:sortby [dl_slist [dl_get [dl_unique $g:$::spec::cohereVar(sortby)] $i]]
+		set sb_wg [dg_copySelected $wg [dl_eq $wg:$::spec::cohereVar(sortby) [dl_get [dl_unique $g:$::spec::cohereVar(sortby)] $i]] 1]
+	    }
+	    dl_local eegsamps [::helpspec::getEeg $sb_wg "$chs" $::spec::cohereVar(start) $::spec::cohereVar(stop) $::spec::cohereVar(align)]
+	    dl_local eegsamps [dl_sub $eegsamps [dl_hmeans $eegsamps]]
+	    if {[string match $::spec::cohereVar(subslct) "none"]} {
+		dl_append $tempcond [dl_slist "none"]
+		dl_local feeg [::helpspec::fftEeg $eegsamps]
+		dl_append $tempcoherency [dl_pow [::spec::compCoh_frmFEeg $feeg:0 $feeg:1] 2.0]
+	    } else {
+		foreach n [dl_tcllist [dl_unique $sb_wg:$::spec::cohereVar(subslct)]] {
+		    dl_local teeg [dl_choose $eegsamps [dl_llist [dl_indices [dl_eq $sb_wg:$::spec::cohereVar(subslct) $n]]]]
+		    dl_local feeg [::helpspec::fftEeg $teeg]
+		    dl_local coh [::spec::compCoh_frmFEeg $feeg:0 $feeg:1]
+		    dl_append $tempcond [eval dl_slist $n]
+		    dl_append $tempcoherency  [dl_pow $coh 2.]
+		}
+	    }
+	    dl_append $out:cond $tempcond
+	    dl_append $out:coherency $tempcoherency
+	    dl_delete $tempcond $tempcoherency
+	    dl_set $out:coh_xaxis [dl_llist [dl_series 0 [expr 500000. / [lindex [dl_get $sb_wg:eeg_info 0] 2]] [expr 1000. / ($::spec::cohereVar(stop) - $::spec::cohereVar(start))]]]
+	    dg_delete $sb_wg
+	}
+	if {$::spec::cohereVar(plot) == 1} {
+	    clearwin;
+	    ::spec::plotCoherency $out $wg
+	} elseif {$::spec::cohereVar(plot) == 2} {
+	    newWindow;
+	    ::spec::plotCoherency $out $wg
+	}
+	if {[dg_exists $wg]} {dg_delete $wg}
+	return $out
+    }
+    
+    proc plotCoherency {cohout_g datag} {
+	# %HELP%
+	# The input group is the output group from ::spec::coherency and the group witht the raw data
+	# This function is usually called from inside the ::spec::coherency function.
+	# Check the help function for ::spec::coherency for details.
+	# %END%
+	clearwin
+	dl_local slcts [dl_between $cohout_g:coh_xaxis:0 $::spec::cohereVar(min2plot) $::spec::cohereVar(max2plot)]
+	dl_local xdat [dl_select $cohout_g:coh_xaxis:0 $slcts]
+	set plotnames [list]
+	for {set j 0} {$j < [dl_length $cohout_g:sortby]} {incr j} {
+	    dl_local currsortby [dl_get $cohout_g:sortby $j]
+	    set p [dlp_newplot]
+	    dlp_setpanels [dl_length $cohout_g:sortby] 1    
+	    dlp_addXData $p $xdat 
+	    set k -1
+	    set w 0
+	    for {set i 0} {$i < [dl_length [dl_unique $cohout_g:cond:$j]]} {incr i} {
+		set y [dlp_addYData $p [dl_select [dl_get $cohout_g:coherency:$j $i] $slcts]]
+		eval dlp_draw $p lines $i
+		if {[incr k] == 8} {set k 0; incr w 2}
+		dlp_draw $p lines $y -linecolor $::helplfp::cols($k) -lstyle $w
+		if {[dl_length $cohout_g:cond:$j] > 1} {
+		    if {[string match [dl_tcllist $currsortby] "none"]} {
+			set cmd [eval list dlg_text .01 [expr .93-$i*.05] \{cond: [dl_tcllist [dl_get $cohout_g:cond:$j $i]] [dl_sum [eval dl_eq $datag:$::spec::cohereVar(subslct) [dl_tcllist [dl_get $cohout_g:cond:$j $i]]]]\} -color $::helplfp::cols($k) -just -1]
+		    } else {
+			set cmd [eval list dlg_text .01 [expr .93-$i*.05] \{cond: [dl_tcllist [dl_get $cohout_g:cond:$j $i]] [dl_sum [dl_mult [dl_eq $datag:$::spec::cohereVar(sortby) [dl_tcllist $currsortby]] [dl_eq $datag:$::spec::cohereVar(subslct) [dl_tcllist [dl_get $cohout_g:cond:$j $i]]]]]\} -color $::helplfp::cols($k) -just -1]
+		    }
+		    dlp_wincmd $p {0 0 1 1} $cmd
+		}
+		dlp_set $p title [dl_tcllist $currsortby]
+		
+	    }
+	    # legend title
+	    dlp_wincmd $p {0 0 1 1} "dlg_text .01 .98 \{$::spec::cohereVar(subslct) (N)\} -color $::colors(gray) -just -1"
+	    
+	    dlp_set $p xtitle "Frequency (Hz) "
+	    dlp_set $p ytitle "Magnitude Squared Coherency"
+	    
+	    
+	    dlp_winycmd $p {0 1} "dlg_lines {0 0} {0 1} -linecolor $::colors(gray)"
+	    # plot it
+	    dlp_subplot $p $j
+	    lappend plotnames $p
+	}
+	::helplfp::mark_plots "coherency " $datag
+	return $plotnames
+    }
+}

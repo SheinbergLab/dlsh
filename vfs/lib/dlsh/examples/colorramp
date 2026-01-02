@@ -1,0 +1,45 @@
+#!/usr/local/bin/dlsh
+
+########################################################################
+#
+# NAME
+#  colorramp
+#
+# DESCRIPTION
+#   Example script for creating a color image using the dynlists and
+# piping the list directly into the display program.
+#   
+#   Also shows how the dl_select function can be used to implement
+# lookup tables.
+#
+# AUTHOR
+#  DLS, 4-96
+#
+########################################################################
+
+# set the image size
+set width 512
+set height 64
+
+# create the LUT
+set lut [lut::coldhot]
+
+# make a width-pixel byte ramp from 0 to 255 and replicate "height" times
+dl_local ramp [dl_replicate \
+	[dl_char [dl_div [dl_fromto 0 $width] [expr $width/256.]]] \
+	$height] 
+
+# open a pipe to display (could also go directly to convert)
+set f [open "|display -size ${width}x${height} -interlace plane rgb:-" w]
+
+# write the three channels to the pipe
+dli_write -channel $f \
+	[dl_select $lut:r $ramp] \
+	[dl_select $lut:g $ramp] \
+	[dl_select $lut:b $ramp]
+
+# close the pipe
+close $f
+
+# clean up
+lut::delete $lut

@@ -1,0 +1,86 @@
+# Totally random example demonstrating connection between dlsh and Tkogl
+#!/bin/sh
+# the next line restarts using wish \
+exec wish80 "$0" "$@"
+
+package require Tk
+
+# Load the dlsh extensions
+package require dlsh
+dl_noOp				;# Under windows you must call a func
+ 	                        ;#   to load the corresponding dll
+load_Tkogl
+load_Imsl
+load_Impro
+
+proc sine {} {
+    dl_local t [dl_div [dl_fromto 0 256.] 8]
+    dl_local sinewave [dl_add [dl_mult [dl_sin $t] .5] .5]
+    dl_local grating [dl_replicate $sinewave 256]
+    
+    dl_local f_fft [imsl_fft_2d_complex [dl_interleave $grating 0.0] 256 256]
+    dl_local i_fft [imsl_fft_2d_complex $f_fft 256 256 BACKWARD]
+    dl_local i_fft [dl_select $i_fft "1 0"]
+    
+    set sinelist [.gl imgcreate $grating]
+    set fftd_sinelist [.gl imgcreate [dl_div $i_fft [dl_max $i_fft]]]
+
+    .gl main -clear colorbuffer \
+	    -pushmatrix \
+	    -translate -.5 0 0 \
+	    -scale .5 .5 .5 \
+	    -call $sinelist \
+	    -popmatrix \
+	    -pushmatrix \
+	    -translate .5 0 0 \
+	    -scale .5 .5 .5 \
+	    -call $fftd_sinelist \
+	    -popmatrix
+}
+
+proc loadimage { file } {
+    set img [img_load $file]
+    dl_local r [dl_float [img_img2list $img]]
+    img_delete $img
+    dl_return $r
+}
+
+proc loadgaussian { { r 20 } } {
+    set img [img_create -width 256 -height 256]
+    img_mkgauss $img $r 0 255
+    dl_local r [dl_float [img_img2list $img]]
+    img_delete $img
+    dl_return $r
+}	
+
+proc loadgaussian { { r 20 } } {
+    set img [img_create -width 256 -height 256]
+    img_mkgauss $img $r 0 255
+    dl_local r [dl_float [img_img2list $img]]
+    img_delete $img
+    dl_return $r
+}	
+
+proc convolve { a b } { 
+    dl_local fft_a [imsl_fft_2d_complex [dl_interleave $a 0.0] 256 256]
+    dl_local fft_b [imsl_fft_2d_complex [dl_interleave $b 0.0] 256 256]
+    dl_local f_fft [dl_mult $fft_a $fft_b]
+    dl_local i_fft [imsl_fft_2d_complex $f_fft 256 256 BACKWARD]
+    dl_local i_fft [dl_select $i_fft "1 0"]
+    dl_return $i_fft
+}
+
+proc testconv {} { 
+    dl_local img [loadimage 226000a.raw]
+    dl_local gaussian [loadgaussian 1.5]
+    dl_local blurred [convolve $img $gaussian]
+    if { [info exists ::fftd_id] } { .gl imgdelete $::fftd_id } 
+    set ::fftd_id [.gl imgcreate [dl_div $blurred [dl_max $blurred]]]
+    .gl main -clear colorbuffer -call $::fftd_id
+}
+
+if ![winfo exists .gl] {
+    pack [OGLwin .gl -width 300 -height 300] -expand yes -fill both
+}
+
+testconv

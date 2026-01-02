@@ -1,0 +1,420 @@
+package provide spec 0.9
+
+namespace eval ::helpspec {
+    ####helper functions for above namespace functions####
+    proc staVarCheck {g } {
+	#make sure that we don't try to get eeg that is too early or too late,
+	#need the pre, post, align, and lfpdur to be compatible.
+	if { [dl_sum [dl_lt [dl_sub [dl_add $g:$::spec::staVar(align) $::spec::staVar(pre)] [expr $::spec::staVar(lfpdur) / 2.]]  0]]} {
+	    puts "Trying to get eeg earlier than beginobs, try shortening lfpdur"
+	    return 1
+	}
+	if { [dl_sum [dl_gte [dl_add $g:$::spec::staVar(align) \
+				  [expr $::spec::staVar(post) + ($::spec::staVar(lfpdur) / 2.)]] $g:endobs]]} {
+	    puts "Trying to get eeg later than some endobs, may need to shorten lfpdur"
+	    return 1
+	}
+	if {![dl_exists $g:eeg_info] || ![dl_exists $g:eeg_chans] || \
+		![dl_exists $g:eeg] || ![dl_exists $g:eeg_time] } {
+	    puts "You don't have eeg data; Reload group with option -eeg 1 (or 2)"
+	    return 1
+	}
+	return 0
+    }
+
+    
+    ###Build Array Procs####
+    proc buildStasfcpgramVarArray { } {
+	set ::spec::stasfcpgramVar(window) "none"
+	return "stasfcpgramVar Built"
+    }
+
+
+    proc buildStaVarArray { } {
+	set ::spec::staVar(sortby) "none"; 
+	#enter list name and will subdivide by each unique list value, otherwise treat all
+	set ::spec::staVar(align) "stimon"; #what do you want spike times zeroed relative to?
+	set ::spec::staVar(pre) "-50"; #grab all spikes >=  align + pre (note need to make negative)
+	set ::spec::staVar(post) "350";#grab all spikes < align + post
+	set ::spec::staVar(lfpdur) "250";#range of lfp/eeg to get around each spike
+	set ::spec::staVar(buffer) "10"; #buffer for getting enough eeg in milliseconds
+	set ::spec::staVar(samp_rate) "0"; #defaults to zero and reset when running ::spec::sta, only used for plotting
+	set ::spec::staVar(plot) "0"; #do you want auto plot on?
+	set ::spec::staVar(limit) "none"; #do you want to specificy a list to limit group by?
+	set ::spec::staVar(sortby) "none"; #do you want to sort? used only for plotting
+	return "staVar Built"
+    }
+
+
+    proc buildSfcVarArray { } {
+	set ::spec::sfcVar(plot) "0"; 
+	set ::spec::sfcVar(align) "stimon";
+	set ::spec::sfcVar(min2plot) "0";
+	set ::spec::sfcVar(max2plot) "100";
+	set ::spec::sfcVar(limit) "none";
+	set ::spec::sfcVar(sortby) "none";
+	set ::spec::sfcVar(sortby) "none";
+	#enter list name and will subdivide by each unique list value, otherwise treat all
+	return "sfcVar Built"
+    }
+
+    proc buildPSDArray { } {
+	#establishes methods and window for power spectral
+	#density calculation
+	set ::spec::psdVar(method) "pgram"; 
+	set ::spec::psdVar(window) "none";
+	set ::spec::psdVar(start) "-50";
+	set ::spec::psdVar(stop) "250";
+	set ::spec::psdVar(align) "stimon"
+	set ::spec::psdVar(sortby) "subj";
+	set ::spec::psdVar(subdivide) "none";
+	set ::spec::psdVar(limit) "none";
+	set ::spec::psdVar(plotspec) 1;
+	set ::spec::psdVar(lfpchan) 6;
+	set ::spec::psdVar(pow_range) "0 80";
+	set ::spec::psdVar(seglen) 100;
+	set ::spec::psdVar(stepsize) 50;
+	return "psdVar built"
+    }
+
+    proc buildCohereArray { } {
+	set ::spec::cohereVar(method) "pgram"
+	set ::spec::cohereVar(window) "none"
+	set ::spec::cohereVar(start) "0"
+	set ::spec::cohereVar(stop) "500"
+	set ::spec::cohereVar(align) "stimon"
+	set ::spec::cohereVar(sortby) "none"
+	set ::spec::cohereVar(subdivide) "none"
+	set ::spec::cohereVar(limit) "none"
+	set ::spec::cohereVar(plot) "0";
+	set ::spec::cohereVar(min2plot) "0";
+	set ::spec::cohereVar(max2plot) "40";
+	return "cohereVar built"
+    }
+
+    
+    ####Parse Procs ####
+    
+    proc parseArgsStasfcpgram {args} {
+	set args [lindex $args 0]
+	foreach a $args i [dl_tcllist [dl_fromto 0 [llength $args]]] {
+	    if {![string match [string index $a 0] "-"]} {
+		continue
+	    } else {
+		switch -exact -- "$a" {
+		    -reset {::helpspec::buildStasfcpgramVarArray; break}
+		    -window { set ::spec::stasfcpgramVar(window) [lindex $args [expr $i + 1]]}
+		    default {puts "$a is not a recognized option."; return 0}
+		}
+	    }
+	}
+    }
+
+    proc parseArgsPSD {args} {
+	set args [lindex $args 0]
+	foreach a $args i [dl_tcllist [dl_fromto 0 [llength $args]]] {
+	    if {![string match [string index $a 0] "-"]} {
+		continue
+	    } else {
+		switch -exact -- "$a" {
+		    -reset      {::helpspec::buildPSDArray}
+		    -window     { set ::spec::psdVar(window) [lindex $args [expr $i + 1]]}
+		    -method     { set ::spec::psdVar(method) [lindex $args [expr $i + 1]]}
+		    -start      { set ::spec::psdVar(start) [lindex $args [expr $i + 1]]}
+		    -stop       { set ::spec::psdVar(stop) [lindex $args [expr $i + 1]]}
+		    -align      { set ::spec::psdVar(align) [lindex $args [expr $i + 1]]}
+		    -sortby     { set ::spec::psdVar(sortby) [lindex $args [expr $i + 1]]}
+		    -subdivide  { set ::spec::psdVar(subdivide) [lindex $args [expr $i + 1]]}
+		    -limit      { set ::spec::psdVar(limit) [lindex $args [expr $i + 1]]}
+		    -plotspec   { set ::spec::psdVar(plotspec) [lindex $args [expr $i + 1]]}
+		    -lfpchan    { set ::spec::psdVar(lfpchan) [lindex $args [expr $i + 1]]}
+		    -pow_range  { set ::spec::psdVar(pow_range) [lindex $args [expr $i + 1]]}
+		    -seglen     { set ::spec::psdVar(seglen) [lindex $args [expr $i + 1]]}
+		    -stepsize   { set  ::spec::psdVar(stepsize) [lindex $args [expr $i + 1]]}
+		    default {puts "$a is not a recognized option."; return 0}
+		}
+	    }
+	}
+	return 1
+    }
+
+    proc parseArgsCohere {args} {
+	set args [lindex $args 0]
+	foreach a $args i [dl_tcllist [dl_fromto 0 [llength $args]]] {
+	    if {![string match [string index $a 0] "-"]} {
+		continue
+	    } else {
+		switch -exact -- "$a" {
+		    -reset {::helpspec::buildCohereArray}
+		    -window { set ::spec::cohereVar(window) [lindex $args [expr $i + 1]]}
+		    -method { set ::spec::cohereVar(method) [lindex $args [expr $i + 1]]}
+		    -start { set ::spec::cohereVar(start) [lindex $args [expr $i + 1]]}
+		    -stop { set ::spec::cohereVar(stop) [lindex $args [expr $i + 1]]}
+		    -align { set ::spec::cohereVar(align) [lindex $args [expr $i + 1]]}
+		    -sortby { set ::spec::cohereVar(sortby) [lindex $args [expr $i + 1]]}
+		    -sortby {set ::spec::cohereVar(sortby) [lindex $args [expr $i + 1]]}
+		    -limit {set ::spec::cohereVar(limit) [lindex $args [expr $i + 1]]}
+		    -plot {set ::spec::cohereVar(plot) [lindex $args [expr $i + 1]]}
+		    -min2plot {set ::spec::cohereVar(min2plot) [lindex $args [expr $i + 1]]}
+		    -max2plot {set ::spec::cohereVar(max2plot) [lindex $args [expr $i + 1]]}
+		    default {puts "$a is not a recognized option."; return 0}
+		}
+	    }
+	}
+    }
+
+    
+    proc parseArgsSta {args} {
+	puts $args
+	#internal function for parsing arguments to sta proc
+	set args [lindex $args 0]
+	foreach a $args i [dl_tcllist [dl_fromto 0 [llength $args]]] {
+	    if {![string match [string index $a 0] "-"]} {
+		continue
+	    } else {
+		switch -exact -- "$a" {
+		    -reset { buildStaVarArray; break }
+		    -sortby { set ::spec::staVar(sortby) [lindex $args [expr $i + 1]]}
+		    -align { set ::spec::staVar(align) [lindex $args [expr $i + 1]]}
+		    -pre { set ::spec::staVar(pre) [lindex $args [expr $i + 1]]}
+		    -post { set ::spec::staVar(post) [lindex $args [expr $i + 1]]}
+		    -lfpdur { set ::spec::staVar(lfpdur) [lindex $args [expr $i + 1]]}
+		    -plotsta { set ::spec::staVar(plot) [lindex $args [expr $i + 1]]}
+		    -plotsfc { if {![array exists ::spec::sfcVar]} {
+			::helpspec::buildSfcVarArray
+		    }
+			set ::spec::sfcVar(plot) [lindex $args [expr $i + 1]]}
+		    -window { if {![array exists ::spec::stasfcpgramVar]} {
+			::helpspec::buildStasfcpgramVarArray 
+		    } 
+			set ::spec::stasfcpgramVar(window) [lindex $args [expr $i + 1]]
+		    }
+		    -limit { set ::spec::staVar(limit) [lindex $args [expr $i + 1]] }
+		    -sortby { set ::spec::staVar(sortby) [lindex $args [expr $i + 1]] }
+		    default {puts "$a is not a recognized option."; continue;}
+		}
+	    }
+	}
+    }
+
+    proc parseArgsSfc {args} {
+	#internal function for parsing arguments to sta proc
+	set args [lindex $args 0]
+	foreach a $args i [dl_tcllist [dl_fromto 0 [llength $args]]] {
+	    if {![string match [string index $a 0] "-"]} {
+		continue
+	    } else {
+		switch -exact -- "$a" {
+		    -reset { ::helpspec::buildSfcVarArray; break }
+		    -align { set ::spec::sfcVar(align) [lindex $args [expr $i + 1]] }
+		    -plotsfc { set ::spec::sfcVar(plot) [lindex $args [expr $i + 1]]}
+		    -window { 
+			if {![array exists ::spec::stasfcpgramVar]} {
+			    ::helpspec::buildStasfcpgramVarArray 
+			} 
+			set ::spec::stasfcpgramVar(window) [lindex $args [expr $i + 1]]
+		    }
+		    -pre { 
+			if {![array exists ::spec::staVar]} {
+			    ::helpspec::buildStaVarArray 
+			} 
+			set ::spec::staVar(pre) [lindex $args [expr $i + 1]];
+		    }
+		    -post { 
+			if {![array exists ::spec::staVar]} {
+			    ::helpspec::buildStaVarArray 
+			} 
+			set ::spec::staVar(post) [lindex $args [expr $i + 1]]
+		    }
+		    -lfpdur { 
+			if {![array exists ::spec::staVar]} {
+			    ::helpspec::buildStaVarArray 
+			} 
+			set ::spec::staVar(lfpdur) [lindex $args [expr $i + 1]]
+		    }
+		    -min2plot { set ::spec::sfcVar(min2plot) [lindex $args [expr $i + 1]] }
+		    -max2plot { set ::spec::sfcVar(max2plot) [lindex $args [expr $i + 1]] }
+		    -limit { set ::spec::sfcVar(limit) [lindex $args [expr $i + 1]] }
+		    -sortby {  set ::spec::sfcVar(sortby) [lindex $args [expr $i + 1]] }
+		    -sortby {  set ::spec::sfcVar(sortby) [lindex $args [expr $i + 1]] }
+		    default {puts "$a is not a recognized option."; continue}
+		}
+	    }
+	}
+    }
+
+
+    proc getEeg {g ch start stop align} {
+	dl_local zero_idxs [dl_minIndices [dl_collapse [dl_abs [dl_sub [dl_choose $g:eeg_time [dl_llist [dl_ilist 0]]] $g:$align]]]];
+	set timespan [expr $stop - $start]
+	set samptime_ms [expr [lindex [dl_get $g:eeg_info 0] 2] / 1000.]
+	set sampnum [expr int($timespan / $samptime_ms)]
+	dl_local sampsb4 [dl_add $zero_idxs [expr int($start / $samptime_ms)]]
+	set sampspan [expr int($timespan / $samptime_ms)]
+	dl_local idxs2get [dl_series $sampsb4 [dl_add $sampsb4 $sampspan]]
+	dl_set i2g $idxs2get  
+	dl_local out [dl_llist]
+	set chidx [dl_tcllist [dl_indices [dl_eq [dl_get $g:eeg_chans 0] $ch]]]
+	dl_append $out [dl_collapse [dl_choose [dl_choose $g:eeg [dl_llist [dl_ilist $chidx]]] [dl_pack $idxs2get]]]
+	dl_return $out
+    }
+    
+    proc fftEeg {eeglist} {
+	dl_local leg $eeglist
+	dl_return [::fftw::1d [dl_collapse $leg]]
+    }
+    
+    proc complexMult {in1 in2} {
+	dl_local a [dl_choose $in1 [dl_llist [dl_ilist 0]]]
+	dl_local b [dl_choose $in1 [dl_llist [dl_ilist 1]]]
+	dl_local x [dl_choose $in2 [dl_llist [dl_ilist 0]]]
+	dl_local y [dl_choose $in2 [dl_llist [dl_ilist 1]]]
+	dl_local ax [dl_mult $a $x]
+	dl_local ay [dl_mult $a $y]
+	dl_local bx [dl_mult $b $x]
+	dl_local by [dl_mult $b $y]
+	dl_local out1 [dl_sub $ax $by]
+	dl_local out2 [dl_add $bx $ay]
+	dl_return [dl_combineLists $out1 $out2]
+    }
+    
+    proc compPow {in1} {
+	dl_local lin1 $in1
+	dl_local prod [complexMult $lin1 $lin1]
+	dl_return [dl_collapse  [dl_means [dl_transpose [dl_choose $prod [dl_llist [dl_ilist 0]]]]]]
+    }
+    proc plotPSD {g chan} {
+	#chan is lfp channel
+	set freq_res [expr 1000. / ($::spec::psdVar(stop) - $::spec::psdVar(start))]
+	if {[string match $::spec::psdVar(subdivide) "none"]} {
+	    set p [dlp_newplot]
+	    dl_local plot_labels [dl_unique $g:$spec::psdVar(sortby)]
+	    dl_local plot_ydats [dl_llist]
+	    dlp_set $p title $::spec::psdVar(sortby)
+	    dl_local freqs [dl_mult [dl_fromto 0 [dl_length $g:power:0]] $freq_res] 
+	    set startidx [dl_min [dl_indices [dl_gte $freqs [lindex $::spec::psdVar(pow_range) 0]]]]
+	    set stopidx [dl_max [dl_indices [dl_lte $freqs [expr double([lindex $::spec::psdVar(pow_range) 1])]]]]
+	    dl_local plotfreqs [dl_choose $freqs [dl_series $startidx $stopidx]]
+	    dlp_addXData $p $plotfreqs
+	    foreach pl [dl_tcllist $plot_labels] i [dl_tcllist [dl_fromto 0 [dl_length $plot_labels]]] {
+		dl_local slctlst [dl_eq $g:$spec::psdVar(sortby) $pl]
+		set ns [dl_sum $slctlst]
+		dlp_addYData $p [dl_choose [dl_log10 [dl_meanList [dl_select $g:power $slctlst]]] [dl_series $startidx $stopidx]]
+		set cm $i
+		set dashed 0
+		while {$cm > 7} {
+		    set cm [expr $cm - 8] 
+		    set dashed 2
+		} 
+		dlp_draw $p lines $i -linecolor $::helplfp::cols($cm) -lstyle $dashed
+		set xspot 0.01
+		dlp_wincmd $p {0 0 1 1} "dlg_text $xspot [expr .93-$i*.05] $pl -color $::helplfp::cols($i) -just -1"
+		set xspot 0.25
+		dlp_wincmd $p {0 0 1 1} "dlg_text $xspot [expr .93-$i*.05] $ns -color $::helplfp::cols($i) -just -1"
+	    }
+	    dlp_setpanels 1 1
+	    clearwin
+	    set minmax_counter 0
+	    dlp_plot $p
+	    helplfp::mark_plots "::spec::psdBy $g $chan $::spec::psdVar(sortby) $::spec::psdVar(subdivide)"
+	} else {
+	    set pannum 0
+	    dlp_setpanels [dl_length [dl_unique $g:$::spec::psdVar(subdivide)]]  1
+	    set plots [list]
+	    set minmax_counter 0
+	    foreach uv [dl_tcllist [dl_unique $g:$::spec::psdVar(subdivide)]] {
+		puts $uv
+		set subgrp [dg_copySelected $g [dl_eq $g:$::spec::psdVar(subdivide) $uv] 1]
+		set p [dlp_newplot]
+		dl_local plot_labels [dl_unique $subgrp:$spec::psdVar(sortby)]
+		dl_local plot_ydats [dl_llist]
+		dlp_set $p title "$::spec::psdVar(subdivide) = $uv"
+		dlp_addXData $p [dl_mult [dl_fromto 0 [dl_length $subgrp:power:0]] $freq_res];
+		foreach pl [dl_tcllist $plot_labels] i [dl_tcllist [dl_fromto 0 [dl_length $plot_labels]]] {
+		    dl_local slctlst [dl_eq $subgrp:$spec::psdVar(sortby) $pl]
+		    set ns [dl_sum $slctlst]
+		    dlp_addYData $p [dl_log10 [dl_meanList [dl_select $subgrp:power $slctlst]]]
+		    set cm $i
+		    set dashed 0
+		    while {$cm > 7} {
+			set cm [expr $cm - 8] 
+			set dashed 2
+		    } 
+		    dlp_draw $p lines $i -linecolor $::helplfp::cols($cm) -lstyle $dashed
+		    set xspot 0.01
+		    dlp_wincmd $p {0 0 1 1} "dlg_text $xspot [expr .93-$i*.05] $pl -color $::helplfp::cols($i) -just -1"
+		    set xspot 0.25
+		    dlp_wincmd $p {0 0 1 1} "dlg_text $xspot [expr .93-$i*.05] $ns -color $::helplfp::cols($i) -just -1"
+		}
+		dlp_plot $p
+		if {$minmax_counter == 0} {
+		    set ymin [dl_tcllist $p:cur_ymin]
+		    set ymax [dl_tcllist $p:cur_ymax]
+		    incr minmax_counter
+		} else {
+		    set ymin [lindex [lsort -real -increasing "[dl_tcllist $p:cur_ymin] $ymin"] 0]
+		    set ymax [lindex [lsort -real -decreasing "[dl_tcllist $p:cur_ymax] $ymax"] 0]
+		}
+		lappend plots $p
+		dg_delete $subgrp
+	    }
+	    clearwin
+	    set pannum 0
+	    puts "plots is/are $plots"
+	    foreach p $plots {
+		dlp_setyrange $p $ymin $ymax
+		dlp_subplot $p $pannum
+		incr pannum
+	    }
+	    helplfp::mark_plots "::spec::psdBy $g $chan $::spec::psdVar(sortby) $::spec::psdVar(subdivide)"
+	} 
+    }
+    
+    ##I am working on the two procs below which at the moment 3:47pm Aug 3 are in a whole lot of hurt######--Britt
+    proc plotSpecgram {datag chan { specg specgrp } } {
+	#for using the standard route, where this is called inside ::lfp::specgram you will never specify the specg
+	#however, I left that option open in case someone someday wants to call this function separately on their own data
+	#where they have generated a group that has the specgrp structure. See ::lfp::specgram for how I created specgrp.
+	#chan is lfp channel
+	set freq_res [expr 1000. / $::spec::psdVar(seglen)];#different from plotPSD
+	if {![string match $::spec::psdVar(subdivide) "none"]} {
+	    puts "Error: Cannot use the subdivide parameter for plotSpecgram at this time."
+	    return 0
+	}
+	set pannum 0
+	dlp_setpanels [dl_length [dl_unique $datag:$::spec::psdVar(sortby)]]  1
+	set plots [list]
+	set minmax_counter 0
+	dl_local freqs [dl_reverse [dl_mult [dl_fromto 0 [dl_length $specg:power:0:0]] $freq_res] ]
+	set startidx [dl_min [dl_indices [dl_gte $freqs [lindex $::spec::psdVar(pow_range) 0]]]]
+	set stopidx [dl_max [dl_indices [dl_lte $freqs [expr double([lindex $::spec::psdVar(pow_range) 1])]]]]
+	dl_local plotfreqs [dl_choose $freqs [dl_series $startidx $stopidx]]
+
+	
+	foreach uv [dl_tcllist [dl_unique $datag:$::spec::psdVar(sortby)]] {
+
+	    ::helpspec::sgp $g $chan $specg $artid $opid $plotfreqs $uv
+	}
+    }
+
+    proc sgp {g c s ai oi pf cond} {
+	
+	    dl_local subgrp [dl_choose $s:power [dl_llist [dl_indices [dl_eq ${g}:${::spec::psdVar(sortby)} $cond]]]]
+	    set p [dlp_newplot]
+	    dlp_set $p title "$cond"
+	    dlp_addXData $p $pf;
+	  
+	    dl_local tempdat [dl_llist]
+	    for {set d2pcnt 0} {$d2pcnt < [dl_length $subgrp]} {incr d2pcnt} {
+		dl_append $tempdat [dl_reverse [dl_meanList [dl_log10 ${subgrp}:$d2pcnt]]]
+	    }
+	    
+	    dl_local tempdat [dl_choose $tempdat [dl_llist [dl_series $ai $oi]]]
+	    dl_local tempdat [dl_sub $tempdat [dl_min $tempdat]]
+	    setwindow 0 0 10 10
+	    dl_local plotdat [dl_char [dl_collapse [dl_transpose [dl_mult [dl_div $tempdat [dl_max $tempdat]] 255]]]]
+	    dl_set plotdat $plotdat
+	    dlg_image 5 5 [dl_llist "[dl_length $tempdat] [dl_length $tempdat:0]" [dl_collapse [dl_combineLists $plotdat $plotdat $plotdat]]] 9. 8. -center
+	}
+ 
+}

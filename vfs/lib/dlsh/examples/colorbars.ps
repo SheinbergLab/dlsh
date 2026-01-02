@@ -1,0 +1,2590 @@
+%!PS-Adobe
+%%Creator: GBuf Graphics Utilities (BCM)
+%%CreationDate: Mon Apr  8 14:59:15 1996
+%%BoundingBox: 0 0 792 612
+/m { moveto } bind def
+/L { lineto } bind def
+/S { stroke } bind def
+/c { closepath } bind def
+/Helvetica findfont  10.0 scalefont setfont
+/charheight { gsave newpath 0 0 moveto false charpath
+flattenpath pathbbox exch pop 3 -1 roll pop grestore } def
+/stringheight { /lly 0.0 def /ury 0.0 def
+{ ( ) dup 0 4 -1 roll put charheight
+dup ury gt  { /ury exch def } { pop } ifelse
+dup lly lt { /lly exch def } { pop } ifelse } forall
+ury lly sub } def
+/c_show {                 %% stack = x y angle string
+matrix currentmatrix
+5 -2 roll translate
+3 -1 roll rotate
+exch
+dup stringwidth pop 2 div neg
+(1) stringheight 2 div neg moveto
+show
+setmatrix
+} def
+/l_show {                 %% stack = x y angle string
+matrix currentmatrix
+5 -2 roll translate
+3 -1 roll rotate
+exch
+0 
+(1) stringheight 2 div neg moveto
+show
+setmatrix
+} def
+/r_show {                 %% stack = x y angle string
+matrix currentmatrix
+5 -2 roll translate
+3 -1 roll rotate
+exch
+dup stringwidth pop neg
+(1) stringheight 2 div neg moveto
+show
+setmatrix
+} def
+% put in Landscape mode
+4.25 72 mul 6.5 72 mul translate
+90 rotate
+-6 72 mul -3.75 72 mul translate
+792  640.00 div .9 mul 612 480.00 div .9 mul scale
+/Helvetica findfont  10.0 scalefont setfont
+0.00 0.00 0.00 setrgbcolor
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37 271.12 m
+ 84.37 271.12 m
+/GBUFSTATE save def
+gsave
+/a4small {} def /legal {} def
+/letter {} def /note {} def /copypage {} def
+/erasepage {} def /showpage {} def
+ 84.372 271.123 translate
+470.256 401.000 div   32.640   1.000 div scale
+0 setgray 0 setlinecap 0 setlinewidth 0 setlinejoin
+10 setmiterlimit [] 0 setdash
+%!PS-Adobe-3.0 EPSF-3.0
+%%Title: gauss.eps
+%%Creator: ImageMagick
+%%CreationDate: Mon Apr  8 14:59:14 1996
+%%BoundingBox: 0 0 401 1
+%%Pages: 0
+%%EndComments
+%%BeginProlog
+%
+% Display a color image.  The image is displayed in color on
+% Postscript viewers or printers that support color, otherwise
+% it is displayed as grayscale.
+%
+/buffer 512 string def
+/byte 1 string def
+/color_packet 3 string def
+/pixels 768 string def
+
+/DirectClassPacket
+{
+  %
+  % Get a DirectClass packet.
+  %
+  % Parameters:
+  %   red.
+  %   green.
+  %   blue.
+  %   length: number of pixels minus one of this color (optional).
+  %
+  currentfile color_packet readhexstring pop pop
+  compression 0 gt
+  {
+    /number_pixels 3 def
+  }
+  {
+    currentfile byte readhexstring pop 0 get
+    /number_pixels exch 1 add 3 mul def
+  } ifelse
+  0 3 number_pixels 1 sub
+  {
+    pixels exch color_packet putinterval
+  } for
+  pixels 0 number_pixels getinterval
+} bind def
+
+/DirectClassImage
+{
+  %
+  % Display a DirectClass image.
+  %
+  systemdict /colorimage known
+  {
+    columns rows 8
+    [
+      columns 0 0
+      rows neg 0 rows
+    ]
+    { DirectClassPacket } false 3 colorimage
+  }
+  {
+    %
+    % No colorimage operator;  convert to grayscale.
+    %
+    columns rows 8
+    [
+      columns 0 0
+      rows neg 0 rows
+    ]
+    { GrayDirectClassPacket } image
+  } ifelse
+} bind def
+
+/GrayDirectClassPacket
+{
+  %
+  % Get a DirectClass packet;  convert to grayscale.
+  %
+  % Parameters:
+  %   red
+  %   green
+  %   blue
+  %   length: number of pixels minus one of this color (optional).
+  %
+  currentfile color_packet readhexstring pop pop
+  color_packet 0 get 0.299 mul
+  color_packet 1 get 0.587 mul add
+  color_packet 2 get 0.114 mul add
+  cvi
+  /gray_packet exch def
+  compression 0 gt
+  {
+    /number_pixels 1 def
+  }
+  {
+    currentfile byte readhexstring pop 0 get
+    /number_pixels exch 1 add def
+  } ifelse
+  0 1 number_pixels 1 sub
+  {
+    pixels exch gray_packet put
+  } for
+  pixels 0 number_pixels getinterval
+} bind def
+
+/GrayPseudoClassPacket
+{
+  %
+  % Get a PseudoClass packet;  convert to grayscale.
+  %
+  % Parameters:
+  %   index: index into the colormap.
+  %   length: number of pixels minus one of this color (optional).
+  %
+  currentfile byte readhexstring pop 0 get
+  /offset exch 3 mul def
+  /color_packet colormap offset 3 getinterval def
+  color_packet 0 get 0.299 mul
+  color_packet 1 get 0.587 mul add
+  color_packet 2 get 0.114 mul add
+  cvi
+  /gray_packet exch def
+  compression 0 gt
+  {
+    /number_pixels 1 def
+  }
+  {
+    currentfile byte readhexstring pop 0 get
+    /number_pixels exch 1 add def
+  } ifelse
+  0 1 number_pixels 1 sub
+  {
+    pixels exch gray_packet put
+  } for
+  pixels 0 number_pixels getinterval
+} bind def
+
+/PseudoClassPacket
+{
+  %
+  % Get a PseudoClass packet.
+  %
+  % Parameters:
+  %   index: index into the colormap.
+  %   length: number of pixels minus one of this color (optional).
+  %
+  currentfile byte readhexstring pop 0 get
+  /offset exch 3 mul def
+  /color_packet colormap offset 3 getinterval def
+  compression 0 gt
+  {
+    /number_pixels 3 def
+  }
+  {
+    currentfile byte readhexstring pop 0 get
+    /number_pixels exch 1 add 3 mul def
+  } ifelse
+  0 3 number_pixels 1 sub
+  {
+    pixels exch color_packet putinterval
+  } for
+  pixels 0 number_pixels getinterval
+} bind def
+
+/PseudoClassImage
+{
+  %
+  % Display a PseudoClass image.
+  %
+  % Parameters:
+  %   class: 0-PseudoClass or 1-Grayscale.
+  %
+  currentfile buffer readline pop
+  token pop /class exch def pop
+  class 0 gt
+  {
+    /grays columns string def
+    columns rows 8
+    [
+      columns 0 0
+      rows neg 0 rows
+    ]
+    { currentfile grays readhexstring pop } image
+  }
+  {
+    %
+    % Parameters:
+    %   colors: number of colors in the colormap.
+    %   colormap: red, green, blue color packets.
+    %
+    currentfile buffer readline pop
+    token pop /colors exch def pop
+    /colors colors 3 mul def
+    /colormap colors string def
+    currentfile colormap readhexstring pop pop
+    systemdict /colorimage known
+    {
+      columns rows 8
+      [
+        columns 0 0
+        rows neg 0 rows
+      ]
+      { PseudoClassPacket } false 3 colorimage
+    }
+    {
+      %
+      % No colorimage operator;  convert to grayscale.
+      %
+      columns rows 8
+      [
+        columns 0 0
+        rows neg 0 rows
+      ]
+      { GrayPseudoClassPacket } image
+    } ifelse
+  } ifelse
+} bind def
+
+/DisplayImage
+{
+  %
+  % Display a DirectClass or PseudoClass image.
+  %
+  % Parameters:
+  %   x & y translation.
+  %   x & y scale.
+  %   image label.
+  %   image columns & rows.
+  %   class: 0-DirectClass or 1-PseudoClass.
+  %   compression: 0-RunlengthEncodedCompression or 1-NoCompression.
+  %   hex color packets.
+  %
+  gsave
+  currentfile buffer readline pop
+  token pop /x exch def
+  token pop /y exch def pop
+  x y translate
+  currentfile buffer readline pop
+  token pop /x exch def
+  token pop /y exch def pop
+  /NewCenturySchlbk-Roman findfont 24 scalefont setfont
+  currentfile buffer readline pop
+  0 y 12 add moveto buffer show pop
+  x y scale
+  currentfile buffer readline pop
+  token pop /columns exch def
+  token pop /rows exch def pop
+  currentfile buffer readline pop
+  token pop /class exch def pop
+  currentfile buffer readline pop
+  token pop /compression exch def pop
+  class 0 gt { PseudoClassImage } { DirectClassImage } ifelse
+  grestore
+} bind def
+%%EndProlog
+%%Page:  1 1
+userdict begin
+%%BeginData:
+DisplayImage
+0 0
+401 1
+            
+401 1
+0
+0
+0004a3520004a6060005a9040005ac030005ae010006b1020006b4010007b7000007b901
+0008bc010008bf000009c2000009c400000ac700000ac900000bcc00000bce00000cd100
+000dd300000ed600000fda000010dc000011df000013e3000014e5000016e8000018ec00
+001bef00001cf100001ff4000021f6000026f900002afb00002dfc000033fe000037fe00
+003efe000043fe00004bfd000053fb00005bf8000064f500006df1000177ec000184e500
+028edf000299d80003a6ce0004b4c40006bebc0008cab1000bd6a6000ee19a0012ea8f00
+18f284001ef8790026fc6e002ffe64003cfe570048fc4e0055f8450068f03c0078e83400
+88de2e009ed02600afc42100bfb71c00d2a61700e0991400eb8b1000f67a0d00fc6d0b00
+fe610900fe550700fa4b0600f3410500ea370400de2f0300d42a0200c5230200b91f0100
+a81901009c1601008f130100821000007a0e00006e0c0000660b00005e0a000053080000
+500800004907000043060000400500003d0500003a050000380400023504000038040002
+3a0500003d05000040050000430600004907000050080000530800005e0a0000660b0000
+6e0c00007a0e0000821000008f1301009c160100a8190100b91f0100c5230200d42a0200
+de2f0300ea370400f3410500fa4b0600fe550700fe610900fc6d0b00f67a0d00eb8b1000
+e0991400d2a61700bfb71c00afc421009ed0260088de2e0078e8340068f03c0055f84500
+48fc4e003cfe57002ffe640026fc6e001ef8790018f2840012ea8f000ee19a000bd6a600
+08cab10006bebc0004b4c40003a6ce000299d800028edf000184e5000177ec00006df100
+0064f500005bf8000053fb00004bfd000043fe00003efe000037fe000033fe00002dfc00
+002afb000026f9000021f600001ff400001cf100001bef000018ec000016e8000014e500
+0013e3000011df000010dc00000fda00000ed600000dd300000cd100000bce00000bcc00
+000ac900000ac7000009c4000009c2000008bf000008bc010007b9010007b7000006b401
+0006b1020005ae010005ac030005a9040004a6060004a352
+%%EndData
+end
+%%PageTrailer
+%%Trailer
+%%EOF
+grestore GBUFSTATE restore
+[ 1 0 ] 0 setdash
+0.500000 setlinewidth
+0.70 0.70 0.70 setrgbcolor
+ 84.37 303.76 moveto
+ 84.37 303.76 lineto
+ 85.55 303.76 lineto
+ 86.72 303.76 lineto
+ 87.90 303.76 lineto
+ 89.07 303.76 lineto
+ 90.25 303.76 lineto
+ 91.43 303.76 lineto
+ 92.60 303.76 lineto
+ 93.78 303.76 lineto
+ 94.95 303.76 lineto
+ 96.13 303.76 lineto
+ 97.30 303.76 lineto
+ 98.48 303.76 lineto
+ 99.66 303.76 lineto
+100.83 303.76 lineto
+102.01 303.76 lineto
+103.18 303.76 lineto
+104.36 303.76 lineto
+105.53 303.76 lineto
+106.71 303.76 lineto
+107.88 303.76 lineto
+109.06 303.76 lineto
+110.24 303.76 lineto
+111.41 303.76 lineto
+112.59 303.76 lineto
+113.76 303.76 lineto
+114.94 303.76 lineto
+116.11 303.76 lineto
+117.29 303.76 lineto
+118.47 303.76 lineto
+119.64 303.76 lineto
+120.82 303.76 lineto
+121.99 303.76 lineto
+123.17 303.76 lineto
+124.34 303.76 lineto
+125.52 303.77 lineto
+126.70 303.77 lineto
+127.87 303.77 lineto
+129.05 303.77 lineto
+130.22 303.77 lineto
+131.40 303.77 lineto
+132.57 303.77 lineto
+133.75 303.77 lineto
+134.92 303.77 lineto
+136.10 303.77 lineto
+137.28 303.77 lineto
+138.45 303.77 lineto
+139.63 303.77 lineto
+140.80 303.78 lineto
+141.98 303.78 lineto
+143.15 303.78 lineto
+144.33 303.78 lineto
+145.51 303.78 lineto
+146.68 303.79 lineto
+147.86 303.79 lineto
+149.03 303.79 lineto
+150.21 303.80 lineto
+151.38 303.80 lineto
+152.56 303.80 lineto
+153.73 303.81 lineto
+154.91 303.81 lineto
+156.09 303.82 lineto
+157.26 303.83 lineto
+158.44 303.83 lineto
+159.61 303.84 lineto
+160.79 303.85 lineto
+161.96 303.86 lineto
+163.14 303.87 lineto
+164.32 303.89 lineto
+165.49 303.90 lineto
+166.67 303.91 lineto
+167.84 303.93 lineto
+169.02 303.95 lineto
+170.19 303.97 lineto
+171.37 303.99 lineto
+172.54 304.01 lineto
+173.72 304.04 lineto
+174.90 304.07 lineto
+176.07 304.10 lineto
+177.25 304.14 lineto
+178.42 304.17 lineto
+179.60 304.22 lineto
+180.77 304.26 lineto
+181.95 304.31 lineto
+183.13 304.36 lineto
+184.30 304.42 lineto
+185.48 304.48 lineto
+186.65 304.55 lineto
+187.83 304.63 lineto
+189.00 304.71 lineto
+190.18 304.79 lineto
+191.36 304.89 lineto
+192.53 304.99 lineto
+193.71 305.10 lineto
+194.88 305.22 lineto
+196.06 305.35 lineto
+197.23 305.49 lineto
+198.41 305.64 lineto
+199.58 305.80 lineto
+200.76 305.97 lineto
+201.94 306.15 lineto
+203.11 306.35 lineto
+204.29 306.56 lineto
+205.46 306.79 lineto
+206.64 307.03 lineto
+207.81 307.29 lineto
+208.99 307.57 lineto
+210.17 307.87 lineto
+211.34 308.18 lineto
+212.52 308.52 lineto
+213.69 308.88 lineto
+214.87 309.26 lineto
+216.04 309.66 lineto
+217.22 310.09 lineto
+218.39 310.54 lineto
+219.57 311.02 lineto
+220.75 311.53 lineto
+221.92 312.06 lineto
+223.10 312.63 lineto
+224.27 313.23 lineto
+225.45 313.86 lineto
+226.62 314.52 lineto
+227.80 315.22 lineto
+228.98 315.95 lineto
+230.15 316.72 lineto
+231.33 317.52 lineto
+232.50 318.37 lineto
+233.68 319.25 lineto
+234.85 320.18 lineto
+236.03 321.14 lineto
+237.21 322.15 lineto
+238.38 323.20 lineto
+239.56 324.30 lineto
+240.73 325.44 lineto
+241.91 326.62 lineto
+243.08 327.85 lineto
+244.26 329.13 lineto
+245.43 330.45 lineto
+246.61 331.82 lineto
+247.79 333.23 lineto
+248.96 334.70 lineto
+250.14 336.20 lineto
+251.31 337.76 lineto
+252.49 339.36 lineto
+253.66 341.00 lineto
+254.84 342.69 lineto
+256.02 344.43 lineto
+257.19 346.21 lineto
+258.37 348.03 lineto
+259.54 349.89 lineto
+260.72 351.79 lineto
+261.89 353.73 lineto
+263.07 355.71 lineto
+264.24 357.72 lineto
+265.42 359.77 lineto
+266.60 361.84 lineto
+267.77 363.95 lineto
+268.95 366.08 lineto
+270.12 368.23 lineto
+271.30 370.41 lineto
+272.47 372.61 lineto
+273.65 374.82 lineto
+274.83 377.04 lineto
+276.00 379.27 lineto
+277.18 381.51 lineto
+278.35 383.75 lineto
+279.53 385.98 lineto
+280.70 388.22 lineto
+281.88 390.44 lineto
+283.06 392.65 lineto
+284.23 394.85 lineto
+285.41 397.03 lineto
+286.58 399.18 lineto
+287.76 401.30 lineto
+288.93 403.39 lineto
+290.11 405.44 lineto
+291.28 407.45 lineto
+292.46 409.42 lineto
+293.64 411.34 lineto
+294.81 413.21 lineto
+295.99 415.02 lineto
+297.16 416.77 lineto
+298.34 418.45 lineto
+299.51 420.07 lineto
+300.69 421.61 lineto
+301.87 423.08 lineto
+303.04 424.48 lineto
+304.22 425.79 lineto
+305.39 427.01 lineto
+306.57 428.15 lineto
+307.74 429.20 lineto
+308.92 430.16 lineto
+310.09 431.02 lineto
+311.27 431.79 lineto
+312.45 432.45 lineto
+313.62 433.02 lineto
+314.80 433.49 lineto
+315.97 433.85 lineto
+317.15 434.11 lineto
+318.32 434.27 lineto
+319.50 434.32 lineto
+320.68 434.27 lineto
+321.85 434.11 lineto
+323.03 433.85 lineto
+324.20 433.49 lineto
+325.38 433.02 lineto
+326.55 432.45 lineto
+327.73 431.79 lineto
+328.91 431.02 lineto
+330.08 430.16 lineto
+331.26 429.20 lineto
+332.43 428.15 lineto
+333.61 427.01 lineto
+334.78 425.79 lineto
+335.96 424.48 lineto
+337.13 423.08 lineto
+338.31 421.61 lineto
+339.49 420.07 lineto
+340.66 418.45 lineto
+341.84 416.77 lineto
+343.01 415.02 lineto
+344.19 413.21 lineto
+345.36 411.34 lineto
+346.54 409.42 lineto
+347.72 407.45 lineto
+348.89 405.44 lineto
+350.07 403.39 lineto
+351.24 401.30 lineto
+352.42 399.18 lineto
+353.59 397.03 lineto
+354.77 394.85 lineto
+355.94 392.65 lineto
+357.12 390.44 lineto
+358.30 388.22 lineto
+359.47 385.98 lineto
+360.65 383.75 lineto
+361.82 381.51 lineto
+363.00 379.27 lineto
+364.17 377.04 lineto
+365.35 374.82 lineto
+366.53 372.61 lineto
+367.70 370.41 lineto
+368.88 368.23 lineto
+370.05 366.08 lineto
+371.23 363.95 lineto
+372.40 361.84 lineto
+373.58 359.77 lineto
+374.76 357.72 lineto
+375.93 355.71 lineto
+377.11 353.73 lineto
+378.28 351.79 lineto
+379.46 349.89 lineto
+380.63 348.03 lineto
+381.81 346.21 lineto
+382.98 344.43 lineto
+384.16 342.69 lineto
+385.34 341.00 lineto
+386.51 339.36 lineto
+387.69 337.76 lineto
+388.86 336.20 lineto
+390.04 334.70 lineto
+391.21 333.23 lineto
+392.39 331.82 lineto
+393.57 330.45 lineto
+394.74 329.13 lineto
+395.92 327.85 lineto
+397.09 326.62 lineto
+398.27 325.44 lineto
+399.44 324.30 lineto
+400.62 323.20 lineto
+401.79 322.15 lineto
+402.97 321.14 lineto
+404.15 320.18 lineto
+405.32 319.25 lineto
+406.50 318.37 lineto
+407.67 317.52 lineto
+408.85 316.72 lineto
+410.02 315.95 lineto
+411.20 315.22 lineto
+412.38 314.52 lineto
+413.55 313.86 lineto
+414.73 313.23 lineto
+415.90 312.63 lineto
+417.08 312.06 lineto
+418.25 311.53 lineto
+419.43 311.02 lineto
+420.61 310.54 lineto
+421.78 310.09 lineto
+422.96 309.66 lineto
+424.13 309.26 lineto
+425.31 308.88 lineto
+426.48 308.52 lineto
+427.66 308.18 lineto
+428.83 307.87 lineto
+430.01 307.57 lineto
+431.19 307.29 lineto
+432.36 307.03 lineto
+433.54 306.79 lineto
+434.71 306.56 lineto
+435.89 306.35 lineto
+437.06 306.15 lineto
+438.24 305.97 lineto
+439.42 305.80 lineto
+440.59 305.64 lineto
+441.77 305.49 lineto
+442.94 305.35 lineto
+444.12 305.22 lineto
+445.29 305.10 lineto
+446.47 304.99 lineto
+447.64 304.89 lineto
+448.82 304.79 lineto
+450.00 304.71 lineto
+451.17 304.63 lineto
+452.35 304.55 lineto
+453.52 304.48 lineto
+454.70 304.42 lineto
+455.87 304.36 lineto
+457.05 304.31 lineto
+458.23 304.26 lineto
+459.40 304.22 lineto
+460.58 304.17 lineto
+461.75 304.14 lineto
+462.93 304.10 lineto
+464.10 304.07 lineto
+465.28 304.04 lineto
+466.46 304.01 lineto
+467.63 303.99 lineto
+468.81 303.97 lineto
+469.98 303.95 lineto
+471.16 303.93 lineto
+472.33 303.91 lineto
+473.51 303.90 lineto
+474.68 303.89 lineto
+475.86 303.87 lineto
+477.04 303.86 lineto
+478.21 303.85 lineto
+479.39 303.84 lineto
+480.56 303.83 lineto
+481.74 303.83 lineto
+482.91 303.82 lineto
+484.09 303.81 lineto
+485.27 303.81 lineto
+486.44 303.80 lineto
+487.62 303.80 lineto
+488.79 303.80 lineto
+489.97 303.79 lineto
+491.14 303.79 lineto
+492.32 303.79 lineto
+493.49 303.78 lineto
+494.67 303.78 lineto
+495.85 303.78 lineto
+497.02 303.78 lineto
+498.20 303.78 lineto
+499.37 303.77 lineto
+500.55 303.77 lineto
+501.72 303.77 lineto
+502.90 303.77 lineto
+504.08 303.77 lineto
+505.25 303.77 lineto
+506.43 303.77 lineto
+507.60 303.77 lineto
+508.78 303.77 lineto
+509.95 303.77 lineto
+511.13 303.77 lineto
+512.30 303.77 lineto
+513.48 303.77 lineto
+514.66 303.76 lineto
+515.83 303.76 lineto
+517.01 303.76 lineto
+518.18 303.76 lineto
+519.36 303.76 lineto
+520.53 303.76 lineto
+521.71 303.76 lineto
+522.89 303.76 lineto
+524.06 303.76 lineto
+525.24 303.76 lineto
+526.41 303.76 lineto
+527.59 303.76 lineto
+528.76 303.76 lineto
+529.94 303.76 lineto
+531.12 303.76 lineto
+532.29 303.76 lineto
+533.47 303.76 lineto
+534.64 303.76 lineto
+535.82 303.76 lineto
+536.99 303.76 lineto
+538.17 303.76 lineto
+539.34 303.76 lineto
+540.52 303.76 lineto
+541.70 303.76 lineto
+542.87 303.76 lineto
+544.05 303.76 lineto
+545.22 303.76 lineto
+546.40 303.76 lineto
+547.57 303.76 lineto
+548.75 303.76 lineto
+549.93 303.76 lineto
+551.10 303.76 lineto
+552.28 303.76 lineto
+553.45 303.76 lineto
+554.63 303.76 lineto
+554.63 303.76 lineto
+closepath
+fill
+0.00 0.00 0.00 setrgbcolor
+0.94 0.94 0.05 setrgbcolor
+ 84.37 303.76 m
+ 85.55 303.76 L
+ 86.72 303.76 L
+ 87.90 303.76 L
+ 89.07 303.76 L
+ 90.25 303.76 L
+ 91.43 303.76 L
+ 92.60 303.76 L
+ 93.78 303.76 L
+ 94.95 303.76 L
+ 96.13 303.76 L
+ 97.30 303.76 L
+ 98.48 303.76 L
+ 99.66 303.76 L
+100.83 303.76 L
+102.01 303.76 L
+103.18 303.76 L
+104.36 303.76 L
+105.53 303.76 L
+106.71 303.76 L
+107.88 303.76 L
+109.06 303.76 L
+110.24 303.76 L
+111.41 303.76 L
+112.59 303.76 L
+113.76 303.76 L
+114.94 303.76 L
+116.11 303.76 L
+117.29 303.76 L
+118.47 303.76 L
+119.64 303.76 L
+120.82 303.76 L
+121.99 303.76 L
+123.17 303.76 L
+124.34 303.76 L
+125.52 303.77 L
+126.70 303.77 L
+127.87 303.77 L
+129.05 303.77 L
+130.22 303.77 L
+131.40 303.77 L
+132.57 303.77 L
+133.75 303.77 L
+134.92 303.77 L
+136.10 303.77 L
+137.28 303.77 L
+138.45 303.77 L
+139.63 303.77 L
+140.80 303.78 L
+141.98 303.78 L
+143.15 303.78 L
+144.33 303.78 L
+145.51 303.78 L
+146.68 303.79 L
+147.86 303.79 L
+149.03 303.79 L
+150.21 303.80 L
+151.38 303.80 L
+152.56 303.80 L
+153.73 303.81 L
+154.91 303.81 L
+156.09 303.82 L
+157.26 303.83 L
+158.44 303.83 L
+159.61 303.84 L
+160.79 303.85 L
+161.96 303.86 L
+163.14 303.87 L
+164.32 303.89 L
+165.49 303.90 L
+166.67 303.91 L
+167.84 303.93 L
+169.02 303.95 L
+170.19 303.97 L
+171.37 303.99 L
+172.54 304.01 L
+173.72 304.04 L
+174.90 304.07 L
+176.07 304.10 L
+177.25 304.14 L
+178.42 304.17 L
+179.60 304.22 L
+180.77 304.26 L
+181.95 304.31 L
+183.13 304.36 L
+184.30 304.42 L
+185.48 304.48 L
+186.65 304.55 L
+187.83 304.63 L
+189.00 304.71 L
+190.18 304.79 L
+191.36 304.89 L
+192.53 304.99 L
+193.71 305.10 L
+194.88 305.22 L
+196.06 305.35 L
+197.23 305.49 L
+198.41 305.64 L
+199.58 305.80 L
+200.76 305.97 L
+201.94 306.15 L
+203.11 306.35 L
+204.29 306.56 L
+205.46 306.79 L
+206.64 307.03 L
+207.81 307.29 L
+208.99 307.57 L
+210.17 307.87 L
+211.34 308.18 L
+212.52 308.52 L
+213.69 308.88 L
+214.87 309.26 L
+216.04 309.66 L
+217.22 310.09 L
+218.39 310.54 L
+219.57 311.02 L
+220.75 311.53 L
+221.92 312.06 L
+223.10 312.63 L
+224.27 313.23 L
+225.45 313.86 L
+226.62 314.52 L
+227.80 315.22 L
+228.98 315.95 L
+230.15 316.72 L
+231.33 317.52 L
+232.50 318.37 L
+233.68 319.25 L
+234.85 320.18 L
+236.03 321.14 L
+237.21 322.15 L
+238.38 323.20 L
+239.56 324.30 L
+240.73 325.44 L
+241.91 326.62 L
+243.08 327.85 L
+244.26 329.13 L
+245.43 330.45 L
+246.61 331.82 L
+247.79 333.23 L
+248.96 334.70 L
+250.14 336.20 L
+251.31 337.76 L
+252.49 339.36 L
+253.66 341.00 L
+254.84 342.69 L
+256.02 344.43 L
+257.19 346.21 L
+258.37 348.03 L
+259.54 349.89 L
+260.72 351.79 L
+261.89 353.73 L
+263.07 355.71 L
+264.24 357.72 L
+265.42 359.77 L
+266.60 361.84 L
+267.77 363.95 L
+268.95 366.08 L
+270.12 368.23 L
+271.30 370.41 L
+272.47 372.61 L
+273.65 374.82 L
+274.83 377.04 L
+276.00 379.27 L
+277.18 381.51 L
+278.35 383.75 L
+279.53 385.98 L
+280.70 388.22 L
+281.88 390.44 L
+283.06 392.65 L
+284.23 394.85 L
+285.41 397.03 L
+286.58 399.18 L
+287.76 401.30 L
+288.93 403.39 L
+290.11 405.44 L
+291.28 407.45 L
+292.46 409.42 L
+293.64 411.34 L
+294.81 413.21 L
+295.99 415.02 L
+297.16 416.77 L
+298.34 418.45 L
+299.51 420.07 L
+300.69 421.61 L
+301.87 423.08 L
+303.04 424.48 L
+304.22 425.79 L
+305.39 427.01 L
+306.57 428.15 L
+307.74 429.20 L
+308.92 430.16 L
+310.09 431.02 L
+311.27 431.79 L
+312.45 432.45 L
+313.62 433.02 L
+314.80 433.49 L
+315.97 433.85 L
+317.15 434.11 L
+318.32 434.27 L
+319.50 434.32 L
+320.68 434.27 L
+321.85 434.11 L
+323.03 433.85 L
+324.20 433.49 L
+325.38 433.02 L
+326.55 432.45 L
+327.73 431.79 L
+328.91 431.02 L
+330.08 430.16 L
+331.26 429.20 L
+332.43 428.15 L
+333.61 427.01 L
+334.78 425.79 L
+335.96 424.48 L
+337.13 423.08 L
+338.31 421.61 L
+339.49 420.07 L
+340.66 418.45 L
+341.84 416.77 L
+343.01 415.02 L
+344.19 413.21 L
+345.36 411.34 L
+346.54 409.42 L
+347.72 407.45 L
+348.89 405.44 L
+350.07 403.39 L
+351.24 401.30 L
+352.42 399.18 L
+353.59 397.03 L
+354.77 394.85 L
+355.94 392.65 L
+357.12 390.44 L
+358.30 388.22 L
+359.47 385.98 L
+360.65 383.75 L
+361.82 381.51 L
+363.00 379.27 L
+364.17 377.04 L
+365.35 374.82 L
+366.53 372.61 L
+367.70 370.41 L
+368.88 368.23 L
+370.05 366.08 L
+371.23 363.95 L
+372.40 361.84 L
+373.58 359.77 L
+374.76 357.72 L
+375.93 355.71 L
+377.11 353.73 L
+378.28 351.79 L
+379.46 349.89 L
+380.63 348.03 L
+381.81 346.21 L
+382.98 344.43 L
+384.16 342.69 L
+385.34 341.00 L
+386.51 339.36 L
+387.69 337.76 L
+388.86 336.20 L
+390.04 334.70 L
+391.21 333.23 L
+392.39 331.82 L
+393.57 330.45 L
+394.74 329.13 L
+395.92 327.85 L
+397.09 326.62 L
+398.27 325.44 L
+399.44 324.30 L
+400.62 323.20 L
+401.79 322.15 L
+402.97 321.14 L
+404.15 320.18 L
+405.32 319.25 L
+406.50 318.37 L
+407.67 317.52 L
+408.85 316.72 L
+410.02 315.95 L
+411.20 315.22 L
+412.38 314.52 L
+413.55 313.86 L
+414.73 313.23 L
+415.90 312.63 L
+417.08 312.06 L
+418.25 311.53 L
+419.43 311.02 L
+420.61 310.54 L
+421.78 310.09 L
+422.96 309.66 L
+424.13 309.26 L
+425.31 308.88 L
+426.48 308.52 L
+427.66 308.18 L
+428.83 307.87 L
+430.01 307.57 L
+431.19 307.29 L
+432.36 307.03 L
+433.54 306.79 L
+434.71 306.56 L
+435.89 306.35 L
+437.06 306.15 L
+438.24 305.97 L
+439.42 305.80 L
+440.59 305.64 L
+441.77 305.49 L
+442.94 305.35 L
+444.12 305.22 L
+445.29 305.10 L
+446.47 304.99 L
+447.64 304.89 L
+448.82 304.79 L
+450.00 304.71 L
+451.17 304.63 L
+452.35 304.55 L
+453.52 304.48 L
+454.70 304.42 L
+455.87 304.36 L
+457.05 304.31 L
+458.23 304.26 L
+459.40 304.22 L
+460.58 304.17 L
+461.75 304.14 L
+462.93 304.10 L
+464.10 304.07 L
+465.28 304.04 L
+466.46 304.01 L
+467.63 303.99 L
+468.81 303.97 L
+469.98 303.95 L
+471.16 303.93 L
+472.33 303.91 L
+473.51 303.90 L
+474.68 303.89 L
+475.86 303.87 L
+477.04 303.86 L
+478.21 303.85 L
+479.39 303.84 L
+480.56 303.83 L
+481.74 303.83 L
+482.91 303.82 L
+484.09 303.81 L
+485.27 303.81 L
+486.44 303.80 L
+487.62 303.80 L
+488.79 303.80 L
+489.97 303.79 L
+491.14 303.79 L
+492.32 303.79 L
+493.49 303.78 L
+494.67 303.78 L
+495.85 303.78 L
+497.02 303.78 L
+498.20 303.78 L
+499.37 303.77 L
+500.55 303.77 L
+501.72 303.77 L
+502.90 303.77 L
+504.08 303.77 L
+505.25 303.77 L
+506.43 303.77 L
+507.60 303.77 L
+508.78 303.77 L
+509.95 303.77 L
+511.13 303.77 L
+512.30 303.77 L
+513.48 303.77 L
+514.66 303.76 L
+515.83 303.76 L
+517.01 303.76 L
+518.18 303.76 L
+519.36 303.76 L
+520.53 303.76 L
+521.71 303.76 L
+522.89 303.76 L
+524.06 303.76 L
+525.24 303.76 L
+526.41 303.76 L
+527.59 303.76 L
+528.76 303.76 L
+529.94 303.76 L
+531.12 303.76 L
+532.29 303.76 L
+533.47 303.76 L
+534.64 303.76 L
+535.82 303.76 L
+536.99 303.76 L
+538.17 303.76 L
+539.34 303.76 L
+540.52 303.76 L
+541.70 303.76 L
+542.87 303.76 L
+544.05 303.76 L
+545.22 303.76 L
+546.40 303.76 L
+547.57 303.76 L
+548.75 303.76 L
+549.93 303.76 L
+551.10 303.76 L
+552.28 303.76 L
+553.45 303.76 L
+554.63 303.76 L
+S
+0.00 0.00 0.00 setrgbcolor
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37 271.12 m
+ 84.37 447.38 L
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+ 84.37 303.76 m
+ 90.36 303.76 L
+S
+ 84.37 369.04 m
+ 90.36 369.04 L
+S
+ 84.37 434.32 m
+ 90.36 434.32 L
+S
+ 84.37 271.12 m
+ 87.37 271.12 L
+S
+ 84.37 336.40 m
+ 87.37 336.40 L
+S
+ 84.37 401.68 m
+ 87.37 401.68 L
+S
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+554.63 271.12 m
+554.63 447.38 L
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+554.63 303.76 m
+548.64 303.76 L
+S
+554.63 369.04 m
+548.64 369.04 L
+S
+554.63 434.32 m
+548.64 434.32 L
+S
+554.63 271.12 m
+551.63 271.12 L
+S
+554.63 336.40 m
+551.63 336.40 L
+S
+554.63 401.68 m
+551.63 401.68 L
+S
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37 271.12 m
+554.63 271.12 L
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+ 84.37 271.12 m
+ 84.37 277.11 L
+S
+201.94 271.12 m
+201.94 277.11 L
+S
+319.50 271.12 m
+319.50 277.11 L
+S
+437.06 271.12 m
+437.06 277.11 L
+S
+554.63 271.12 m
+554.63 277.11 L
+S
+143.15 271.12 m
+143.15 274.12 L
+S
+260.72 271.12 m
+260.72 274.12 L
+S
+378.28 271.12 m
+378.28 274.12 L
+S
+495.85 271.12 m
+495.85 274.12 L
+S
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37 447.38 m
+554.63 447.38 L
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+ 84.37 447.38 m
+ 84.37 441.39 L
+S
+201.94 447.38 m
+201.94 441.39 L
+S
+319.50 447.38 m
+319.50 441.39 L
+S
+437.06 447.38 m
+437.06 441.39 L
+S
+554.63 447.38 m
+554.63 441.39 L
+S
+143.15 447.38 m
+143.15 444.38 L
+S
+260.72 447.38 m
+260.72 444.38 L
+S
+378.28 447.38 m
+378.28 444.38 L
+S
+495.85 447.38 m
+495.85 444.38 L
+S
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37 271.12 m
+554.63 271.12 L
+554.63 447.38 L
+ 84.37 447.38 L
+ 84.37 271.12 L
+closepath
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+/Helvetica findfont  12.1 scalefont setfont
+ 84.37 262.44 m
+84.372 262.437  0.000 (-4) c_show
+201.94 262.44 m
+201.936 262.437  0.000 (-2) c_show
+319.50 262.44 m
+319.500 262.437  0.000 (0) c_show
+437.06 262.44 m
+437.064 262.437  0.000 (2) c_show
+554.63 262.44 m
+554.628 262.437  0.000 (4) c_show
+/Helvetica findfont  10.0 scalefont setfont
+/Helvetica findfont  12.1 scalefont setfont
+ 77.32 303.76 m
+77.318 303.763  0.000 (0.0) r_show
+ 77.32 369.04 m
+77.318 369.042  0.000 (0.5) r_show
+ 77.32 434.32 m
+77.318 434.321  0.000 (1.0) r_show
+/Helvetica findfont  10.0 scalefont setfont
+/Helvetica findfont  15.6 scalefont setfont
+319.50 463.19 m
+319.500 463.189  0.000 (Gaussian Distribution) c_show
+/Helvetica findfont  10.0 scalefont setfont
+ 84.37  31.62 m
+ 84.37  31.62 m
+/GBUFSTATE save def
+gsave
+/a4small {} def /legal {} def
+/letter {} def /note {} def /copypage {} def
+/erasepage {} def /showpage {} def
+ 84.372  31.623 translate
+470.256 400.000 div   32.640   1.000 div scale
+0 setgray 0 setlinecap 0 setlinewidth 0 setlinejoin
+10 setmiterlimit [] 0 setdash
+%!PS-Adobe-3.0 EPSF-3.0
+%%Title: gamma.eps
+%%Creator: ImageMagick
+%%CreationDate: Mon Apr  8 14:59:15 1996
+%%BoundingBox: 0 0 400 1
+%%Pages: 0
+%%EndComments
+%%BeginProlog
+%
+% Display a color image.  The image is displayed in color on
+% Postscript viewers or printers that support color, otherwise
+% it is displayed as grayscale.
+%
+/buffer 512 string def
+/byte 1 string def
+/color_packet 3 string def
+/pixels 768 string def
+
+/DirectClassPacket
+{
+  %
+  % Get a DirectClass packet.
+  %
+  % Parameters:
+  %   red.
+  %   green.
+  %   blue.
+  %   length: number of pixels minus one of this color (optional).
+  %
+  currentfile color_packet readhexstring pop pop
+  compression 0 gt
+  {
+    /number_pixels 3 def
+  }
+  {
+    currentfile byte readhexstring pop 0 get
+    /number_pixels exch 1 add 3 mul def
+  } ifelse
+  0 3 number_pixels 1 sub
+  {
+    pixels exch color_packet putinterval
+  } for
+  pixels 0 number_pixels getinterval
+} bind def
+
+/DirectClassImage
+{
+  %
+  % Display a DirectClass image.
+  %
+  systemdict /colorimage known
+  {
+    columns rows 8
+    [
+      columns 0 0
+      rows neg 0 rows
+    ]
+    { DirectClassPacket } false 3 colorimage
+  }
+  {
+    %
+    % No colorimage operator;  convert to grayscale.
+    %
+    columns rows 8
+    [
+      columns 0 0
+      rows neg 0 rows
+    ]
+    { GrayDirectClassPacket } image
+  } ifelse
+} bind def
+
+/GrayDirectClassPacket
+{
+  %
+  % Get a DirectClass packet;  convert to grayscale.
+  %
+  % Parameters:
+  %   red
+  %   green
+  %   blue
+  %   length: number of pixels minus one of this color (optional).
+  %
+  currentfile color_packet readhexstring pop pop
+  color_packet 0 get 0.299 mul
+  color_packet 1 get 0.587 mul add
+  color_packet 2 get 0.114 mul add
+  cvi
+  /gray_packet exch def
+  compression 0 gt
+  {
+    /number_pixels 1 def
+  }
+  {
+    currentfile byte readhexstring pop 0 get
+    /number_pixels exch 1 add def
+  } ifelse
+  0 1 number_pixels 1 sub
+  {
+    pixels exch gray_packet put
+  } for
+  pixels 0 number_pixels getinterval
+} bind def
+
+/GrayPseudoClassPacket
+{
+  %
+  % Get a PseudoClass packet;  convert to grayscale.
+  %
+  % Parameters:
+  %   index: index into the colormap.
+  %   length: number of pixels minus one of this color (optional).
+  %
+  currentfile byte readhexstring pop 0 get
+  /offset exch 3 mul def
+  /color_packet colormap offset 3 getinterval def
+  color_packet 0 get 0.299 mul
+  color_packet 1 get 0.587 mul add
+  color_packet 2 get 0.114 mul add
+  cvi
+  /gray_packet exch def
+  compression 0 gt
+  {
+    /number_pixels 1 def
+  }
+  {
+    currentfile byte readhexstring pop 0 get
+    /number_pixels exch 1 add def
+  } ifelse
+  0 1 number_pixels 1 sub
+  {
+    pixels exch gray_packet put
+  } for
+  pixels 0 number_pixels getinterval
+} bind def
+
+/PseudoClassPacket
+{
+  %
+  % Get a PseudoClass packet.
+  %
+  % Parameters:
+  %   index: index into the colormap.
+  %   length: number of pixels minus one of this color (optional).
+  %
+  currentfile byte readhexstring pop 0 get
+  /offset exch 3 mul def
+  /color_packet colormap offset 3 getinterval def
+  compression 0 gt
+  {
+    /number_pixels 3 def
+  }
+  {
+    currentfile byte readhexstring pop 0 get
+    /number_pixels exch 1 add 3 mul def
+  } ifelse
+  0 3 number_pixels 1 sub
+  {
+    pixels exch color_packet putinterval
+  } for
+  pixels 0 number_pixels getinterval
+} bind def
+
+/PseudoClassImage
+{
+  %
+  % Display a PseudoClass image.
+  %
+  % Parameters:
+  %   class: 0-PseudoClass or 1-Grayscale.
+  %
+  currentfile buffer readline pop
+  token pop /class exch def pop
+  class 0 gt
+  {
+    /grays columns string def
+    columns rows 8
+    [
+      columns 0 0
+      rows neg 0 rows
+    ]
+    { currentfile grays readhexstring pop } image
+  }
+  {
+    %
+    % Parameters:
+    %   colors: number of colors in the colormap.
+    %   colormap: red, green, blue color packets.
+    %
+    currentfile buffer readline pop
+    token pop /colors exch def pop
+    /colors colors 3 mul def
+    /colormap colors string def
+    currentfile colormap readhexstring pop pop
+    systemdict /colorimage known
+    {
+      columns rows 8
+      [
+        columns 0 0
+        rows neg 0 rows
+      ]
+      { PseudoClassPacket } false 3 colorimage
+    }
+    {
+      %
+      % No colorimage operator;  convert to grayscale.
+      %
+      columns rows 8
+      [
+        columns 0 0
+        rows neg 0 rows
+      ]
+      { GrayPseudoClassPacket } image
+    } ifelse
+  } ifelse
+} bind def
+
+/DisplayImage
+{
+  %
+  % Display a DirectClass or PseudoClass image.
+  %
+  % Parameters:
+  %   x & y translation.
+  %   x & y scale.
+  %   image label.
+  %   image columns & rows.
+  %   class: 0-DirectClass or 1-PseudoClass.
+  %   compression: 0-RunlengthEncodedCompression or 1-NoCompression.
+  %   hex color packets.
+  %
+  gsave
+  currentfile buffer readline pop
+  token pop /x exch def
+  token pop /y exch def pop
+  x y translate
+  currentfile buffer readline pop
+  token pop /x exch def
+  token pop /y exch def pop
+  /NewCenturySchlbk-Roman findfont 24 scalefont setfont
+  currentfile buffer readline pop
+  0 y 12 add moveto buffer show pop
+  x y scale
+  currentfile buffer readline pop
+  token pop /columns exch def
+  token pop /rows exch def pop
+  currentfile buffer readline pop
+  token pop /class exch def pop
+  currentfile buffer readline pop
+  token pop /compression exch def pop
+  class 0 gt { PseudoClassImage } { DirectClassImage } ifelse
+  grestore
+} bind def
+%%EndProlog
+%%Page:  1 1
+userdict begin
+%%BeginData:
+DisplayImage
+0 0
+400 1
+            
+400 1
+0
+0
+0004a3030004a6010005a9000005ae000006b1000007b7000008bc000009c200000ac900
+000cd100000ed8000011df000015e7000018ec00001df2000025f800002cfc000035fe00
+003efe00004bfd000058f9000067f4000177ec000188e300029cd60004adc90006bebc00
+09d0ac000dde9d0012ea8f001bf57e0024fb71002ffe64003cfe57004bfb4c005cf54100
+70ec380084e12f0095d62900aac72200bbbb1d00cfaa1800dd9c1400e98e1100f2810e00
+f9740c00fd6a0a00fe5e0800fe550700fb4d0600f7450500f13e0400ea370400e4330300
+de2f0300d42a0200cd260200c5230200c1210200b91f0100b51d0100ad1b0100a8190100
+a4180100a01701019c160101971501049c160102a0170100a4180100a8190100ad1b0100
+b11c0100b51d0100b91f0100bd200200c1210200c9250200cd260200d42a0200d82c0300
+de2f0300e4330300ea370400ed3a0400f13e0400f5430500f9480600fb4d0600fd530700
+fe580800fe5e0800fd670a00fc6d0b00f9740c00f67a0d00f2810e00eb8b1000e6921200
+e0991400d6a31600cfaa1800c7b11a00bfb71c00b3c12000aac72200a2cd250095d62900
+8ddb2c0084e12f0078e8340070ec380068f03c005cf5410055f845004efa4a0048fc4e00
+3ffe550039fe5a0034fe5f002ffe64002afd690024fb710020f976001cf67b0019f38100
+16f0870014ec8c0011e892000fe398000dde9d000bd9a3000ad3a90009cdae0007c7b400
+06c1b90005bbbf0005b7c20004b1c70003aacc0003a3d100029cd6000299d8000292dc00
+018be1000188e3000181e700017ee8000177ec000071ef00006df1000067f4000064f500
+0061f600005bf8000058f9000053fb000050fc00004dfc000048fd000045fe000043fe00
+0041fe00003cff00003afe000037fe000035fe000033fe000031fd00002ffd00002dfc00
+002cfc00002afb000028fa000026f9000025f8000023f7000021f6000020f500001ff400
+001df200001cf101001bef000019ee000018ec000017ea010016e8000015e7010014e500
+0013e3010012e1000011df010010dc01000fda00000ed801000ed601000dd301000cd102
+000bce01000bcc01000ac902000ac7020009c4020009c2020008bf020008bc030007b903
+0007b7040006b4040006b1060005ae070005ac080005a90d0004a6160004a350
+%%EndData
+end
+%%PageTrailer
+%%Trailer
+%%EOF
+grestore GBUFSTATE restore
+[ 1 0 ] 0 setdash
+0.500000 setlinewidth
+0.70 0.70 0.70 setrgbcolor
+ 84.37  64.26 moveto
+ 84.37  64.27 lineto
+ 85.55  64.30 lineto
+ 86.73  64.40 lineto
+ 87.91  64.57 lineto
+ 89.09  64.83 lineto
+ 90.26  65.21 lineto
+ 91.44  65.71 lineto
+ 92.62  66.33 lineto
+ 93.80  67.10 lineto
+ 94.98  68.00 lineto
+ 96.16  69.04 lineto
+ 97.34  70.22 lineto
+ 98.52  71.54 lineto
+ 99.69  72.99 lineto
+100.87  74.58 lineto
+102.05  76.29 lineto
+103.23  78.13 lineto
+104.41  80.08 lineto
+105.59  82.13 lineto
+106.77  84.29 lineto
+107.94  86.53 lineto
+109.12  88.87 lineto
+110.30  91.27 lineto
+111.48  93.75 lineto
+112.66  96.28 lineto
+113.84  98.87 lineto
+115.02 101.50 lineto
+116.19 104.16 lineto
+117.37 106.85 lineto
+118.55 109.56 lineto
+119.73 112.29 lineto
+120.91 115.01 lineto
+122.09 117.74 lineto
+123.27 120.46 lineto
+124.44 123.16 lineto
+125.62 125.84 lineto
+126.80 128.49 lineto
+127.98 131.12 lineto
+129.16 133.70 lineto
+130.34 136.24 lineto
+131.52 138.74 lineto
+132.69 141.18 lineto
+133.87 143.57 lineto
+135.05 145.90 lineto
+136.23 148.17 lineto
+137.41 150.38 lineto
+138.59 152.51 lineto
+139.77 154.58 lineto
+140.94 156.58 lineto
+142.12 158.50 lineto
+143.30 160.35 lineto
+144.48 162.12 lineto
+145.66 163.81 lineto
+146.84 165.42 lineto
+148.02 166.95 lineto
+149.19 168.41 lineto
+150.37 169.78 lineto
+151.55 171.07 lineto
+152.73 172.29 lineto
+153.91 173.42 lineto
+155.09 174.47 lineto
+156.27 175.44 lineto
+157.44 176.33 lineto
+158.62 177.15 lineto
+159.80 177.89 lineto
+160.98 178.55 lineto
+162.16 179.13 lineto
+163.34 179.65 lineto
+164.52 180.08 lineto
+165.69 180.45 lineto
+166.87 180.75 lineto
+168.05 180.98 lineto
+169.23 181.14 lineto
+170.41 181.23 lineto
+171.59 181.26 lineto
+172.77 181.23 lineto
+173.94 181.14 lineto
+175.12 180.99 lineto
+176.30 180.78 lineto
+177.48 180.52 lineto
+178.66 180.20 lineto
+179.84 179.83 lineto
+181.02 179.41 lineto
+182.19 178.95 lineto
+183.37 178.43 lineto
+184.55 177.87 lineto
+185.73 177.27 lineto
+186.91 176.63 lineto
+188.09 175.94 lineto
+189.27 175.22 lineto
+190.44 174.46 lineto
+191.62 173.67 lineto
+192.80 172.85 lineto
+193.98 171.99 lineto
+195.16 171.11 lineto
+196.34 170.19 lineto
+197.52 169.25 lineto
+198.69 168.29 lineto
+199.87 167.30 lineto
+201.05 166.29 lineto
+202.23 165.26 lineto
+203.41 164.21 lineto
+204.59 163.14 lineto
+205.77 162.06 lineto
+206.94 160.96 lineto
+208.12 159.85 lineto
+209.30 158.73 lineto
+210.48 157.59 lineto
+211.66 156.45 lineto
+212.84 155.29 lineto
+214.02 154.13 lineto
+215.20 152.96 lineto
+216.37 151.78 lineto
+217.55 150.61 lineto
+218.73 149.42 lineto
+219.91 148.24 lineto
+221.09 147.05 lineto
+222.27 145.86 lineto
+223.45 144.67 lineto
+224.62 143.48 lineto
+225.80 142.29 lineto
+226.98 141.11 lineto
+228.16 139.93 lineto
+229.34 138.75 lineto
+230.52 137.57 lineto
+231.70 136.40 lineto
+232.87 135.23 lineto
+234.05 134.08 lineto
+235.23 132.92 lineto
+236.41 131.78 lineto
+237.59 130.64 lineto
+238.77 129.51 lineto
+239.95 128.38 lineto
+241.12 127.27 lineto
+242.30 126.16 lineto
+243.48 125.07 lineto
+244.66 123.98 lineto
+245.84 122.91 lineto
+247.02 121.84 lineto
+248.20 120.79 lineto
+249.37 119.74 lineto
+250.55 118.71 lineto
+251.73 117.69 lineto
+252.91 116.68 lineto
+254.09 115.68 lineto
+255.27 114.69 lineto
+256.45 113.72 lineto
+257.62 112.75 lineto
+258.80 111.80 lineto
+259.98 110.86 lineto
+261.16 109.94 lineto
+262.34 109.03 lineto
+263.52 108.12 lineto
+264.70 107.24 lineto
+265.87 106.36 lineto
+267.05 105.50 lineto
+268.23 104.65 lineto
+269.41 103.81 lineto
+270.59 102.99 lineto
+271.77 102.17 lineto
+272.95 101.37 lineto
+274.12 100.59 lineto
+275.30  99.81 lineto
+276.48  99.05 lineto
+277.66  98.30 lineto
+278.84  97.57 lineto
+280.02  96.84 lineto
+281.20  96.13 lineto
+282.37  95.43 lineto
+283.55  94.74 lineto
+284.73  94.07 lineto
+285.91  93.41 lineto
+287.09  92.75 lineto
+288.27  92.11 lineto
+289.45  91.49 lineto
+290.62  90.87 lineto
+291.80  90.26 lineto
+292.98  89.67 lineto
+294.16  89.09 lineto
+295.34  88.52 lineto
+296.52  87.96 lineto
+297.70  87.41 lineto
+298.87  86.87 lineto
+300.05  86.34 lineto
+301.23  85.82 lineto
+302.41  85.31 lineto
+303.59  84.82 lineto
+304.77  84.33 lineto
+305.95  83.85 lineto
+307.12  83.38 lineto
+308.30  82.93 lineto
+309.48  82.48 lineto
+310.66  82.04 lineto
+311.84  81.61 lineto
+313.02  81.19 lineto
+314.20  80.77 lineto
+315.37  80.37 lineto
+316.55  79.98 lineto
+317.73  79.59 lineto
+318.91  79.21 lineto
+320.09  78.84 lineto
+321.27  78.48 lineto
+322.45  78.13 lineto
+323.63  77.78 lineto
+324.80  77.44 lineto
+325.98  77.11 lineto
+327.16  76.79 lineto
+328.34  76.47 lineto
+329.52  76.16 lineto
+330.70  75.86 lineto
+331.88  75.57 lineto
+333.05  75.28 lineto
+334.23  75.00 lineto
+335.41  74.72 lineto
+336.59  74.46 lineto
+337.77  74.19 lineto
+338.95  73.94 lineto
+340.13  73.69 lineto
+341.30  73.44 lineto
+342.48  73.20 lineto
+343.66  72.97 lineto
+344.84  72.74 lineto
+346.02  72.52 lineto
+347.20  72.30 lineto
+348.38  72.09 lineto
+349.55  71.89 lineto
+350.73  71.69 lineto
+351.91  71.49 lineto
+353.09  71.30 lineto
+354.27  71.11 lineto
+355.45  70.93 lineto
+356.63  70.75 lineto
+357.80  70.58 lineto
+358.98  70.41 lineto
+360.16  70.24 lineto
+361.34  70.08 lineto
+362.52  69.93 lineto
+363.70  69.77 lineto
+364.88  69.62 lineto
+366.05  69.48 lineto
+367.23  69.34 lineto
+368.41  69.20 lineto
+369.59  69.06 lineto
+370.77  68.93 lineto
+371.95  68.81 lineto
+373.13  68.68 lineto
+374.30  68.56 lineto
+375.48  68.44 lineto
+376.66  68.33 lineto
+377.84  68.21 lineto
+379.02  68.10 lineto
+380.20  68.00 lineto
+381.38  67.90 lineto
+382.55  67.79 lineto
+383.73  67.70 lineto
+384.91  67.60 lineto
+386.09  67.51 lineto
+387.27  67.42 lineto
+388.45  67.33 lineto
+389.63  67.24 lineto
+390.80  67.16 lineto
+391.98  67.08 lineto
+393.16  67.00 lineto
+394.34  66.92 lineto
+395.52  66.85 lineto
+396.70  66.77 lineto
+397.88  66.70 lineto
+399.05  66.63 lineto
+400.23  66.56 lineto
+401.41  66.50 lineto
+402.59  66.44 lineto
+403.77  66.37 lineto
+404.95  66.31 lineto
+406.13  66.25 lineto
+407.30  66.20 lineto
+408.48  66.14 lineto
+409.66  66.09 lineto
+410.84  66.04 lineto
+412.02  65.98 lineto
+413.20  65.93 lineto
+414.38  65.89 lineto
+415.55  65.84 lineto
+416.73  65.79 lineto
+417.91  65.75 lineto
+419.09  65.71 lineto
+420.27  65.66 lineto
+421.45  65.62 lineto
+422.63  65.58 lineto
+423.80  65.55 lineto
+424.98  65.51 lineto
+426.16  65.47 lineto
+427.34  65.44 lineto
+428.52  65.40 lineto
+429.70  65.37 lineto
+430.88  65.34 lineto
+432.06  65.30 lineto
+433.23  65.27 lineto
+434.41  65.24 lineto
+435.59  65.21 lineto
+436.77  65.19 lineto
+437.95  65.16 lineto
+439.13  65.13 lineto
+440.31  65.11 lineto
+441.48  65.08 lineto
+442.66  65.06 lineto
+443.84  65.03 lineto
+445.02  65.01 lineto
+446.20  64.99 lineto
+447.38  64.97 lineto
+448.56  64.95 lineto
+449.73  64.93 lineto
+450.91  64.91 lineto
+452.09  64.89 lineto
+453.27  64.87 lineto
+454.45  64.85 lineto
+455.63  64.83 lineto
+456.81  64.81 lineto
+457.98  64.80 lineto
+459.16  64.78 lineto
+460.34  64.77 lineto
+461.52  64.75 lineto
+462.70  64.74 lineto
+463.88  64.72 lineto
+465.06  64.71 lineto
+466.23  64.69 lineto
+467.41  64.68 lineto
+468.59  64.67 lineto
+469.77  64.66 lineto
+470.95  64.64 lineto
+472.13  64.63 lineto
+473.31  64.62 lineto
+474.48  64.61 lineto
+475.66  64.60 lineto
+476.84  64.59 lineto
+478.02  64.58 lineto
+479.20  64.57 lineto
+480.38  64.56 lineto
+481.56  64.55 lineto
+482.73  64.54 lineto
+483.91  64.53 lineto
+485.09  64.53 lineto
+486.27  64.52 lineto
+487.45  64.51 lineto
+488.63  64.50 lineto
+489.81  64.49 lineto
+490.98  64.49 lineto
+492.16  64.48 lineto
+493.34  64.47 lineto
+494.52  64.47 lineto
+495.70  64.46 lineto
+496.88  64.46 lineto
+498.06  64.45 lineto
+499.23  64.44 lineto
+500.41  64.44 lineto
+501.59  64.43 lineto
+502.77  64.43 lineto
+503.95  64.42 lineto
+505.13  64.42 lineto
+506.31  64.41 lineto
+507.48  64.41 lineto
+508.66  64.40 lineto
+509.84  64.40 lineto
+511.02  64.39 lineto
+512.20  64.39 lineto
+513.38  64.39 lineto
+514.56  64.38 lineto
+515.73  64.38 lineto
+516.91  64.37 lineto
+518.09  64.37 lineto
+519.27  64.37 lineto
+520.45  64.36 lineto
+521.63  64.36 lineto
+522.81  64.36 lineto
+523.98  64.36 lineto
+525.16  64.35 lineto
+526.34  64.35 lineto
+527.52  64.35 lineto
+528.70  64.34 lineto
+529.88  64.34 lineto
+531.06  64.34 lineto
+532.23  64.34 lineto
+533.41  64.33 lineto
+534.59  64.33 lineto
+535.77  64.33 lineto
+536.95  64.33 lineto
+538.13  64.33 lineto
+539.31  64.32 lineto
+540.49  64.32 lineto
+541.66  64.32 lineto
+542.84  64.32 lineto
+544.02  64.32 lineto
+545.20  64.31 lineto
+546.38  64.31 lineto
+547.56  64.31 lineto
+548.74  64.31 lineto
+549.91  64.31 lineto
+551.09  64.31 lineto
+552.27  64.31 lineto
+553.45  64.30 lineto
+554.63  64.30 lineto
+554.63  64.26 lineto
+closepath
+fill
+0.00 0.00 0.00 setrgbcolor
+0.94 0.94 0.05 setrgbcolor
+ 84.37  64.27 m
+ 85.55  64.30 L
+ 86.73  64.40 L
+ 87.91  64.57 L
+ 89.09  64.83 L
+ 90.26  65.21 L
+ 91.44  65.71 L
+ 92.62  66.33 L
+ 93.80  67.10 L
+ 94.98  68.00 L
+ 96.16  69.04 L
+ 97.34  70.22 L
+ 98.52  71.54 L
+ 99.69  72.99 L
+100.87  74.58 L
+102.05  76.29 L
+103.23  78.13 L
+104.41  80.08 L
+105.59  82.13 L
+106.77  84.29 L
+107.94  86.53 L
+109.12  88.87 L
+110.30  91.27 L
+111.48  93.75 L
+112.66  96.28 L
+113.84  98.87 L
+115.02 101.50 L
+116.19 104.16 L
+117.37 106.85 L
+118.55 109.56 L
+119.73 112.29 L
+120.91 115.01 L
+122.09 117.74 L
+123.27 120.46 L
+124.44 123.16 L
+125.62 125.84 L
+126.80 128.49 L
+127.98 131.12 L
+129.16 133.70 L
+130.34 136.24 L
+131.52 138.74 L
+132.69 141.18 L
+133.87 143.57 L
+135.05 145.90 L
+136.23 148.17 L
+137.41 150.38 L
+138.59 152.51 L
+139.77 154.58 L
+140.94 156.58 L
+142.12 158.50 L
+143.30 160.35 L
+144.48 162.12 L
+145.66 163.81 L
+146.84 165.42 L
+148.02 166.95 L
+149.19 168.41 L
+150.37 169.78 L
+151.55 171.07 L
+152.73 172.29 L
+153.91 173.42 L
+155.09 174.47 L
+156.27 175.44 L
+157.44 176.33 L
+158.62 177.15 L
+159.80 177.89 L
+160.98 178.55 L
+162.16 179.13 L
+163.34 179.65 L
+164.52 180.08 L
+165.69 180.45 L
+166.87 180.75 L
+168.05 180.98 L
+169.23 181.14 L
+170.41 181.23 L
+171.59 181.26 L
+172.77 181.23 L
+173.94 181.14 L
+175.12 180.99 L
+176.30 180.78 L
+177.48 180.52 L
+178.66 180.20 L
+179.84 179.83 L
+181.02 179.41 L
+182.19 178.95 L
+183.37 178.43 L
+184.55 177.87 L
+185.73 177.27 L
+186.91 176.63 L
+188.09 175.94 L
+189.27 175.22 L
+190.44 174.46 L
+191.62 173.67 L
+192.80 172.85 L
+193.98 171.99 L
+195.16 171.11 L
+196.34 170.19 L
+197.52 169.25 L
+198.69 168.29 L
+199.87 167.30 L
+201.05 166.29 L
+202.23 165.26 L
+203.41 164.21 L
+204.59 163.14 L
+205.77 162.06 L
+206.94 160.96 L
+208.12 159.85 L
+209.30 158.73 L
+210.48 157.59 L
+211.66 156.45 L
+212.84 155.29 L
+214.02 154.13 L
+215.20 152.96 L
+216.37 151.78 L
+217.55 150.61 L
+218.73 149.42 L
+219.91 148.24 L
+221.09 147.05 L
+222.27 145.86 L
+223.45 144.67 L
+224.62 143.48 L
+225.80 142.29 L
+226.98 141.11 L
+228.16 139.93 L
+229.34 138.75 L
+230.52 137.57 L
+231.70 136.40 L
+232.87 135.23 L
+234.05 134.08 L
+235.23 132.92 L
+236.41 131.78 L
+237.59 130.64 L
+238.77 129.51 L
+239.95 128.38 L
+241.12 127.27 L
+242.30 126.16 L
+243.48 125.07 L
+244.66 123.98 L
+245.84 122.91 L
+247.02 121.84 L
+248.20 120.79 L
+249.37 119.74 L
+250.55 118.71 L
+251.73 117.69 L
+252.91 116.68 L
+254.09 115.68 L
+255.27 114.69 L
+256.45 113.72 L
+257.62 112.75 L
+258.80 111.80 L
+259.98 110.86 L
+261.16 109.94 L
+262.34 109.03 L
+263.52 108.12 L
+264.70 107.24 L
+265.87 106.36 L
+267.05 105.50 L
+268.23 104.65 L
+269.41 103.81 L
+270.59 102.99 L
+271.77 102.17 L
+272.95 101.37 L
+274.12 100.59 L
+275.30  99.81 L
+276.48  99.05 L
+277.66  98.30 L
+278.84  97.57 L
+280.02  96.84 L
+281.20  96.13 L
+282.37  95.43 L
+283.55  94.74 L
+284.73  94.07 L
+285.91  93.41 L
+287.09  92.75 L
+288.27  92.11 L
+289.45  91.49 L
+290.62  90.87 L
+291.80  90.26 L
+292.98  89.67 L
+294.16  89.09 L
+295.34  88.52 L
+296.52  87.96 L
+297.70  87.41 L
+298.87  86.87 L
+300.05  86.34 L
+301.23  85.82 L
+302.41  85.31 L
+303.59  84.82 L
+304.77  84.33 L
+305.95  83.85 L
+307.12  83.38 L
+308.30  82.93 L
+309.48  82.48 L
+310.66  82.04 L
+311.84  81.61 L
+313.02  81.19 L
+314.20  80.77 L
+315.37  80.37 L
+316.55  79.98 L
+317.73  79.59 L
+318.91  79.21 L
+320.09  78.84 L
+321.27  78.48 L
+322.45  78.13 L
+323.63  77.78 L
+324.80  77.44 L
+325.98  77.11 L
+327.16  76.79 L
+328.34  76.47 L
+329.52  76.16 L
+330.70  75.86 L
+331.88  75.57 L
+333.05  75.28 L
+334.23  75.00 L
+335.41  74.72 L
+336.59  74.46 L
+337.77  74.19 L
+338.95  73.94 L
+340.13  73.69 L
+341.30  73.44 L
+342.48  73.20 L
+343.66  72.97 L
+344.84  72.74 L
+346.02  72.52 L
+347.20  72.30 L
+348.38  72.09 L
+349.55  71.89 L
+350.73  71.69 L
+351.91  71.49 L
+353.09  71.30 L
+354.27  71.11 L
+355.45  70.93 L
+356.63  70.75 L
+357.80  70.58 L
+358.98  70.41 L
+360.16  70.24 L
+361.34  70.08 L
+362.52  69.93 L
+363.70  69.77 L
+364.88  69.62 L
+366.05  69.48 L
+367.23  69.34 L
+368.41  69.20 L
+369.59  69.06 L
+370.77  68.93 L
+371.95  68.81 L
+373.13  68.68 L
+374.30  68.56 L
+375.48  68.44 L
+376.66  68.33 L
+377.84  68.21 L
+379.02  68.10 L
+380.20  68.00 L
+381.38  67.90 L
+382.55  67.79 L
+383.73  67.70 L
+384.91  67.60 L
+386.09  67.51 L
+387.27  67.42 L
+388.45  67.33 L
+389.63  67.24 L
+390.80  67.16 L
+391.98  67.08 L
+393.16  67.00 L
+394.34  66.92 L
+395.52  66.85 L
+396.70  66.77 L
+397.88  66.70 L
+399.05  66.63 L
+400.23  66.56 L
+401.41  66.50 L
+402.59  66.44 L
+403.77  66.37 L
+404.95  66.31 L
+406.13  66.25 L
+407.30  66.20 L
+408.48  66.14 L
+409.66  66.09 L
+410.84  66.04 L
+412.02  65.98 L
+413.20  65.93 L
+414.38  65.89 L
+415.55  65.84 L
+416.73  65.79 L
+417.91  65.75 L
+419.09  65.71 L
+420.27  65.66 L
+421.45  65.62 L
+422.63  65.58 L
+423.80  65.55 L
+424.98  65.51 L
+426.16  65.47 L
+427.34  65.44 L
+428.52  65.40 L
+429.70  65.37 L
+430.88  65.34 L
+432.06  65.30 L
+433.23  65.27 L
+434.41  65.24 L
+435.59  65.21 L
+436.77  65.19 L
+437.95  65.16 L
+439.13  65.13 L
+440.31  65.11 L
+441.48  65.08 L
+442.66  65.06 L
+443.84  65.03 L
+445.02  65.01 L
+446.20  64.99 L
+447.38  64.97 L
+448.56  64.95 L
+449.73  64.93 L
+450.91  64.91 L
+452.09  64.89 L
+453.27  64.87 L
+454.45  64.85 L
+455.63  64.83 L
+456.81  64.81 L
+457.98  64.80 L
+459.16  64.78 L
+460.34  64.77 L
+461.52  64.75 L
+462.70  64.74 L
+463.88  64.72 L
+465.06  64.71 L
+466.23  64.69 L
+467.41  64.68 L
+468.59  64.67 L
+469.77  64.66 L
+470.95  64.64 L
+472.13  64.63 L
+473.31  64.62 L
+474.48  64.61 L
+475.66  64.60 L
+476.84  64.59 L
+478.02  64.58 L
+479.20  64.57 L
+480.38  64.56 L
+481.56  64.55 L
+482.73  64.54 L
+483.91  64.53 L
+485.09  64.53 L
+486.27  64.52 L
+487.45  64.51 L
+488.63  64.50 L
+489.81  64.49 L
+490.98  64.49 L
+492.16  64.48 L
+493.34  64.47 L
+494.52  64.47 L
+495.70  64.46 L
+496.88  64.46 L
+498.06  64.45 L
+499.23  64.44 L
+500.41  64.44 L
+501.59  64.43 L
+502.77  64.43 L
+503.95  64.42 L
+505.13  64.42 L
+506.31  64.41 L
+507.48  64.41 L
+508.66  64.40 L
+509.84  64.40 L
+511.02  64.39 L
+512.20  64.39 L
+513.38  64.39 L
+514.56  64.38 L
+515.73  64.38 L
+516.91  64.37 L
+518.09  64.37 L
+519.27  64.37 L
+520.45  64.36 L
+521.63  64.36 L
+522.81  64.36 L
+523.98  64.36 L
+525.16  64.35 L
+526.34  64.35 L
+527.52  64.35 L
+528.70  64.34 L
+529.88  64.34 L
+531.06  64.34 L
+532.23  64.34 L
+533.41  64.33 L
+534.59  64.33 L
+535.77  64.33 L
+536.95  64.33 L
+538.13  64.33 L
+539.31  64.32 L
+540.49  64.32 L
+541.66  64.32 L
+542.84  64.32 L
+544.02  64.32 L
+545.20  64.31 L
+546.38  64.31 L
+547.56  64.31 L
+548.74  64.31 L
+549.91  64.31 L
+551.09  64.31 L
+552.27  64.31 L
+553.45  64.30 L
+554.63  64.30 L
+S
+0.00 0.00 0.00 setrgbcolor
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37  31.62 m
+ 84.37 207.88 L
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+ 84.37  64.26 m
+ 90.36  64.26 L
+S
+ 84.37 129.54 m
+ 90.36 129.54 L
+S
+ 84.37 194.82 m
+ 90.36 194.82 L
+S
+ 84.37  31.62 m
+ 87.37  31.62 L
+S
+ 84.37  96.90 m
+ 87.37  96.90 L
+S
+ 84.37 162.18 m
+ 87.37 162.18 L
+S
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+554.63  31.62 m
+554.63 207.88 L
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+554.63  64.26 m
+548.64  64.26 L
+S
+554.63 129.54 m
+548.64 129.54 L
+S
+554.63 194.82 m
+548.64 194.82 L
+S
+554.63  31.62 m
+551.63  31.62 L
+S
+554.63  96.90 m
+551.63  96.90 L
+S
+554.63 162.18 m
+551.63 162.18 L
+S
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37  31.62 m
+554.63  31.62 L
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+201.05  31.62 m
+201.05  37.61 L
+S
+318.91  31.62 m
+318.91  37.61 L
+S
+436.77  31.62 m
+436.77  37.61 L
+S
+554.63  31.62 m
+554.63  37.61 L
+S
+142.12  31.62 m
+142.12  34.62 L
+S
+259.98  31.62 m
+259.98  34.62 L
+S
+377.84  31.62 m
+377.84  34.62 L
+S
+495.70  31.62 m
+495.70  34.62 L
+S
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37 207.88 m
+554.63 207.88 L
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+201.05 207.88 m
+201.05 201.89 L
+S
+318.91 207.88 m
+318.91 201.89 L
+S
+436.77 207.88 m
+436.77 201.89 L
+S
+554.63 207.88 m
+554.63 201.89 L
+S
+142.12 207.88 m
+142.12 204.88 L
+S
+259.98 207.88 m
+259.98 204.88 L
+S
+377.84 207.88 m
+377.84 204.88 L
+S
+495.70 207.88 m
+495.70 204.88 L
+S
+[ 1 0 ] 0 setdash
+1.000000 setlinewidth
+ 84.37  31.62 m
+554.63  31.62 L
+554.63 207.88 L
+ 84.37 207.88 L
+ 84.37  31.62 L
+closepath
+S
+1.000000 setlinewidth
+[ 1 0 ] 0 setdash
+/Helvetica findfont  12.1 scalefont setfont
+201.05  22.94 m
+201.052 22.937  0.000 (1) c_show
+318.91  22.94 m
+318.911 22.937  0.000 (2) c_show
+436.77  22.94 m
+436.769 22.937  0.000 (3) c_show
+554.63  22.94 m
+554.628 22.937  0.000 (4) c_show
+/Helvetica findfont  10.0 scalefont setfont
+/Helvetica findfont  12.1 scalefont setfont
+ 77.32  64.26 m
+77.318 64.263  0.000 (0.0) r_show
+ 77.32 129.54 m
+77.318 129.542  0.000 (0.5) r_show
+ 77.32 194.82 m
+77.318 194.821  0.000 (1.0) r_show
+/Helvetica findfont  10.0 scalefont setfont
+/Helvetica findfont  15.6 scalefont setfont
+319.50 223.69 m
+319.500 223.689  0.000 (Gamma Distribution) c_show
+/Helvetica findfont  10.0 scalefont setfont
+showpage

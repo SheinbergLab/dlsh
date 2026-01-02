@@ -1,0 +1,181 @@
+#!/usr/local/bin/dlsh
+#
+# NAME
+#  imgplace
+#
+# DESCRIPTION
+#  Place a postscript image centered on a page and add a background.
+# Also create a resource file (rcf) for sending the image to the LFR
+# slidemaker with the -r option.
+#
+
+proc eps_dims { epsfile } {
+    if { [catch { set f [open $epsfile r] } error] } {
+	puts stderr $error
+	exit 0
+    }
+    while { [gets $f line] != -1 } {
+	if {[regexp %%BoundingBox: $line]} {
+	    set dims [lindex [split $line :] 1]
+	    close $f
+	    return [string trim $dims " "]
+	}
+    }
+    return -1
+}
+
+proc place_eps { epsfile fillprop } {
+    set dims [eps_dims $epsfile]
+
+    set width  [lindex $dims 2]
+    set height [lindex $dims 3]
+
+    # landscape image
+    if { [expr $width >= $height] } {
+	set w [expr $width * (1./$fillprop)]
+	set h [expr $w/[getaspect]]
+    } else {
+	set h [expr $height * (1./$fillprop)]
+	set w [expr $h*[getaspect]]
+    }
+
+    set startx [expr $w/2-($width/2)]
+    set starty [expr $h/2-($height/2)]
+
+    setwindow 0 0 $w $h
+    moveto $startx $starty
+    postscript $epsfile $width $height
+}
+
+proc addbackgd { psfile args } {
+    if { [llength $args] } {
+	eval exec /usr/local/bin/addbackgd $args $psfile
+    } else {
+	exec /usr/local/bin/addbackgd $psfile
+    }
+}
+
+proc addportbackgd { psfile args } {
+    if { [llength $args] } {
+	eval exec /usr/local/bin/addportbackgd $args $psfile
+    } else {
+	exec /usr/local/bin/addportbackgd $psfile
+    }
+}
+
+proc imgplace { image psfile fillprop } {
+    clearwin
+    place_eps $image $fillprop
+    dumpwin postscript $psfile
+}
+
+proc makercffile { name dir } {
+    set f [open $name.rcf w]
+    puts $f "\[File Information\]"
+    puts $f "OriginFile=$dir\\$name.ps"
+    puts $f "ImageTransform=0.656215 65.000275 0.850000 0.850000 3"
+    puts $f "Pages=1"
+    puts $f "OutputDevice=LFR/Rascol II"
+    puts $f "PageSize=792.774170 528.580627"
+    puts $f "PaperIndex=356"
+    close $f
+}
+
+proc makeportrcffile { name dir } {
+    set f [open $name.rcf w]
+    puts $f "\[File Information\]"
+    puts $f "OriginFile=$dir\\$name.ps"
+    puts $f "ImageTransform=8.740442 59.907558 0.850000 0.850000 3"
+    puts $f "Pages=1"
+    puts $f "OutputDevice=LFR/Rascol II"
+    puts $f "PageSize=792.774170 528.580627"
+    puts $f "PaperIndex=356"
+    close $f
+}
+
+proc usage {} {
+    global argv0
+    puts stderr "usage: [file tail $argv0] \[-p(ort)\] \[-l(and)\]\
+	\[-r(no rcf)\] \[-n(o image)\]\n\t\[-d rcfdir\]\
+	    \[-b bgargs\] \[-f fillprop\] image \[psfile\]"
+    exit 1
+}
+
+proc main {} {
+    global argv optind
+
+    set opts(n) 0
+    set opts(p) 0
+    set opts(l) 0
+    set opts(r) 0
+    set opts(d) 0
+    set opts(b) 0
+    set opts(f) 0
+
+    set makeimage 1
+    set portrait 0
+    set resourcefile 1
+    set rcfdir s:\\sheinb\\talks\\rochest\\psfiles
+    set bgargs ""
+    set fillprop .75
+
+    while { [set err [getopt $argv "lnprd:b:f:" opt optarg ]] } {
+	if { $err < 0 } { 
+	    usage 
+	} else {
+	    switch -exact $opt {
+		n { set makeimage 0 }
+		p { set portrait 1 }
+		l { set portrait 0 }
+		r { set resourcefile 0 }
+		d { set rcfdir $optarg }
+		b { set bgargs $optarg }
+		f { set fillprop $optarg }
+	    }
+	}
+    }
+    set argv [lrange $argv $optind end]
+
+    if { [llength $argv] == 0 } { usage }
+    if { $portrait } {
+	setpageori portrait
+	resizewin 612 792
+	setfviewport 0 0 1 1
+	set portrait 1
+	clearwin 
+    }
+
+    set image [lindex $argv 0]
+    
+    if { [llength $argv] == 1 } {
+	set psfile [file root [file tail $image]].ps
+    } else {
+	set psfile [lindex $argv 1]
+    }
+
+    if { $makeimage } { 
+	imgplace $image $psfile $fillprop
+	if { $portrait } { 
+	    eval addportbackgd $psfile $bgargs
+	} else { 
+	    eval addbackgd $psfile $bgargs
+	}
+    }
+
+    if { $resourcefile } {
+	if { $portrait } { 
+	    makeportrcffile [file root $psfile] $rcfdir
+	} else {
+	    makercffile [file root $psfile] $rcfdir
+	}
+    }
+}
+
+main
+
+
+
+
+
+
+

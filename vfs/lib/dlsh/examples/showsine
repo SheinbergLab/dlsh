@@ -1,0 +1,82 @@
+# Totally random example demonstrating connection between dlsh and Tkogl
+#!/bin/sh
+# the next line restarts using wish \
+exec wish80 "$0" "$@"
+
+package require Tk
+
+# Load the dlsh extensions
+package require dlsh
+dl_noOp				;# Under windows you must call a func
+ 	                        ;#   to load the corresponding dll
+load_Tkogl
+load_Stats
+load_Impro
+
+proc sine {} {
+    dl_local t [dl_div [dl_fromto 0 256.] 10]
+    dl_local sinewave [dl_add [dl_mult [dl_sin $t] .5] .5]
+    dl_local grating [dl_replicate $sinewave 256]
+
+    dl_local f_fft [dl_fft2D [dl_interleave $grating 0.0]]
+    dl_local i_fft [dl_ifft2D $f_fft]
+    dl_local i_fft [dl_select $i_fft "1 0"]
+    
+    set sinelist [.gl imgcreate $grating]
+    dl_set $i_fft [dl_sub $i_fft [dl_min $i_fft]] 
+    dl_set $i_fft [dl_div $i_fft [dl_max $i_fft]]
+    set fftd_sinelist [.gl imgcreate $i_fft]
+
+    .gl main -clear colorbuffer \
+	    -pushmatrix \
+	    -translate -.5 0 0 \
+	    -scale .5 .5 .5 \
+	    -call $sinelist \
+	    -popmatrix \
+	    -pushmatrix \
+	    -translate .5 0 0 \
+	    -scale .5 .5 .5 \
+	    -call $fftd_sinelist \
+	    -popmatrix
+}
+
+proc loadgaussian { { r 20 } } {
+    set img [img_create -width 256 -height 256]
+    img_mkgauss $img $r 0 255
+    dl_local r [dl_float [img_img2list $img]]
+    img_delete $img
+    dl_return $r
+}	
+
+proc testfilt {} { 
+    set filename 66007.raw
+    set filename 226000a.raw
+    set imgdims [img_info $filename]
+    scan $imgdims "%d %d %d %d" w h d hbytes
+    dl_local img [dl_float [img_readraw $filename]]
+    dl_local filter [dl_highpassFilter 110]
+    if { $d > 1 } { dl_local filter [dl_repeat $filter $d] }
+    dl_local fft_img [dl_fft2D [dl_interleave $img 0.0]]
+    dl_local f_fft [dl_mult $fft_img $filter]
+    dl_local i_fft [dl_ifft2D $f_fft]
+    dl_local filtered [dl_select $i_fft "1 0"]
+    if { [info exists ::fftd_id] } { .gl imgdelete $::fftd_id } 
+    set ::fftd_id [.gl imgcreate [dl_div $filtered [dl_max $filtered]] \
+	$w $h $d]
+    .gl main -clear colorbuffer -call $::fftd_id
+}
+
+proc showfilt {} { 
+    dl_local filter [dl_select [dl_highpassFilter 110] "1 0"]
+    if { [info exists ::fftd_id] } { .gl imgdelete $::fftd_id } 
+    set ::fftd_id [.gl imgcreate $filter]
+    .gl main -clear colorbuffer -call $::fftd_id
+}
+
+if ![winfo exists .gl] {
+    pack [OGLwin .gl -width 300 -height 300] -expand yes -fill both
+}
+
+#showfilt
+testfilt
+#sine

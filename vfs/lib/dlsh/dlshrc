@@ -1,0 +1,46 @@
+#
+# NAME
+#  dlshrc
+#
+# DESCRIPTION
+#  Startup file for dlsh and dlwish that set global variables etc.
+#
+
+# Mathematical niceties
+set pi 3.141592653589793238
+set e  2.718281828459045235
+
+
+# Color definitions
+set colors(black)          0
+set colors(blue)           1
+set colors(dark_green)     2
+set colors(cyan)           3
+set colors(red)            4
+set colors(magenta)        5
+set colors(brown)          6
+set colors(white)          7
+set colors(gray)           8
+set colors(light_blue)     9
+set colors(green)         10
+set colors(light_cyan)    11
+set colors(deep_pink)     12
+set colors(medium_purple) 13
+set colors(yellow)        14
+set colors(navy)          15
+set colors(bright_white)  16
+set colors(light_gray)    17
+
+set colors(active)        1
+
+
+# Marker mappings
+set marker(0)             FSQUARE
+set marker(1)             FCIRCLE
+set marker(2)             PLUS
+set marker(3)             SQUARE
+set marker(4)             CIRCLE
+set marker(total)         5
+
+# load additional packages
+#default_dlsh_modules
