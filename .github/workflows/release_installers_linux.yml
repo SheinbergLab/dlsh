@@ -1,0 +1,46 @@
+name: Release Installers for Linux
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+
+  release-installers:
+
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm]
+
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      contents: write
+
+    steps:
+
+      - name: Set up a build environment.
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential cmake
+          sudo apt install -y libpq-dev
+
+      - name: Check out our dlsh code for the current tag.
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Build dlsh and package for release.
+        run: |
+          cmake -B build -D PROJECT_VERSION=${{ github.ref_name }} -D CPACK_DEB_COMPONENT_INSTALL=ON -D CPACK_COMPONENTS_ALL="dlsh;dg"
+          cmake --build build --parallel
+          cpack -G DEB --config build/CPackConfig.cmake
+
+      - name: Create a GitHub release for the current tag and artifacts.
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "*.deb"
+          body: libs, headers and dependencies for dlsh version ${{ github.ref_name }}
+          generateReleaseNotes: true
+          allowUpdates: true
