@@ -14,7 +14,20 @@ endif()
 
 project( dg VERSION 1.00 DESCRIPTION "dg io library")
 
-include_directories(../src ../src/lablib /usr/local/include)
+if(TARGET jansson)
+    target_include_directories(dg PRIVATE 
+        ${jansson_SOURCE_DIR}/src
+        ${jansson_BINARY_DIR}/include
+    )
+else()
+    include_directories(/usr/local/include)
+    if(APPLE)
+        include_directories(/opt/homebrew/include/)
+    endif()
+endif()
+
+include_directories(../src ../src/lablib)
+
 if(APPLE)
   include_directories(/opt/homebrew/include/)
 endif()

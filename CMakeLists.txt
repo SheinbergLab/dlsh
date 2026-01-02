@@ -11,9 +11,9 @@ if(NOT DEFINED PROJECT_VERSION)
 endif()
 project(dlsh VERSION ${PROJECT_VERSION})
 
-add_subdirectory(libdg)
-
 include(FetchContent)
+
+add_subdirectory(libdg)
 
 # Force position-independent code for all targets (needed for static libs in shared lib)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
