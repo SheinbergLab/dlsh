@@ -14,24 +14,6 @@ endif()
 
 project( dg VERSION 1.00 DESCRIPTION "dg io library")
 
-if(TARGET jansson)
-    target_include_directories(dg PRIVATE 
-        ${jansson_SOURCE_DIR}/src
-        ${jansson_BINARY_DIR}/include
-    )
-else()
-    include_directories(/usr/local/include)
-    if(APPLE)
-        include_directories(/opt/homebrew/include/)
-    endif()
-endif()
-
-include_directories(../src ../src/lablib)
-
-if(APPLE)
-  include_directories(/opt/homebrew/include/)
-endif()
-
 add_library(dg
   ../src/lablib/flipfuncs.c
   ../src/lablib/dfutils.c
@@ -43,6 +25,22 @@ add_library(dg
   ../src/dfana.c
   ../src/dlarith.c
 )
+
+# Base includes
+target_include_directories(dg PRIVATE ../src ../src/lablib)
+
+# Use parent's in-tree jansson if available, otherwise fall back to system
+if(TARGET jansson)
+    target_include_directories(dg PRIVATE 
+        ${jansson_SOURCE_DIR}/src
+        ${jansson_BINARY_DIR}/include
+    )
+else()
+    target_include_directories(dg PRIVATE /usr/local/include)
+    if(APPLE)
+        target_include_directories(dg PRIVATE /opt/homebrew/include/)
+    endif()
+endif()
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_subdirectory( test )
