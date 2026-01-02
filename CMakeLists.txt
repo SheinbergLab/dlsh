@@ -178,6 +178,9 @@ endif()
 # Make remaining dependencies available
 FetchContent_MakeAvailable(nanoarrow jansson lz4 box2d msgpackc)
 
+# Global include for lz4
+include_directories(${lz4_SOURCE_DIR}/lib)
+
 add_subdirectory(libdg)
 
 # Disable -Werror for box2d - GCC 14 cross-compiler is stricter and flags false positives
