@@ -52,10 +52,10 @@ function(install_tcl_package)
     set(PKG_DIR "lib/${PKG_NAME}")
     set(PKG_LIB_DIR "${PKG_DIR}/${TCL_OS}/${TCL_MACHINE}")
     
-    # Install the shared library to platform-specific subdir
-    install(TARGETS ${PKG_TARGET}
-        LIBRARY DESTINATION ${PKG_LIB_DIR}
-        RUNTIME DESTINATION ${PKG_LIB_DIR}  # For Windows DLLs
+    # Install the shared library file directly (using generator expression)
+    # This ensures the vfs component is used regardless of target's default component
+    install(FILES $<TARGET_FILE:${PKG_TARGET}>
+        DESTINATION ${PKG_LIB_DIR}
         COMPONENT vfs
     )
     
@@ -96,6 +96,26 @@ if(APPLE AND DEFINED CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM)
 endif()
 
 ###############################
+# Copy vfs/lib contents FIRST (base layer)
+###############################
+#
+# The vfs/lib directory contains:
+#   - Third-party packages with binaries (TkTable, tdom, thread, sqlite, yajltcl, etc.)
+#   - Pure Tcl packages (tcllib2.0, tklib0.8, bwidget, tkcon, etc.)
+#   - Package directory structure with .gitkeep placeholders
+#
+# This is installed FIRST so that built libraries can be installed on top.
+#
+if(EXISTS ${CMAKE_SOURCE_DIR}/vfs/lib)
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/vfs/lib/
+        DESTINATION lib
+        COMPONENT vfs
+        PATTERN ".gitkeep" EXCLUDE
+        PATTERN ".git" EXCLUDE
+    )
+endif()
+
+###############################
 # Pure Tcl Packages (from lib/local/)
 ###############################
 
@@ -128,31 +148,6 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/pkgs/hex DESTINATION lib COMPONENT vfs)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/pkgs/qpcs DESTINATION lib COMPONENT vfs)
 
 ###############################
-# External Tcl-only packages
-###############################
-#
-# These are checked into vfs/lib/ directly:
-#   - tcllib2.0
-#   - tklib0.8  
-#   - tkcon
-#   - bwidget-1.10.0
-#
-# No build step needed - they're pure Tcl and rarely change.
-# To update, copy fresh versions into vfs/lib/ and commit.
-#
-
-###############################
-# External Tcl+C packages
-###############################
-#
-# These are checked into vfs/lib/ directly:
-#   - sqlite3.*
-#   - yajltcl*
-#
-# No build step needed - copy binaries into vfs/lib/ and commit.
-#
-
-###############################
 # Our C/C++ packages (from pkgs/)
 ###############################
 
@@ -169,7 +164,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/points)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/postgres)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/spritesheet)
 
-# Install each package - just the binary, pkgIndex.tcl comes from vfs/lib/
+# Install each package - the binary goes on top of vfs/lib structure
 install_tcl_package(NAME trajectory_analysis TARGET trajectory_analysis)
 install_tcl_package(NAME curve TARGET curve)
 install_tcl_package(NAME box2d TARGET tclbox2d)
@@ -216,27 +211,6 @@ install(FILES
     DESTINATION lib/dlsh 
     COMPONENT vfs
 )
-
-###############################
-# Copy vfs/lib contents (third-party and pure Tcl packages)
-###############################
-#
-# The vfs/lib directory contains:
-#   - Third-party packages with binaries (TkTable, tdom, thread, etc.)
-#   - Pure Tcl packages (tcllib2.0, tklib0.8, bwidget, tkcon, etc.)
-#   - Package directory structure with .gitkeep placeholders
-#
-# This copies everything from vfs/lib to the install destination,
-# then the platform-specific libs are installed on top.
-#
-if(EXISTS ${CMAKE_SOURCE_DIR}/vfs/lib)
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/vfs/lib/
-        DESTINATION lib
-        COMPONENT vfs
-        PATTERN ".gitkeep" EXCLUDE
-        PATTERN ".git" EXCLUDE
-    )
-endif()
 
 ###############################
 # CPack configuration
