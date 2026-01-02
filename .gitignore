@@ -1,10 +1,28 @@
-.vscode/
+# Build directories
 build/
-_CPack_Packages/
-.DS_Store
-pkgtest/
-*.pkg
-*.deb
-*.zip
+build_*/
+cmake-build-*/
 
-deps/dlsh-dependencies/
+# IDE files
+.idea/
+.vscode/
+*.xcodeproj/
+*.xcworkspace/
+.DS_Store
+
+# Compiled outputs (not in vfs)
+*.o
+*.a
+*.dylib
+*.so
+*.dll
+
+# Generated files
+*.zip
+*.deb
+*.pkg
+
+# Editor backups
+*~
+*.swp
+*.swo

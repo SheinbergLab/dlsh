@@ -78,47 +78,6 @@ set_target_properties(tclstub PROPERTIES
     OUTPUT_NAME "tclstub9.0"
 )
 
-#----- msgpack-c (use system library) -----
-# msgpack-c has tricky include paths that don't work well with FetchContent
-# Install with: apt install libmsgpack-dev, or brew install msgpack
-find_package(PkgConfig QUIET)
-set(MSGPACK_FOUND FALSE)
-
-if(PkgConfig_FOUND)
-    pkg_check_modules(MSGPACK QUIET msgpack-c)
-    if(NOT MSGPACK_FOUND)
-        pkg_check_modules(MSGPACK QUIET msgpack)
-    endif()
-    if(MSGPACK_FOUND)
-        # Use LDFLAGS which includes -L path, not just LIBRARIES
-        set(MSGPACK_LIBRARIES ${MSGPACK_LDFLAGS})
-        message(STATUS "Found MessagePack via pkg-config: ${MSGPACK_LIBRARIES}")
-    endif()
-endif()
-
-if(NOT MSGPACK_FOUND)
-    # Fallback: try to find manually
-    find_path(MSGPACK_INCLUDE_DIR msgpack.h
-        HINTS
-            /opt/homebrew/include
-            /usr/local/include
-    )
-    find_library(MSGPACK_LIBRARY NAMES msgpack-c msgpackc msgpack
-        HINTS
-            /opt/homebrew/lib
-            /usr/local/lib
-    )
-    
-    if(MSGPACK_INCLUDE_DIR AND MSGPACK_LIBRARY)
-        set(MSGPACK_FOUND TRUE)
-        set(MSGPACK_INCLUDE_DIRS ${MSGPACK_INCLUDE_DIR})
-        set(MSGPACK_LIBRARIES ${MSGPACK_LIBRARY})
-        message(STATUS "Found MessagePack: ${MSGPACK_LIBRARY}")
-    else()
-        message(FATAL_ERROR "MessagePack not found. Install with: apt install libmsgpack-dev")
-    endif()
-endif()
-
 #----- box2d -----
 # For tclbox2d package
 FetchContent_Declare(
@@ -165,8 +124,59 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
-# Make all FetchContent dependencies available
-FetchContent_MakeAvailable(nanoarrow jansson lz4 zlib box2d)
+#----- msgpack-c -----
+FetchContent_Declare(
+    msgpackc
+    GIT_REPOSITORY https://github.com/msgpack/msgpack-c.git
+    GIT_TAG        c-6.0.0
+    GIT_SHALLOW    TRUE
+)
+set(MSGPACK_BUILD_TESTS OFF CACHE INTERNAL "")
+set(MSGPACK_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+
+#----- libpng (for libharu) -----
+FetchContent_Declare(
+    libpng
+    GIT_REPOSITORY https://github.com/glennrp/libpng.git
+    GIT_TAG        v1.6.43
+    GIT_SHALLOW    TRUE
+)
+set(PNG_SHARED OFF CACHE INTERNAL "")
+set(PNG_STATIC ON CACHE INTERNAL "")
+set(PNG_TESTS OFF CACHE INTERNAL "")
+set(PNG_TOOLS OFF CACHE INTERNAL "")
+set(PNG_BUILD_ZLIB ON CACHE INTERNAL "")
+set(SKIP_INSTALL_ALL ON CACHE INTERNAL "")
+
+# Make zlib available first (libpng needs it)
+FetchContent_MakeAvailable(zlib)
+
+# Ensure zlib targets have -fPIC
+if(TARGET zlibstatic)
+    set_property(TARGET zlibstatic PROPERTY POSITION_INDEPENDENT_CODE ON)
+endif()
+
+# Create ZLIB::ZLIB alias that libpng expects
+if(NOT TARGET ZLIB::ZLIB)
+    add_library(ZLIB::ZLIB ALIAS zlibstatic)
+endif()
+
+# Point libpng to our in-tree zlib
+set(ZLIB_LIBRARY zlibstatic CACHE INTERNAL "")
+set(ZLIB_INCLUDE_DIR ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR} CACHE INTERNAL "")
+set(ZLIB_INCLUDE_DIRS ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR} CACHE INTERNAL "")
+set(ZLIB_FOUND TRUE CACHE INTERNAL "")
+
+# Now make libpng available
+FetchContent_MakeAvailable(libpng)
+
+# Ensure libpng is built with PIC
+if(TARGET png_static)
+    set_property(TARGET png_static PROPERTY POSITION_INDEPENDENT_CODE ON)
+endif()
+
+# Make remaining dependencies available
+FetchContent_MakeAvailable(nanoarrow jansson lz4 box2d msgpackc)
 
 add_subdirectory(libdg)
 
@@ -191,6 +201,8 @@ set(lz4_SOURCE_DIR ${lz4_SOURCE_DIR} CACHE PATH "LZ4 source directory")
 set(zlib_SOURCE_DIR ${zlib_SOURCE_DIR} CACHE PATH "zlib source directory")
 set(zlib_BINARY_DIR ${zlib_BINARY_DIR} CACHE PATH "zlib binary directory")
 set(nanoarrow_SOURCE_DIR ${nanoarrow_SOURCE_DIR} CACHE PATH "nanoarrow source directory")
+set(libpng_SOURCE_DIR ${libpng_SOURCE_DIR} CACHE PATH "libpng source directory")
+set(libpng_BINARY_DIR ${libpng_BINARY_DIR} CACHE PATH "libpng binary directory")
 
 # Ensure flatcc is built with -fPIC
 if(TARGET flatccrt)
@@ -198,11 +210,6 @@ if(TARGET flatccrt)
 endif()
 if(TARGET flatcc)
     set_property(TARGET flatcc PROPERTY POSITION_INDEPENDENT_CODE ON)
-endif()
-
-# Ensure zlib targets have -fPIC
-if(TARGET zlibstatic)
-    set_property(TARGET zlibstatic PROPERTY POSITION_INDEPENDENT_CODE ON)
 endif()
 
 ###############################
@@ -219,9 +226,13 @@ if(WITH_HPDF)
     set(LIBHPDF_STATIC ON CACHE INTERNAL "")
     set(LIBHPDF_SHARED OFF CACHE INTERNAL "")
     set(LIBHPDF_EXAMPLES OFF CACHE INTERNAL "")
-    # libharu needs zlib - point it to our in-tree build
+    
+    # Point libharu to our in-tree zlib and png
     set(ZLIB_LIBRARY zlibstatic CACHE INTERNAL "")
     set(ZLIB_INCLUDE_DIR ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR} CACHE INTERNAL "")
+    set(PNG_LIBRARY png_static CACHE INTERNAL "")
+    set(PNG_INCLUDE_DIR ${libpng_SOURCE_DIR} ${libpng_BINARY_DIR} CACHE INTERNAL "")
+    
     FetchContent_MakeAvailable(libharu)
     
     # libharu creates target "hpdfs" for static library (not "hpdf_static")
@@ -315,7 +326,9 @@ target_include_directories(dlsh PRIVATE
     ${tcl_SOURCE_DIR}/libtommath
     ${nanoarrow_SOURCE_DIR}/src/nanoarrow
     ${nanoarrow_SOURCE_DIR}/src/nanoarrow_ipc
-    ${MSGPACK_INCLUDE_DIRS}
+    ${msgpackc_SOURCE_DIR}/include
+    ${msgpackc_BINARY_DIR}/include
+    ${msgpackc_BINARY_DIR}/include/msgpack  # for sysdep.h
     ${jansson_SOURCE_DIR}/src
     ${jansson_BINARY_DIR}/include  # for jansson_config.h
     ${lz4_SOURCE_DIR}/lib
@@ -352,13 +365,12 @@ target_link_libraries(dlsh PRIVATE
     zlibstatic
     nanoarrow_ipc
     nanoarrow
-    # System/external dependencies
-    ${MSGPACK_LIBRARIES}
+    msgpack-c
     ${TCLLIB}
 )
 
 if(WITH_HPDF)
-    target_link_libraries(dlsh PRIVATE ${HPDF_TARGET})
+    target_link_libraries(dlsh PRIVATE ${HPDF_TARGET} png_static zlibstatic)
 endif()
 
 # Platform-specific link libraries

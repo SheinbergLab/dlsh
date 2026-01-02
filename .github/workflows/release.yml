@@ -1,0 +1,219 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  #############################################
+  # Build platform-specific binaries
+  #############################################
+  
+  build-linux-x86_64:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential cmake zip
+          sudo apt install -y libpq-dev
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Checkout private dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/dlsh-dependencies
+          token: ${{ secrets.DLSH_DEPENDENCIES_TOKEN }}
+          path: deps/dlsh-dependencies
+        continue-on-error: true
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D DLSH_DEPENDENCIES=${{ github.workspace }}/deps/dlsh-dependencies \
+            -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
+          cmake --build build --parallel
+          cmake --install build --component vfs
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vfs-linux-x86_64
+          path: install/lib/
+          retention-days: 1
+
+  build-linux-aarch64:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential cmake zip
+          sudo apt install -y libpq-dev
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Checkout private dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/dlsh-dependencies
+          token: ${{ secrets.DLSH_DEPENDENCIES_TOKEN }}
+          path: deps/dlsh-dependencies
+        continue-on-error: true
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D DLSH_DEPENDENCIES=${{ github.workspace }}/deps/dlsh-dependencies \
+            -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
+          cmake --build build --parallel
+          cmake --install build --component vfs
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vfs-linux-aarch64
+          path: install/lib/
+          retention-days: 1
+
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - name: Install build dependencies
+        run: |
+          brew update
+          brew install cmake libpq postgresql@17
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Checkout private dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/dlsh-dependencies
+          token: ${{ secrets.DLSH_DEPENDENCIES_TOKEN }}
+          path: deps/dlsh-dependencies
+        continue-on-error: true
+
+      - name: Set up keychain for code signing
+        env:
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APP_CERTIFICATE_BASE64: ${{ secrets.APPLE_APP_CERTIFICATE_BASE64 }}
+        run: |
+          if [ -n "$APP_CERTIFICATE_BASE64" ]; then
+            APP_CERTIFICATE_PATH=$RUNNER_TEMP/developerID_application.p12
+            echo -n "$APP_CERTIFICATE_BASE64" | base64 --decode -o $APP_CERTIFICATE_PATH
+
+            KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+            security import $APP_CERTIFICATE_PATH -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+            security list-keychain -d user -s $KEYCHAIN_PATH
+          fi
+
+      - name: Build and sign
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$TEAM_ID" ]; then
+            cmake -B build -G Xcode \
+              -D CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM="$TEAM_ID" \
+              -D PROJECT_VERSION=${{ github.ref_name }} \
+              -D DLSH_DEPENDENCIES=${{ github.workspace }}/deps/dlsh-dependencies \
+              -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
+            cmake --build build --config Release
+          else
+            cmake -B build \
+              -D PROJECT_VERSION=${{ github.ref_name }} \
+              -D DLSH_DEPENDENCIES=${{ github.workspace }}/deps/dlsh-dependencies \
+              -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
+            cmake --build build --parallel
+          fi
+          cmake --install build --component vfs
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vfs-darwin-arm64
+          path: install/lib/
+          retention-days: 1
+
+  #############################################
+  # Assemble final dlsh.zip from all platforms
+  #############################################
+  
+  assemble-release:
+    needs: [build-linux-x86_64, build-linux-aarch64, build-macos-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out code (for vfs base)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Assemble combined vfs
+        run: |
+          # Start with the base vfs from the repo (pure Tcl packages + third-party binaries)
+          mkdir -p final/lib
+          if [ -d vfs/lib ]; then
+            cp -r vfs/lib/* final/lib/
+          fi
+
+          # Merge in platform-specific builds
+          # Each artifact has the lib/ structure with platform subdirs populated
+          
+          echo "Merging Linux x86_64..."
+          cp -rn artifacts/vfs-linux-x86_64/* final/lib/ 2>/dev/null || cp -r artifacts/vfs-linux-x86_64/* final/lib/
+          
+          echo "Merging Linux aarch64..."
+          cp -rn artifacts/vfs-linux-aarch64/* final/lib/ 2>/dev/null || cp -r artifacts/vfs-linux-aarch64/* final/lib/
+          
+          echo "Merging Darwin arm64..."
+          cp -rn artifacts/vfs-darwin-arm64/* final/lib/ 2>/dev/null || cp -r artifacts/vfs-darwin-arm64/* final/lib/
+
+          # Show what we've got
+          echo "Final vfs structure (shared libs):"
+          find final/lib -name "*.so" -o -name "*.dylib" | head -50
+
+      - name: Create dlsh.zip
+        run: |
+          cd final
+          zip -r ../dlsh-${{ github.ref_name }}.zip lib/
+
+      - name: Create GitHub release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "dlsh-${{ github.ref_name }}.zip"
+          body: |
+            dlsh version ${{ github.ref_name }}
+            
+            Combined package with support for:
+            - macOS arm64
+            - Linux x86_64  
+            - Linux aarch64
+          generateReleaseNotes: true
+          allowUpdates: true
+
