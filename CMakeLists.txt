@@ -13,8 +13,6 @@ project(dlsh VERSION ${PROJECT_VERSION})
 
 include(FetchContent)
 
-add_subdirectory(libdg)
-
 # Force position-independent code for all targets (needed for static libs in shared lib)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -169,6 +167,8 @@ FetchContent_Declare(
 
 # Make all FetchContent dependencies available
 FetchContent_MakeAvailable(nanoarrow jansson lz4 zlib box2d)
+
+add_subdirectory(libdg)
 
 # Disable -Werror for box2d - GCC 14 cross-compiler is stricter and flags false positives
 # Use the CMake 3.24+ property, plus add -Wno-error flag
