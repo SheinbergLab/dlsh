@@ -24,19 +24,10 @@ jobs:
         with:
           submodules: true
 
-      - name: Checkout private dependencies
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/dlsh-dependencies
-          token: ${{ secrets.DLSH_DEPENDENCIES_TOKEN }}
-          path: deps/dlsh-dependencies
-        continue-on-error: true
-
       - name: Build
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
-            -D DLSH_DEPENDENCIES=${{ github.workspace }}/deps/dlsh-dependencies \
             -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
           cmake --build build --parallel
           cmake --install build --component vfs
@@ -74,7 +65,6 @@ jobs:
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
-            -D DLSH_DEPENDENCIES=${{ github.workspace }}/deps/dlsh-dependencies \
             -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
           cmake --build build --parallel
           cmake --install build --component vfs
@@ -134,13 +124,11 @@ jobs:
             cmake -B build -G Xcode \
               -D CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM="$TEAM_ID" \
               -D PROJECT_VERSION=${{ github.ref_name }} \
-              -D DLSH_DEPENDENCIES=${{ github.workspace }}/deps/dlsh-dependencies \
               -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
             cmake --build build --config Release
           else
             cmake -B build \
               -D PROJECT_VERSION=${{ github.ref_name }} \
-              -D DLSH_DEPENDENCIES=${{ github.workspace }}/deps/dlsh-dependencies \
               -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
             cmake --build build --parallel
           fi

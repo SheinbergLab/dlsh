@@ -128,17 +128,6 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/pkgs/hex DESTINATION lib COMPONENT vfs)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/pkgs/qpcs DESTINATION lib COMPONENT vfs)
 
 ###############################
-# Non-public dependencies
-###############################
-
-if(DEFINED DLSH_DEPENDENCIES)
-    install(DIRECTORY ${DLSH_DEPENDENCIES}/mclistbox-1.03 
-        DESTINATION lib 
-        COMPONENT vfs
-    )
-endif()
-
-###############################
 # External Tcl-only packages
 ###############################
 #
