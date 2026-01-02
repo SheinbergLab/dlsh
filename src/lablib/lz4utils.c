@@ -7,7 +7,7 @@
 #include <string.h>
 #include <errno.h>
 
-#include <lz4frame.h>
+#include "lz4frame.h"
 
 #define BUF_SIZE 512*1024
 #define LZ4_HEADER_SIZE 19
