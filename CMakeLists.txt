@@ -409,9 +409,8 @@ set(CPACK_PACKAGE_CONTACT SheinbergLab)
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
 
 install(TARGETS dlsh 
-    LIBRARY DESTINATION lib
-    PUBLIC_HEADER DESTINATION include
-    COMPONENT dlsh
+    LIBRARY DESTINATION lib COMPONENT dlsh
+    PUBLIC_HEADER DESTINATION include COMPONENT dlsh
 )
 
 include(InstallRequiredSystemLibraries)
