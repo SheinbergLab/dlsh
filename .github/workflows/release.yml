@@ -5,6 +5,12 @@ on:
     tags:
       - '*'
 
+env:
+  # TEA package versions - update these when upgrading
+  TCL_VERSION: "9.0.1"
+  TCL_TAG: "core-9-0-1"
+  TDOM_VERSION: "0.9.6"
+
 jobs:
   #############################################
   # Build platform-specific binaries
@@ -24,13 +30,48 @@ jobs:
         with:
           submodules: true
 
-      - name: Build
+      - name: Cache Tcl build
+        id: cache-tcl
+        uses: actions/cache@v4
+        with:
+          path: tcl-install
+          key: tcl-${{ env.TCL_VERSION }}-linux-x86_64
+
+      - name: Build Tcl
+        if: steps.cache-tcl.outputs.cache-hit != 'true'
+        run: |
+          curl -L -o tcl-src.tar.gz https://github.com/tcltk/tcl/archive/refs/tags/${{ env.TCL_TAG }}.tar.gz
+          tar xzf tcl-src.tar.gz
+          cd tcl-${{ env.TCL_TAG }}/unix
+          ./configure --prefix=${{ github.workspace }}/tcl-install
+          make -j$(nproc)
+          make install
+
+      - name: Build tdom
+        run: |
+          curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
+          tar xzf tdom-src.tgz
+          cd tdom-${{ env.TDOM_VERSION }}/unix
+          ./configure \
+            --with-tcl=${{ github.workspace }}/tcl-install/lib \
+            --prefix=${{ github.workspace }}/tdom-install
+          make -j$(nproc)
+          make install
+
+      - name: Build (CMake packages)
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
             -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
           cmake --build build --parallel
           cmake --install build --component vfs
+
+      - name: Assemble TEA packages into vfs
+        run: |
+          # tdom
+          mkdir -p install/lib/tdom/Linux/x86_64
+          cp tdom-install/lib/tdom${{ env.TDOM_VERSION }}/*.so \
+             install/lib/tdom/Linux/x86_64/
 
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
@@ -61,13 +102,48 @@ jobs:
           path: deps/dlsh-dependencies
         continue-on-error: true
 
-      - name: Build
+      - name: Cache Tcl build
+        id: cache-tcl
+        uses: actions/cache@v4
+        with:
+          path: tcl-install
+          key: tcl-${{ env.TCL_VERSION }}-linux-aarch64
+
+      - name: Build Tcl
+        if: steps.cache-tcl.outputs.cache-hit != 'true'
+        run: |
+          curl -L -o tcl-src.tar.gz https://github.com/tcltk/tcl/archive/refs/tags/${{ env.TCL_TAG }}.tar.gz
+          tar xzf tcl-src.tar.gz
+          cd tcl-${{ env.TCL_TAG }}/unix
+          ./configure --prefix=${{ github.workspace }}/tcl-install
+          make -j$(nproc)
+          make install
+
+      - name: Build tdom
+        run: |
+          curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
+          tar xzf tdom-src.tgz
+          cd tdom-${{ env.TDOM_VERSION }}/unix
+          ./configure \
+            --with-tcl=${{ github.workspace }}/tcl-install/lib \
+            --prefix=${{ github.workspace }}/tdom-install
+          make -j$(nproc)
+          make install
+
+      - name: Build (CMake packages)
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
             -D CMAKE_INSTALL_PREFIX=${{ github.workspace }}/install
           cmake --build build --parallel
           cmake --install build --component vfs
+
+      - name: Assemble TEA packages into vfs
+        run: |
+          # tdom
+          mkdir -p install/lib/tdom/Linux/aarch64
+          cp tdom-install/lib/tdom${{ env.TDOM_VERSION }}/*.so \
+             install/lib/tdom/Linux/aarch64/
 
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
@@ -97,6 +173,34 @@ jobs:
           path: deps/dlsh-dependencies
         continue-on-error: true
 
+      - name: Cache Tcl build
+        id: cache-tcl
+        uses: actions/cache@v4
+        with:
+          path: tcl-install
+          key: tcl-${{ env.TCL_VERSION }}-macos-arm64
+
+      - name: Build Tcl
+        if: steps.cache-tcl.outputs.cache-hit != 'true'
+        run: |
+          curl -L -o tcl-src.tar.gz https://github.com/tcltk/tcl/archive/refs/tags/${{ env.TCL_TAG }}.tar.gz
+          tar xzf tcl-src.tar.gz
+          cd tcl-${{ env.TCL_TAG }}/unix
+          ./configure --prefix=${{ github.workspace }}/tcl-install
+          make -j$(sysctl -n hw.ncpu)
+          make install
+
+      - name: Build tdom
+        run: |
+          curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
+          tar xzf tdom-src.tgz
+          cd tdom-${{ env.TDOM_VERSION }}/unix
+          ./configure \
+            --with-tcl=${{ github.workspace }}/tcl-install/lib \
+            --prefix=${{ github.workspace }}/tdom-install
+          make -j$(sysctl -n hw.ncpu)
+          make install
+
       - name: Set up keychain for code signing
         env:
           CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -116,7 +220,7 @@ jobs:
             security list-keychain -d user -s $KEYCHAIN_PATH
           fi
 
-      - name: Build and sign
+      - name: Build and sign (CMake packages)
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -133,6 +237,13 @@ jobs:
             cmake --build build --parallel
           fi
           cmake --install build --component vfs
+
+      - name: Assemble TEA packages into vfs
+        run: |
+          # tdom
+          mkdir -p install/lib/tdom/Darwin/arm64
+          cp tdom-install/lib/tdom${{ env.TDOM_VERSION }}/*.dylib \
+             install/lib/tdom/Darwin/arm64/
 
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
@@ -164,7 +275,7 @@ jobs:
 
       - name: Assemble combined vfs
         run: |
-          # Start with the base vfs from the repo (pure Tcl packages + third-party binaries)
+          # Start with the base vfs from the repo (pure Tcl packages + pkgIndex files)
           mkdir -p final/lib
           if [ -d vfs/lib ]; then
             cp -r vfs/lib/* final/lib/
@@ -204,4 +315,3 @@ jobs:
             - Linux aarch64
           generateReleaseNotes: true
           allowUpdates: true
-
