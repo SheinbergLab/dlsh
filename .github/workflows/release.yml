@@ -52,11 +52,8 @@ jobs:
           curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
           tar xzf tdom-src.tgz
           cd tdom-*/
-          ./configure \
-            --with-tcl=${{ github.workspace }}/tcl-install/lib \
-            --prefix=${{ github.workspace }}/tdom-install
+          ./configure --with-tcl=${{ github.workspace }}/tcl-install/lib
           make -j$(nproc)
-          make install
 
       - name: Build (CMake packages)
         run: |
@@ -70,8 +67,7 @@ jobs:
         run: |
           # tdom
           mkdir -p install/lib/tdom/Linux/x86_64
-          cp tdom-install/lib/tdom${{ env.TDOM_VERSION }}/*.so \
-             install/lib/tdom/Linux/x86_64/
+          cp tdom-*/*.so install/lib/tdom/Linux/x86_64/
 
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
@@ -124,11 +120,8 @@ jobs:
           curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
           tar xzf tdom-src.tgz
           cd tdom-*/
-          ./configure \
-            --with-tcl=${{ github.workspace }}/tcl-install/lib \
-            --prefix=${{ github.workspace }}/tdom-install
+          ./configure --with-tcl=${{ github.workspace }}/tcl-install/lib
           make -j$(nproc)
-          make install
 
       - name: Build (CMake packages)
         run: |
@@ -142,8 +135,7 @@ jobs:
         run: |
           # tdom
           mkdir -p install/lib/tdom/Linux/aarch64
-          cp tdom-install/lib/tdom${{ env.TDOM_VERSION }}/*.so \
-             install/lib/tdom/Linux/aarch64/
+          cp tdom-*/*.so install/lib/tdom/Linux/aarch64/
 
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
@@ -195,11 +187,8 @@ jobs:
           curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
           tar xzf tdom-src.tgz
           cd tdom-*/
-          ./configure \
-            --with-tcl=${{ github.workspace }}/tcl-install/lib \
-            --prefix=${{ github.workspace }}/tdom-install
+          ./configure --with-tcl=${{ github.workspace }}/tcl-install/lib
           make -j$(sysctl -n hw.ncpu)
-          make install
 
       - name: Set up keychain for code signing
         env:
@@ -242,8 +231,7 @@ jobs:
         run: |
           # tdom
           mkdir -p install/lib/tdom/Darwin/arm64
-          cp tdom-install/lib/tdom${{ env.TDOM_VERSION }}/*.dylib \
-             install/lib/tdom/Darwin/arm64/
+          cp tdom-*/*.dylib install/lib/tdom/Darwin/arm64/
 
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
