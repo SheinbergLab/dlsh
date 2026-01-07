@@ -51,7 +51,7 @@ jobs:
         run: |
           curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
           tar xzf tdom-src.tgz
-          cd tdom-${{ env.TDOM_VERSION }}/unix
+          cd tdom-*/unix
           ./configure \
             --with-tcl=${{ github.workspace }}/tcl-install/lib \
             --prefix=${{ github.workspace }}/tdom-install
@@ -123,7 +123,7 @@ jobs:
         run: |
           curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
           tar xzf tdom-src.tgz
-          cd tdom-${{ env.TDOM_VERSION }}/unix
+          cd tdom-*/unix
           ./configure \
             --with-tcl=${{ github.workspace }}/tcl-install/lib \
             --prefix=${{ github.workspace }}/tdom-install
@@ -194,7 +194,7 @@ jobs:
         run: |
           curl -L -o tdom-src.tgz http://tdom.org/downloads/tdom-${{ env.TDOM_VERSION }}-src.tgz
           tar xzf tdom-src.tgz
-          cd tdom-${{ env.TDOM_VERSION }}/unix
+          cd tdom-*/unix
           ./configure \
             --with-tcl=${{ github.workspace }}/tcl-install/lib \
             --prefix=${{ github.workspace }}/tdom-install
