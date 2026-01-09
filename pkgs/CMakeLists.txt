@@ -162,7 +162,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/impro)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/points)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/postgres)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/spritesheet)
-add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/tclson)
+add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/tcljson)
 
 # Install each package - the binary goes on top of vfs/lib structure
 install_tcl_package(NAME trajectory_analysis TARGET trajectory_analysis)
