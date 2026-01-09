@@ -159,10 +159,10 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/dbscan)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/dslog)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/dtw)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/impro)
-# add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/mdns)  # removed
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/points)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/postgres)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/spritesheet)
+add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/tclson)
 
 # Install each package - the binary goes on top of vfs/lib structure
 install_tcl_package(NAME trajectory_analysis TARGET trajectory_analysis)
@@ -175,6 +175,7 @@ install_tcl_package(NAME impro TARGET impro)
 install_tcl_package(NAME points TARGET points)
 install_tcl_package(NAME postgres TARGET postgres)
 install_tcl_package(NAME spritesheet TARGET spritesheet)
+install_tcl_package(NAME tcljson TARGET tcljson)
 
 ###############################
 # dlsh itself
