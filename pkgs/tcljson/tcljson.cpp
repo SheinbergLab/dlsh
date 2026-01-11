@@ -5,6 +5,10 @@
  *   dict_to_json $dict ?-deep? ?-pretty?   - Convert Tcl dict to JSON object
  *   list_to_json $list ?-deep? ?-pretty?   - Convert Tcl list to JSON array
  *   value_to_json $value ?-deep? ?-pretty? - Auto-detect and convert
+ *   json_to_dict $json                     - Convert JSON to Tcl dict/list
+ *   json_valid $json                       - Check if string is valid JSON
+ *   json_get $json path                    - Extract value by dot-separated path
+ *   json_type $json                        - Return JSON value type
  *
  * Options:
  *   -deep   : Recursively convert all nested structures to JSON
@@ -43,6 +47,15 @@
  *
  *   dict_to_json {name test items {a b c}} -deep
  *   # {"items":["a","b","c"],"name":"test"}  (items converted to array)
+ *
+ *   json_to_dict {{"name":"test","count":42}}
+ *   # name test count 42
+ *
+ *   json_get {{"user":{"name":"alice","id":123}}} user.name
+ *   # alice
+ *
+ *   json_type {[1,2,3]}
+ *   # array
  */
 
 #include <tcl.h>
@@ -50,6 +63,8 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <sstream>
+#include <vector>
 
 using json = nlohmann::json;
 
@@ -57,6 +72,7 @@ using json = nlohmann::json;
 static json TclObjToJson(Tcl_Interp* interp, Tcl_Obj* obj, bool deep);
 static json TclDictToJson(Tcl_Interp* interp, Tcl_Obj* dictObj, bool deep);
 static json TclListToJson(Tcl_Interp* interp, Tcl_Obj* listObj, bool deep);
+static Tcl_Obj* JsonToTclObj(Tcl_Interp* interp, const json& j);
 
 /*
  * Check if a Tcl_Obj is a valid dict
@@ -210,6 +226,11 @@ static json TclObjToJson(Tcl_Interp* interp, Tcl_Obj* obj, bool deep) {
     Tcl_Size length;
     const char* str = Tcl_GetStringFromObj(obj, &length);
     
+    // Empty string should stay as empty string, not become empty object
+    if (length == 0) {
+        return json("");
+    }
+    
     // Check list length first
     Tcl_Size listLen;
     if (Tcl_ListObjLength(NULL, obj, &listLen) != TCL_OK) {
@@ -217,12 +238,8 @@ static json TclObjToJson(Tcl_Interp* interp, Tcl_Obj* obj, bool deep) {
         return TclStringToJsonPrimitive(str, length);
     }
     
-    // Single element or empty - treat as primitive
+    // Single element - treat as primitive
     if (listLen <= 1) {
-        // But check if it's an empty dict first
-        if (listLen == 0 && IsTclDict(obj)) {
-            return json::object();
-        }
         return TclStringToJsonPrimitive(str, length);
     }
     
@@ -233,6 +250,73 @@ static json TclObjToJson(Tcl_Interp* interp, Tcl_Obj* obj, bool deep) {
     
     // Treat as list
     return TclListToJson(interp, obj, deep);
+}
+
+/*
+ * Convert JSON value to Tcl object
+ * Objects become dicts, arrays become lists, primitives become strings
+ */
+static Tcl_Obj* JsonToTclObj(Tcl_Interp* interp, const json& j) {
+    switch (j.type()) {
+        case json::value_t::null:
+            return Tcl_NewStringObj("", 0);
+            
+        case json::value_t::boolean:
+            return Tcl_NewStringObj(j.get<bool>() ? "true" : "false", -1);
+            
+        case json::value_t::number_integer:
+            return Tcl_NewWideIntObj(j.get<long long>());
+            
+        case json::value_t::number_unsigned:
+            return Tcl_NewWideIntObj(j.get<unsigned long long>());
+            
+        case json::value_t::number_float:
+            return Tcl_NewDoubleObj(j.get<double>());
+            
+        case json::value_t::string:
+            {
+                std::string s = j.get<std::string>();
+                return Tcl_NewStringObj(s.c_str(), s.length());
+            }
+            
+        case json::value_t::array:
+            {
+                Tcl_Obj* listObj = Tcl_NewListObj(0, NULL);
+                for (const auto& elem : j) {
+                    Tcl_ListObjAppendElement(interp, listObj, JsonToTclObj(interp, elem));
+                }
+                return listObj;
+            }
+            
+        case json::value_t::object:
+            {
+                Tcl_Obj* dictObj = Tcl_NewDictObj();
+                for (auto it = j.begin(); it != j.end(); ++it) {
+                    Tcl_Obj* keyObj = Tcl_NewStringObj(it.key().c_str(), it.key().length());
+                    Tcl_Obj* valObj = JsonToTclObj(interp, it.value());
+                    Tcl_DictObjPut(interp, dictObj, keyObj, valObj);
+                }
+                return dictObj;
+            }
+            
+        default:
+            return Tcl_NewStringObj("", 0);
+    }
+}
+
+/*
+ * Split a path string by delimiter
+ */
+static std::vector<std::string> SplitPath(const std::string& path, char delim = '.') {
+    std::vector<std::string> parts;
+    std::stringstream ss(path);
+    std::string part;
+    while (std::getline(ss, part, delim)) {
+        if (!part.empty()) {
+            parts.push_back(part);
+        }
+    }
+    return parts;
 }
 
 /*
@@ -369,6 +453,208 @@ static int ValueToJsonCmd(ClientData clientData, Tcl_Interp* interp,
 }
 
 /*
+ * Tcl command: json_to_dict $json
+ *
+ * Converts a JSON string to a Tcl dict (for objects) or list (for arrays).
+ * 
+ * Type conversions:
+ *   JSON object  -> Tcl dict
+ *   JSON array   -> Tcl list
+ *   JSON string  -> Tcl string
+ *   JSON number  -> Tcl number (int or double)
+ *   JSON boolean -> "true" or "false"
+ *   JSON null    -> "" (empty string)
+ */
+static int JsonToDictCmd(ClientData clientData, Tcl_Interp* interp,
+                         int objc, Tcl_Obj* const objv[]) {
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "json");
+        return TCL_ERROR;
+    }
+    
+    const char* jsonStr = Tcl_GetString(objv[1]);
+    
+    // Handle empty input
+    if (jsonStr[0] == '\0') {
+        Tcl_SetObjResult(interp, Tcl_NewDictObj());
+        return TCL_OK;
+    }
+    
+    try {
+        json j = json::parse(jsonStr);
+        Tcl_SetObjResult(interp, JsonToTclObj(interp, j));
+        return TCL_OK;
+    } catch (const json::parse_error& e) {
+        Tcl_SetObjResult(interp, Tcl_ObjPrintf("json_to_dict: parse error: %s", e.what()));
+        return TCL_ERROR;
+    } catch (const std::exception& e) {
+        Tcl_SetObjResult(interp, Tcl_ObjPrintf("json_to_dict: %s", e.what()));
+        return TCL_ERROR;
+    }
+}
+
+/*
+ * Tcl command: json_valid $json
+ *
+ * Returns 1 if the string is valid JSON, 0 otherwise.
+ * Does not throw an error on invalid JSON.
+ */
+static int JsonValidCmd(ClientData clientData, Tcl_Interp* interp,
+                        int objc, Tcl_Obj* const objv[]) {
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "json");
+        return TCL_ERROR;
+    }
+    
+    const char* jsonStr = Tcl_GetString(objv[1]);
+    
+    bool valid = json::accept(jsonStr);
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(valid ? 1 : 0));
+    return TCL_OK;
+}
+
+/*
+ * Tcl command: json_get $json path
+ *
+ * Extracts a value from JSON by dot-separated path.
+ * For array access, use numeric indices: "items.0.name"
+ * 
+ * Returns the value as a Tcl object (dict, list, or primitive).
+ * Returns empty string if path doesn't exist.
+ *
+ * Examples:
+ *   json_get {{"user":{"name":"alice"}}} user.name
+ *   # alice
+ *
+ *   json_get {{"items":[{"id":1},{"id":2}]}} items.1.id
+ *   # 2
+ */
+static int JsonGetCmd(ClientData clientData, Tcl_Interp* interp,
+                      int objc, Tcl_Obj* const objv[]) {
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "json path");
+        return TCL_ERROR;
+    }
+    
+    const char* jsonStr = Tcl_GetString(objv[1]);
+    const char* pathStr = Tcl_GetString(objv[2]);
+    
+    try {
+        json j = json::parse(jsonStr);
+        
+        // Navigate the path
+        std::vector<std::string> parts = SplitPath(pathStr);
+        json* current = &j;
+        
+        for (const auto& part : parts) {
+            if (current->is_object()) {
+                if (current->contains(part)) {
+                    current = &(*current)[part];
+                } else {
+                    // Path not found
+                    Tcl_SetObjResult(interp, Tcl_NewStringObj("", 0));
+                    return TCL_OK;
+                }
+            } else if (current->is_array()) {
+                // Try to parse as index
+                char* endptr;
+                long idx = strtol(part.c_str(), &endptr, 10);
+                if (*endptr == '\0' && idx >= 0 && idx < (long)current->size()) {
+                    current = &(*current)[idx];
+                } else {
+                    // Invalid index
+                    Tcl_SetObjResult(interp, Tcl_NewStringObj("", 0));
+                    return TCL_OK;
+                }
+            } else {
+                // Can't navigate into primitive
+                Tcl_SetObjResult(interp, Tcl_NewStringObj("", 0));
+                return TCL_OK;
+            }
+        }
+        
+        Tcl_SetObjResult(interp, JsonToTclObj(interp, *current));
+        return TCL_OK;
+        
+    } catch (const json::parse_error& e) {
+        Tcl_SetObjResult(interp, Tcl_ObjPrintf("json_get: parse error: %s", e.what()));
+        return TCL_ERROR;
+    } catch (const std::exception& e) {
+        Tcl_SetObjResult(interp, Tcl_ObjPrintf("json_get: %s", e.what()));
+        return TCL_ERROR;
+    }
+}
+
+/*
+ * Tcl command: json_type $json ?path?
+ *
+ * Returns the JSON type of the value: "object", "array", "string", 
+ * "number", "boolean", "null", or "invalid".
+ *
+ * If path is provided, returns the type of the value at that path.
+ */
+static int JsonTypeCmd(ClientData clientData, Tcl_Interp* interp,
+                       int objc, Tcl_Obj* const objv[]) {
+    if (objc < 2 || objc > 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "json ?path?");
+        return TCL_ERROR;
+    }
+    
+    const char* jsonStr = Tcl_GetString(objv[1]);
+    
+    try {
+        json j = json::parse(jsonStr);
+        
+        // Navigate to path if provided
+        if (objc == 3) {
+            const char* pathStr = Tcl_GetString(objv[2]);
+            std::vector<std::string> parts = SplitPath(pathStr);
+            
+            for (const auto& part : parts) {
+                if (j.is_object() && j.contains(part)) {
+                    j = j[part];
+                } else if (j.is_array()) {
+                    char* endptr;
+                    long idx = strtol(part.c_str(), &endptr, 10);
+                    if (*endptr == '\0' && idx >= 0 && idx < (long)j.size()) {
+                        j = j[idx];
+                    } else {
+                        Tcl_SetObjResult(interp, Tcl_NewStringObj("invalid", -1));
+                        return TCL_OK;
+                    }
+                } else {
+                    Tcl_SetObjResult(interp, Tcl_NewStringObj("invalid", -1));
+                    return TCL_OK;
+                }
+            }
+        }
+        
+        const char* typeStr;
+        switch (j.type()) {
+            case json::value_t::null:            typeStr = "null"; break;
+            case json::value_t::boolean:         typeStr = "boolean"; break;
+            case json::value_t::number_integer:  typeStr = "number"; break;
+            case json::value_t::number_unsigned: typeStr = "number"; break;
+            case json::value_t::number_float:    typeStr = "number"; break;
+            case json::value_t::string:          typeStr = "string"; break;
+            case json::value_t::array:           typeStr = "array"; break;
+            case json::value_t::object:          typeStr = "object"; break;
+            default:                             typeStr = "unknown"; break;
+        }
+        
+        Tcl_SetObjResult(interp, Tcl_NewStringObj(typeStr, -1));
+        return TCL_OK;
+        
+    } catch (const json::parse_error& e) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("invalid", -1));
+        return TCL_OK;
+    } catch (const std::exception& e) {
+        Tcl_SetObjResult(interp, Tcl_ObjPrintf("json_type: %s", e.what()));
+        return TCL_ERROR;
+    }
+}
+
+/*
  * Register all commands with an interpreter
  * Call this from your dserv initialization for each interp
  */
@@ -378,6 +664,10 @@ int TclJson_RegisterCommands(Tcl_Interp* interp) {
     Tcl_CreateObjCommand(interp, "dict_to_json", DictToJsonCmd, NULL, NULL);
     Tcl_CreateObjCommand(interp, "list_to_json", ListToJsonCmd, NULL, NULL);
     Tcl_CreateObjCommand(interp, "value_to_json", ValueToJsonCmd, NULL, NULL);
+    Tcl_CreateObjCommand(interp, "json_to_dict", JsonToDictCmd, NULL, NULL);
+    Tcl_CreateObjCommand(interp, "json_valid", JsonValidCmd, NULL, NULL);
+    Tcl_CreateObjCommand(interp, "json_get", JsonGetCmd, NULL, NULL);
+    Tcl_CreateObjCommand(interp, "json_type", JsonTypeCmd, NULL, NULL);
     return TCL_OK;
 }
 
