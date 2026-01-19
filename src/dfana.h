@@ -69,6 +69,8 @@ DYN_LIST *dynListCombine(DYN_LIST *dl1, DYN_LIST *dl2);
 DYN_LIST *dynListInterleave(DYN_LIST *dl1, DYN_LIST *dl2);
 DYN_LIST *dynListReplace(DYN_LIST *dl, DYN_LIST *selections, DYN_LIST *r);
 DYN_LIST *dynListReplaceByIndex(DYN_LIST *dl, DYN_LIST *s, DYN_LIST *r);
+DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false);
+  
 DYN_LIST *dynListSelect(DYN_LIST *dl, DYN_LIST *selections);
 DYN_LIST *dynListChoose(DYN_LIST *dl, DYN_LIST *selections);
 
@@ -82,6 +84,11 @@ DYN_LIST *dynListRelationListList(DYN_LIST *dl1, DYN_LIST *dl2, int op);
 DYN_LIST *dynListRelationListListIndices(DYN_LIST *dl1, DYN_LIST *dl2, int op);
 DYN_LIST *dynListNotList(DYN_LIST *dl);
 
+int dynListAnyList(DYN_LIST *dl);
+DYN_LIST *dynListAnyLists(DYN_LIST *dl);
+int dynListAllList(DYN_LIST *dl);
+DYN_LIST *dynListAllLists(DYN_LIST *dl);
+  
 DYN_LIST *dynListZerosFloat(int size);
 DYN_LIST *dynListOnesFloat(int size);
 

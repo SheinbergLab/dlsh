@@ -7993,6 +7993,486 @@ DYN_LIST *dynListReplaceByIndex(DYN_LIST *dl, DYN_LIST *selections,
   return(newlist);
 }
 
+/*
+ * dynListAnyList  / dynListAllList  - Reduce to single scalar (dl_any / dl_all)
+ * dynListAnyLists / dynListAllLists - Reduce per sublist (dl_anys / dl_alls)
+ *
+ * For nested lists:
+ *   - List version: collapses entire structure to single 0/1
+ *   - Lists version: returns one 0/1 per sublist
+ *
+ * Short-circuit evaluation for efficiency:
+ *   - any: return 1 as soon as any nonzero found
+ *   - all: return 0 as soon as any zero found
+ */
+
+/*
+ * Helper: test any/all on a flat (non-nested) list
+ * Returns: 0 or 1
+ */
+static int dynListAnyFlat(DYN_LIST *dl)
+{
+  int i;
+  
+  if (!dl || DYN_LIST_N(dl) == 0) return 0;
+  
+  switch (DYN_LIST_DATATYPE(dl)) {
+  case DF_LONG:
+    {
+      int *vals = (int *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        if (vals[i]) return 1;
+      }
+    }
+    break;
+  case DF_SHORT:
+    {
+      short *vals = (short *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        if (vals[i]) return 1;
+      }
+    }
+    break;
+  case DF_FLOAT:
+    {
+      float *vals = (float *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        if (vals[i] != 0.0f) return 1;
+      }
+    }
+    break;
+  case DF_CHAR:
+    {
+      char *vals = (char *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        if (vals[i]) return 1;
+      }
+    }
+    break;
+  default:
+    return 0;
+  }
+  return 0;
+}
+
+static int dynListAllFlat(DYN_LIST *dl)
+{
+  int i;
+  
+  if (!dl || DYN_LIST_N(dl) == 0) return 1;  /* vacuous truth */
+  
+  switch (DYN_LIST_DATATYPE(dl)) {
+  case DF_LONG:
+    {
+      int *vals = (int *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        if (!vals[i]) return 0;
+      }
+    }
+    break;
+  case DF_SHORT:
+    {
+      short *vals = (short *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        if (!vals[i]) return 0;
+      }
+    }
+    break;
+  case DF_FLOAT:
+    {
+      float *vals = (float *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        if (vals[i] == 0.0f) return 0;
+      }
+    }
+    break;
+  case DF_CHAR:
+    {
+      char *vals = (char *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        if (!vals[i]) return 0;
+      }
+    }
+    break;
+  default:
+    return 0;
+  }
+  return 1;
+}
+
+/*****************************************************************************
+ * Scalar reduction versions (dl_any / dl_all)
+ * Collapse entire structure to single 0/1 value
+ *****************************************************************************/
+
+/*
+ * dynListAnyList - returns 1 if any element nonzero, 0 otherwise
+ * For nested lists, collapses and tests entire structure
+ */
+int dynListAnyList(DYN_LIST *dl)
+{
+  int i;
+  
+  if (!dl || DYN_LIST_N(dl) == 0) return 0;
+  
+  if (DYN_LIST_DATATYPE(dl) == DF_LIST) {
+    DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
+    for (i = 0; i < DYN_LIST_N(dl); i++) {
+      if (dynListAnyList(vals[i])) return 1;  /* short-circuit */
+    }
+    return 0;
+  }
+  
+  return dynListAnyFlat(dl);
+}
+
+/*
+ * dynListAllList - returns 1 if all elements nonzero, 0 otherwise
+ * For nested lists, collapses and tests entire structure
+ */
+int dynListAllList(DYN_LIST *dl)
+{
+  int i;
+  
+  if (!dl || DYN_LIST_N(dl) == 0) return 1;  /* vacuous truth */
+  
+  if (DYN_LIST_DATATYPE(dl) == DF_LIST) {
+    DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
+    for (i = 0; i < DYN_LIST_N(dl); i++) {
+      if (!dynListAllList(vals[i])) return 0;  /* short-circuit */
+    }
+    return 1;
+  }
+  
+  return dynListAllFlat(dl);
+}
+
+/*****************************************************************************
+ * List reduction versions (dl_anys / dl_alls)
+ * Return one 0/1 per sublist
+ *****************************************************************************/
+
+/*
+ * dynListAnyLists - returns list with 1 per sublist if any element nonzero
+ * For nested lists: returns a list with one result per sublist
+ * For flat lists: returns a single-element list
+ */
+DYN_LIST *dynListAnyLists(DYN_LIST *dl)
+{
+  int i;
+  DYN_LIST *retlist = NULL;
+  
+  if (!dl) return NULL;
+  
+  if (DYN_LIST_DATATYPE(dl) == DF_LIST) {
+    DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
+    DYN_LIST *curlist;
+    
+    retlist = dfuCreateDynList(DF_LIST, DYN_LIST_N(dl));
+    if (!retlist) return NULL;
+    
+    for (i = 0; i < DYN_LIST_N(dl); i++) {
+      curlist = dynListAnyLists(vals[i]);
+      if (!curlist) {
+        dfuFreeDynList(retlist);
+        return NULL;
+      }
+      dfuMoveDynListList(retlist, curlist);
+    }
+    return retlist;
+  }
+  
+  /* Flat list - return single element result */
+  retlist = dfuCreateDynList(DF_LONG, 1);
+  if (!retlist) return NULL;
+  
+  dfuAddDynListLong(retlist, dynListAnyFlat(dl));
+  return retlist;
+}
+
+/*
+ * dynListAllLists - returns list with 1 per sublist if all elements nonzero
+ * For nested lists: returns a list with one result per sublist
+ * For flat lists: returns a single-element list
+ */
+DYN_LIST *dynListAllLists(DYN_LIST *dl)
+{
+  int i;
+  DYN_LIST *retlist = NULL;
+  
+  if (!dl) return NULL;
+  
+  if (DYN_LIST_DATATYPE(dl) == DF_LIST) {
+    DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
+    DYN_LIST *curlist;
+    
+    retlist = dfuCreateDynList(DF_LIST, DYN_LIST_N(dl));
+    if (!retlist) return NULL;
+    
+    for (i = 0; i < DYN_LIST_N(dl); i++) {
+      curlist = dynListAllLists(vals[i]);
+      if (!curlist) {
+        dfuFreeDynList(retlist);
+        return NULL;
+      }
+      dfuMoveDynListList(retlist, curlist);
+    }
+    return retlist;
+  }
+  
+  /* Flat list - return single element result */
+  retlist = dfuCreateDynList(DF_LONG, 1);
+  if (!retlist) return NULL;
+  
+  dfuAddDynListLong(retlist, dynListAllFlat(dl));
+  return retlist;
+}
+
+/*
+ * dynListWhere - Conditional selection: where(mask, if_true, if_false)
+ *
+ * For each element, returns if_true[i] when mask[i] is true (nonzero),
+ * otherwise returns if_false[i].
+ *
+ * Like a vectorized ternary operator: mask ? if_true : if_false
+ *
+ * Arguments:
+ *   mask     - boolean/integer list (0 = false, nonzero = true)
+ *   if_true  - values to use when mask is true
+ *   if_false - values to use when mask is false
+ *
+ * Broadcasting rules (copymode):
+ *   - All three lists same length: element-wise selection
+ *   - if_true length 1: broadcast scalar to all true positions
+ *   - if_false length 1: broadcast scalar to all false positions
+ *   - Both can be length 1 simultaneously
+ *
+ * Type promotion:
+ *   - If if_true and if_false have different numeric types, result is DF_FLOAT
+ *   - mask must be DF_LONG or DF_CHAR (integer-like)
+ *
+ * Recursion:
+ *   - If mask is DF_LIST, recurses into sublists
+ *   - Supports nested structures with matching shapes
+ */
+
+DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false)
+{
+  int i;
+  int copymode_true = 0;   /* 0=element-wise, 1=broadcast if_true */
+  int copymode_false = 0;  /* 0=element-wise, 1=broadcast if_false */
+  int length;
+  int result_type;
+  DYN_LIST *newlist = NULL;
+
+  if (!mask || !if_true || !if_false) return NULL;
+
+  /* Handle empty mask */
+  if (DYN_LIST_DATATYPE(mask) != DF_LIST && DYN_LIST_N(mask) == 0) {
+    /* Determine result type from if_true/if_false */
+    if (DYN_LIST_DATATYPE(if_true) == DF_FLOAT ||
+        DYN_LIST_DATATYPE(if_false) == DF_FLOAT) {
+      return dfuCreateDynList(DF_FLOAT, 0);
+    }
+    return dfuCreateDynList(DYN_LIST_DATATYPE(if_true), 0);
+  }
+
+  /*
+   * Recursive case: mask is a list of lists
+   */
+  if (DYN_LIST_DATATYPE(mask) == DF_LIST) {
+    DYN_LIST **mvals = (DYN_LIST **) DYN_LIST_VALS(mask);
+    DYN_LIST **tvals = NULL;
+    DYN_LIST **fvals = NULL;
+    DYN_LIST *curlist;
+    int repeat_true = 0, repeat_false = 0;
+
+    length = DYN_LIST_N(mask);
+    newlist = dfuCreateDynList(DF_LIST, length);
+    if (!newlist) return NULL;
+
+    /* Determine broadcasting for if_true */
+    if (DYN_LIST_DATATYPE(if_true) == DF_LIST) {
+      tvals = (DYN_LIST **) DYN_LIST_VALS(if_true);
+      if (DYN_LIST_N(if_true) == 1) repeat_true = 1;
+      else if (DYN_LIST_N(if_true) != length) {
+        dfuFreeDynList(newlist);
+        return NULL;
+      }
+    } else {
+      /* if_true is a scalar list - broadcast to all sublists */
+      repeat_true = 2;
+    }
+
+    /* Determine broadcasting for if_false */
+    if (DYN_LIST_DATATYPE(if_false) == DF_LIST) {
+      fvals = (DYN_LIST **) DYN_LIST_VALS(if_false);
+      if (DYN_LIST_N(if_false) == 1) repeat_false = 1;
+      else if (DYN_LIST_N(if_false) != length) {
+        dfuFreeDynList(newlist);
+        return NULL;
+      }
+    } else {
+      /* if_false is a scalar list - broadcast to all sublists */
+      repeat_false = 2;
+    }
+
+    /* Recurse into each sublist */
+    for (i = 0; i < length; i++) {
+      DYN_LIST *t_arg = (repeat_true == 2) ? if_true :
+                        (repeat_true == 1) ? tvals[0] : tvals[i];
+      DYN_LIST *f_arg = (repeat_false == 2) ? if_false :
+                        (repeat_false == 1) ? fvals[0] : fvals[i];
+
+      curlist = dynListWhere(mvals[i], t_arg, f_arg);
+      if (!curlist) {
+        dfuFreeDynList(newlist);
+        return NULL;
+      }
+      dfuMoveDynListList(newlist, curlist);
+    }
+    return newlist;
+  }
+
+  /*
+   * Base case: mask is a flat list (DF_LONG or DF_CHAR)
+   */
+
+  /* Validate mask type - must be integer-like */
+  if (DYN_LIST_DATATYPE(mask) != DF_LONG && 
+      DYN_LIST_DATATYPE(mask) != DF_CHAR) {
+    return NULL;
+  }
+
+  /* Cannot operate on string data */
+  if (DYN_LIST_DATATYPE(if_true) == DF_STRING ||
+      DYN_LIST_DATATYPE(if_false) == DF_STRING) {
+    return NULL;
+  }
+
+  /* if_true/if_false cannot be DF_LIST at this point (mask is flat) */
+  if (DYN_LIST_DATATYPE(if_true) == DF_LIST ||
+      DYN_LIST_DATATYPE(if_false) == DF_LIST) {
+    return NULL;
+  }
+
+  length = DYN_LIST_N(mask);
+
+  /* Determine broadcasting for if_true */
+  if (DYN_LIST_N(if_true) == 1) {
+    copymode_true = 1;
+  } else if (DYN_LIST_N(if_true) != length) {
+    return NULL;
+  }
+
+  /* Determine broadcasting for if_false */
+  if (DYN_LIST_N(if_false) == 1) {
+    copymode_false = 1;
+  } else if (DYN_LIST_N(if_false) != length) {
+    return NULL;
+  }
+
+  /* Determine result type - promote to float if mixed */
+  if (DYN_LIST_DATATYPE(if_true) == DYN_LIST_DATATYPE(if_false)) {
+    result_type = DYN_LIST_DATATYPE(if_true);
+  } else if (DYN_LIST_DATATYPE(if_true) == DF_FLOAT ||
+             DYN_LIST_DATATYPE(if_false) == DF_FLOAT) {
+    result_type = DF_FLOAT;
+  } else {
+    /* Both are integer types (DF_LONG, DF_CHAR) - use DF_LONG */
+    result_type = DF_LONG;
+  }
+
+  /* Create result list */
+  newlist = dfuCreateDynList(result_type, length);
+  if (!newlist) return NULL;
+
+  /*
+   * Perform element-wise selection based on mask type
+   */
+  if (DYN_LIST_DATATYPE(mask) == DF_LONG) {
+    int *mvals = (int *) DYN_LIST_VALS(mask);
+
+    if (result_type == DYN_LIST_DATATYPE(if_true) &&
+        result_type == DYN_LIST_DATATYPE(if_false)) {
+      /* Same types - use direct copy */
+      for (i = 0; i < length; i++) {
+        if (mvals[i]) {
+          dynListCopyElement(if_true, copymode_true ? 0 : i, newlist);
+        } else {
+          dynListCopyElement(if_false, copymode_false ? 0 : i, newlist);
+        }
+      }
+    } else {
+      /* Need type conversion - convert both to result_type */
+      DYN_LIST *t_conv = (DYN_LIST_DATATYPE(if_true) == result_type) ?
+                          if_true : dynListConvertList(if_true, result_type);
+      DYN_LIST *f_conv = (DYN_LIST_DATATYPE(if_false) == result_type) ?
+                          if_false : dynListConvertList(if_false, result_type);
+
+      if (!t_conv || !f_conv) {
+        if (t_conv && t_conv != if_true) dfuFreeDynList(t_conv);
+        if (f_conv && f_conv != if_false) dfuFreeDynList(f_conv);
+        dfuFreeDynList(newlist);
+        return NULL;
+      }
+
+      for (i = 0; i < length; i++) {
+        if (mvals[i]) {
+          dynListCopyElement(t_conv, copymode_true ? 0 : i, newlist);
+        } else {
+          dynListCopyElement(f_conv, copymode_false ? 0 : i, newlist);
+        }
+      }
+
+      /* Free converted lists if we created them */
+      if (t_conv != if_true) dfuFreeDynList(t_conv);
+      if (f_conv != if_false) dfuFreeDynList(f_conv);
+    }
+  }
+  else if (DYN_LIST_DATATYPE(mask) == DF_CHAR) {
+    char *mvals = (char *) DYN_LIST_VALS(mask);
+
+    if (result_type == DYN_LIST_DATATYPE(if_true) &&
+        result_type == DYN_LIST_DATATYPE(if_false)) {
+      for (i = 0; i < length; i++) {
+        if (mvals[i]) {
+          dynListCopyElement(if_true, copymode_true ? 0 : i, newlist);
+        } else {
+          dynListCopyElement(if_false, copymode_false ? 0 : i, newlist);
+        }
+      }
+    } else {
+      DYN_LIST *t_conv = (DYN_LIST_DATATYPE(if_true) == result_type) ?
+                          if_true : dynListConvertList(if_true, result_type);
+      DYN_LIST *f_conv = (DYN_LIST_DATATYPE(if_false) == result_type) ?
+                          if_false : dynListConvertList(if_false, result_type);
+
+      if (!t_conv || !f_conv) {
+        if (t_conv && t_conv != if_true) dfuFreeDynList(t_conv);
+        if (f_conv && f_conv != if_false) dfuFreeDynList(f_conv);
+        dfuFreeDynList(newlist);
+        return NULL;
+      }
+
+      for (i = 0; i < length; i++) {
+        if (mvals[i]) {
+          dynListCopyElement(t_conv, copymode_true ? 0 : i, newlist);
+        } else {
+          dynListCopyElement(f_conv, copymode_false ? 0 : i, newlist);
+        }
+      }
+
+      if (t_conv != if_true) dfuFreeDynList(t_conv);
+      if (f_conv != if_false) dfuFreeDynList(f_conv);
+    }
+  }
+
+  return newlist;
+}
+
+
+
 DYN_LIST *dynListShift(DYN_LIST *dl, int shifter, int mode)
 {
   DYN_LIST *newlist = NULL;

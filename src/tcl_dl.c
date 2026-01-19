@@ -148,7 +148,7 @@ enum DL_REDUCERS     { DL_LENGTH, DL_MIN, DL_MAX, DL_SUM, DL_MEAN, DL_STD,
 		       DL_VAR, DL_HVAR, DL_PROD, DL_DEPTH, DL_BMEAN, 
 		       DL_BSUMS, DL_BSTD, DL_MIN_POSITIONS, DL_MAX_POSITIONS, 
 		       DL_MEAN_LIST, DL_SUMCOLS_LIST, 
-		       DL_BMIN, DL_BMAX };
+		       DL_BMIN, DL_BMAX, DL_ANY, DL_ALL, DL_ANYS, DL_ALLS };
 enum DL_GENERATOR    { DL_ZEROS, DL_ONES, DL_URAND, DL_ZRAND, DL_RANDFILL,
      		       DL_RANDCHOOSE, DL_IRAND, DL_GAUSSIAN_2D,
                        DL_SHUFFLE};
@@ -207,6 +207,7 @@ static int tclCleanDynList            (ClientData, Tcl_Interp *, int, char **);
 static int tclPushTmpList             (ClientData, Tcl_Interp *, int, char **);
 static int tclPopTmpList              (ClientData, Tcl_Interp *, int, char **);
 static int tclReplaceDynList          (ClientData, Tcl_Interp *, int, char **);
+static int tclWhereDynList            (ClientData, Tcl_Interp *, int, char **);
 static int tclSelectDynList           (ClientData, Tcl_Interp *, int, char **);
 static int tclAppendDynList           (ClientData, Tcl_Interp *, int, char **);
 static int tclCompareDynList          (ClientData, Tcl_Interp *, int, char **);
@@ -365,6 +366,8 @@ static TCL_COMMANDS DLcommands[] = {
       "replace selected elements from a list" },
   { "dl_replaceByIndex",   tclReplaceDynList,     (void *) DL_REPLACE_BY_INDEX,
       "replace selected elements from a list (using indices)" },
+  { "dl_where",            tclWhereDynList,       (void *) NULL,
+      "conditional selection: where(mask, if_true, if_false)" },
   { "dl_put",              tclGetPutDynList,      (void *) DL_PUT, 
       "put an element in a dynList" },
   { "dl_first",            tclGetPutDynList,      (void *) DL_FIRST, 
@@ -655,6 +658,14 @@ static TCL_COMMANDS DLcommands[] = {
       "return list of list mins" },
   { "dl_bmaxs",            tclReduceLists,        (void *) DL_BMAX,
       "return list of list max's" },
+  { "dl_any",             tclReduceList,          (void *) DL_ANY,
+      "return 1 if any element nonzero" },
+  { "dl_all",             tclReduceList,          (void *) DL_ALL,
+      "return 1 if all elements nonzero" },  
+  { "dl_anys",            tclReduceLists,         (void *) DL_ANYS,
+      "return 1 if any element nonzero" },
+  { "dl_alls",            tclReduceLists,         (void *) DL_ALLS,
+      "return 1 if all elements nonzero" },  
   { "dl_minIndex",         tclReduceList,         (void *) DL_MIN_INDEX,
       "return index of min of a list" },
   { "dl_maxIndex",         tclReduceList,         (void *) DL_MAX_INDEX,
@@ -5575,6 +5586,64 @@ static int tclReplaceDynList (ClientData data, Tcl_Interp *interp,
 }
 
 
+/*
+ * dl_where Tcl command wrapper
+ *
+ * Usage: dl_where mask if_true if_false
+ *
+ * Returns a new list where each element is:
+ *   - if_true[i]  when mask[i] is nonzero (true)
+ *   - if_false[i] when mask[i] is zero (false)
+ *
+ * Examples:
+ *   dl_where [dl_gt $x 0] $x [dl_ilist 0]     ;# clamp negatives to 0
+ *   dl_where $mask $a $b                       ;# element-wise conditional
+ *   dl_where [dl_eq $side 0] $left_vals $right_vals
+ */
+
+int
+tclWhereDynList(ClientData clientData, Tcl_Interp *interp,
+		int argc, char *argv[])
+{
+  DYN_LIST *mask, *if_true, *if_false, *newlist;
+  
+  if (argc != 4) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], 
+                     " mask if_true if_false", (char *) NULL);
+    return TCL_ERROR;
+  }
+  
+  /* Get mask list */
+  if (tclFindDynList(interp, argv[1], &mask) != TCL_OK) {
+    return TCL_ERROR;
+  }
+  
+  /* Get if_true list */
+  if (tclFindDynList(interp, argv[2], &if_true) != TCL_OK) {
+    return TCL_ERROR;
+  }
+  
+  /* Get if_false list */
+  if (tclFindDynList(interp, argv[3], &if_false) != TCL_OK) {
+    return TCL_ERROR;
+  }
+  
+  /* Call the implementation */
+  newlist = dynListWhere(mask, if_true, if_false);
+  
+  if (!newlist) {
+    Tcl_ResetResult(interp);
+    Tcl_AppendResult(interp, argv[0], 
+                     ": unable to select from lists \"",
+                     argv[2], "\" and \"", argv[3], 
+                     "\" using mask \"", argv[1], "\"", (char *) NULL);
+    return TCL_ERROR;
+  }
+  else {
+    return(tclPutList(interp, newlist));
+  }
+}
+
 /*****************************************************************************
  *
  * FUNCTION
@@ -7661,6 +7730,16 @@ static int tclReduceList (ClientData data, Tcl_Interp *interp,
     Tcl_SetObjResult(interp, Tcl_NewIntObj(intval));
     return TCL_OK;
     break;
+  case DL_ANY:
+    intval = dynListAnyList(dl);
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(intval));
+    return TCL_OK;
+    break;
+  case DL_ALL:
+    intval = dynListAllList(dl);
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(intval));
+    return TCL_OK;
+    break;
   case DL_MIN_INDEX:
     if (DYN_LIST_N(dl) == 0) return TCL_OK;
     intval = dynListMinListIndex(dl);
@@ -7860,6 +7939,12 @@ static int tclReduceLists (ClientData data, Tcl_Interp *interp,
     break;
   case DL_HVAR:
     newlist = dynListHVarLists(dl);
+    break;
+  case DL_ANYS:
+    newlist = dynListAnyLists(dl);
+    break;
+  case DL_ALLS:
+    newlist = dynListAllLists(dl);
     break;
   }
   if (!newlist) {
