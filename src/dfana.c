@@ -7993,6 +7993,7 @@ DYN_LIST *dynListReplaceByIndex(DYN_LIST *dl, DYN_LIST *selections,
   return(newlist);
 }
 
+
 /*
  * dynListAnyList  / dynListAllList  - Reduce to single scalar (dl_any / dl_all)
  * dynListAnyLists / dynListAllLists - Reduce per sublist (dl_anys / dl_alls)
@@ -8149,13 +8150,15 @@ int dynListAllList(DYN_LIST *dl)
 
 /*****************************************************************************
  * List reduction versions (dl_anys / dl_alls)
- * Return one 0/1 per sublist
+ * Return one 0/1 per sublist, flattened (matching dl_sums behavior)
  *****************************************************************************/
 
 /*
  * dynListAnyLists - returns list with 1 per sublist if any element nonzero
- * For nested lists: returns a list with one result per sublist
+ * For nested lists: returns one result per sublist, flattening single values
  * For flat lists: returns a single-element list
+ *
+ * Example: {{0 1} {0 0} {1 1}} -> {1 0 1}  (flat, not {{1} {0} {1}})
  */
 DYN_LIST *dynListAnyLists(DYN_LIST *dl)
 {
@@ -8167,19 +8170,41 @@ DYN_LIST *dynListAnyLists(DYN_LIST *dl)
   if (DYN_LIST_DATATYPE(dl) == DF_LIST) {
     DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
     DYN_LIST *curlist;
+    int all_scalars = 1;
     
-    retlist = dfuCreateDynList(DF_LIST, DYN_LIST_N(dl));
-    if (!retlist) return NULL;
-    
+    /* First pass: check if all children are flat lists (will produce scalars) */
     for (i = 0; i < DYN_LIST_N(dl); i++) {
-      curlist = dynListAnyLists(vals[i]);
-      if (!curlist) {
-        dfuFreeDynList(retlist);
-        return NULL;
+      if (DYN_LIST_DATATYPE(vals[i]) == DF_LIST) {
+        all_scalars = 0;
+        break;
       }
-      dfuMoveDynListList(retlist, curlist);
     }
-    return retlist;
+    
+    if (all_scalars) {
+      /* All children are flat - return flat DF_LONG list */
+      retlist = dfuCreateDynList(DF_LONG, DYN_LIST_N(dl));
+      if (!retlist) return NULL;
+      
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        dfuAddDynListLong(retlist, dynListAnyFlat(vals[i]));
+      }
+      return retlist;
+    }
+    else {
+      /* Mixed or nested - recurse and build list of lists */
+      retlist = dfuCreateDynList(DF_LIST, DYN_LIST_N(dl));
+      if (!retlist) return NULL;
+      
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        curlist = dynListAnyLists(vals[i]);
+        if (!curlist) {
+          dfuFreeDynList(retlist);
+          return NULL;
+        }
+        dfuMoveDynListList(retlist, curlist);
+      }
+      return retlist;
+    }
   }
   
   /* Flat list - return single element result */
@@ -8192,8 +8217,10 @@ DYN_LIST *dynListAnyLists(DYN_LIST *dl)
 
 /*
  * dynListAllLists - returns list with 1 per sublist if all elements nonzero
- * For nested lists: returns a list with one result per sublist
+ * For nested lists: returns one result per sublist, flattening single values
  * For flat lists: returns a single-element list
+ *
+ * Example: {{1 1} {1 0} {1 1}} -> {1 0 1}  (flat, not {{1} {0} {1}})
  */
 DYN_LIST *dynListAllLists(DYN_LIST *dl)
 {
@@ -8205,19 +8232,41 @@ DYN_LIST *dynListAllLists(DYN_LIST *dl)
   if (DYN_LIST_DATATYPE(dl) == DF_LIST) {
     DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
     DYN_LIST *curlist;
+    int all_scalars = 1;
     
-    retlist = dfuCreateDynList(DF_LIST, DYN_LIST_N(dl));
-    if (!retlist) return NULL;
-    
+    /* First pass: check if all children are flat lists (will produce scalars) */
     for (i = 0; i < DYN_LIST_N(dl); i++) {
-      curlist = dynListAllLists(vals[i]);
-      if (!curlist) {
-        dfuFreeDynList(retlist);
-        return NULL;
+      if (DYN_LIST_DATATYPE(vals[i]) == DF_LIST) {
+        all_scalars = 0;
+        break;
       }
-      dfuMoveDynListList(retlist, curlist);
     }
-    return retlist;
+    
+    if (all_scalars) {
+      /* All children are flat - return flat DF_LONG list */
+      retlist = dfuCreateDynList(DF_LONG, DYN_LIST_N(dl));
+      if (!retlist) return NULL;
+      
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        dfuAddDynListLong(retlist, dynListAllFlat(vals[i]));
+      }
+      return retlist;
+    }
+    else {
+      /* Mixed or nested - recurse and build list of lists */
+      retlist = dfuCreateDynList(DF_LIST, DYN_LIST_N(dl));
+      if (!retlist) return NULL;
+      
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+        curlist = dynListAllLists(vals[i]);
+        if (!curlist) {
+          dfuFreeDynList(retlist);
+          return NULL;
+        }
+        dfuMoveDynListList(retlist, curlist);
+      }
+      return retlist;
+    }
   }
   
   /* Flat list - return single element result */
