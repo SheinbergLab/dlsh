@@ -858,7 +858,8 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
       }
     }
 
-    if (special) {
+    /* skip special vars and DG types (DGs are unpacked in addObsPeriod) */
+    if (special || d->data.type == DSERV_DG) {
       dpoint_free(d);
       continue;
     }
