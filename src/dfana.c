@@ -637,6 +637,11 @@ DYN_LIST *dynListDeepUnpackList(DYN_LIST *dl)
   
   newlist = dfuCreateDynList(DF_LIST, n);
   for (i = 0; i < DYN_LIST_N(dl); i++) {
+    if (DYN_LIST_DATATYPE(sublists[i]) != DF_LIST) {
+        // Not a list - can't unpack mixed depth, fail safely
+        dfuFreeDynList(newlist);
+        return NULL;
+    }    
     if (!DYN_LIST_N(sublists[i])) {
       newsub = dfuCreateDynList(default_datatype, 2);
       dfuMoveDynListList(newlist, newsub);
