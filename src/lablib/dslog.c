@@ -817,10 +817,13 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
   session_namelist = dfuCreateDynList(DF_STRING, 10);
   session_typelist = dfuCreateDynList(DF_LONG, 10);
 
-  /* these are handled by the main conversion function */
+  /* these are handled by the main conversion function or are internal */
   specialvars = dfuCreateDynList(DF_STRING, 10);
   dfuAddDynListString(specialvars, "eventlog/names");
+  dfuAddDynListString(specialvars, "eventlog/events");
   dfuAddDynListString(specialvars, "ain/vals");
+  dfuAddDynListString(specialvars, "logger/beginobs");
+  dfuAddDynListString(specialvars, "logger/endobs");
   
   while (dpoint_read(fp, &d) > 0) {
     if (d->data.e.dtype == DSERV_EVT) {
