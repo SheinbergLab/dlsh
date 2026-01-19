@@ -782,14 +782,22 @@ static int addSeparatedEvent(DYN_LIST *types, DYN_LIST *subtypes, DYN_LIST *time
  *
  *  find varnames in an open ess data file that should be included as additional data
  *  rewinds the file pointer to first datapoint after header before return
+ *
+ *  Also finds "session" variables - datapoints that occur outside of obs periods
+ *  (before first E_BEGINOBS or after last E_ENDOBS). These are returned in
+ *  session_varnames and session_types if non-NULL.
  */
-static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types)
+static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
+			     DYN_LIST **session_varnames, DYN_LIST **session_types)
 {
   int i;
   int nvars = 0;
+  int session_nvars = 0;
   int getting_trial = 0; /* only consider datapoints inside obs periods */
+  int had_first_obs = 0; /* track if we've seen any obs period yet */
   ds_datapoint_t *d;
   DYN_LIST *typelist, *specialvars, *namelist;
+  DYN_LIST *session_namelist, *session_typelist;
   int special = 0, existing = 0;
   char *string;
   
@@ -801,9 +809,13 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types)
     return 0;
   }
 
-  /* store list of found variables */
+  /* store list of found variables (trial-oriented) */
   namelist = dfuCreateDynList(DF_STRING, 10);
   typelist = dfuCreateDynList(DF_LONG, 10);
+
+  /* store list of session variables (outside obs periods) */
+  session_namelist = dfuCreateDynList(DF_STRING, 10);
+  session_typelist = dfuCreateDynList(DF_LONG, 10);
 
   /* these are handled by the main conversion function */
   specialvars = dfuCreateDynList(DF_STRING, 10);
@@ -818,30 +830,42 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types)
 	  dpoint_free(d);
 	  dfuFreeDynList(namelist);
 	  dfuFreeDynList(typelist);
+	  dfuFreeDynList(session_namelist);
+	  dfuFreeDynList(session_typelist);
 	  dfuFreeDynList(specialvars);
 	  rewind(fp);
 	  dslog_read_header(fp, NULL, NULL);
 	  return -1;
 	}
+	had_first_obs = 1;
+	dpoint_free(d);
+	continue;
       }
 
       else if (d->data.e.type == E_ENDOBS) {
 	dpoint_free(d);
 	getting_trial = 0;
+	continue;
       }
     }
 
-    /* see if this is an "extra" varname we want to log */
-    else if (getting_trial) {
-      
-      /* does it match one of our known ESS vars? */
-      for (special = 0, i = 0; i < DYN_LIST_N(specialvars); i++) {
-	string = ((char **) DYN_LIST_VALS(specialvars))[i];
-	if (!strcmp(d->varname, string)) {
-	  special = 1;
-	  break;
-	}
+    /* does it match one of our known ESS vars? */
+    for (special = 0, i = 0; i < DYN_LIST_N(specialvars); i++) {
+      string = ((char **) DYN_LIST_VALS(specialvars))[i];
+      if (!strcmp(d->varname, string)) {
+	special = 1;
+	break;
       }
+    }
+
+    if (special) {
+      dpoint_free(d);
+      continue;
+    }
+
+    /* see if this is an "extra" varname we want to log */
+    if (getting_trial) {
+      /* Trial-oriented variable */
       
       /* does it match a variable already added? */
       for (existing = 0, i = 0; i < DYN_LIST_N(namelist); i++) {
@@ -852,17 +876,33 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types)
 	}
       }
 
-      /* if we want to log and it's new, add to results */
-      if (!special && !existing) {
+      /* if new, add to results */
+      if (!existing) {
 	nvars++;
 	dfuAddDynListString(namelist, d->varname);
 	dfuAddDynListLong(typelist, d->data.type);
       }
-      dpoint_free(d);
     }
     else {
-      dpoint_free(d);
+      /* Session variable - outside obs periods */
+      
+      /* does it match a session variable already added? */
+      for (existing = 0, i = 0; i < DYN_LIST_N(session_namelist); i++) {
+	string = ((char **) DYN_LIST_VALS(session_namelist))[i];
+	if (!strcmp(d->varname, string)) {
+	  existing = 1;
+	  break;
+	}
+      }
+
+      /* if new, add to session results */
+      if (!existing) {
+	session_nvars++;
+	dfuAddDynListString(session_namelist, d->varname);
+	dfuAddDynListLong(session_typelist, d->data.type);
+      }
     }
+    dpoint_free(d);
   }
 
   /* return fp to first datapoint after header */
@@ -876,8 +916,117 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types)
   
   if (types) *types = typelist;
   else dfuFreeDynList(typelist);
+
+  if (session_varnames) *session_varnames = session_namelist;
+  else dfuFreeDynList(session_namelist);
+
+  if (session_types) *session_types = session_typelist;
+  else dfuFreeDynList(session_typelist);
   
   return nvars;
+}
+
+
+/*
+ * dslog_add_session_vars
+ *
+ *  Add session-level variables (those outside obs periods) to the output dg.
+ *  These are added as lists with <session> prefix, where each occurrence
+ *  of the variable is appended to the list.
+ */
+static int dslog_add_session_vars(FILE *fp, DYN_LIST *namelist,
+				  DYN_LIST *typelist, DYN_GROUP *dg)
+{  
+  int i, j, len;
+  ds_datapoint_t *d;
+  
+  int result;
+  int getting_trial = 0;
+  int nvars;
+  
+  char *listname, **listnames;
+  char **varnames;
+  int *vartypes, *columnlist;
+  DYN_LIST **dls;  /* accumulate values for each session var */
+  
+  if (!namelist || !typelist) return 0;
+  if (DYN_LIST_N(namelist) != DYN_LIST_N(typelist)) return 0;
+  nvars = DYN_LIST_N(namelist);
+  if (nvars == 0) return 0;
+  
+  rewind(fp);
+  if ((result = dslog_read_header(fp, NULL, NULL)) != 1) {
+    return result == -1 ? DSLOG_FileUnreadable : DSLOG_InvalidFormat;
+  }
+
+  /* pointers to all varname strings we will monitor */
+  varnames = (char **) DYN_LIST_VALS(namelist);
+  vartypes = (int *) DYN_LIST_VALS(typelist);
+
+  /* create listnames for output dg with <session> prefix */
+  listnames = calloc(nvars, sizeof(char *));
+  
+  /* convert ':' to '/' in point names to be compatible with dlsh dgs */
+  for (j = 0; j < nvars; j++) { 
+    len = strlen(varnames[j]);
+    /* make space for <session> prefix and NULL */
+    listnames[j] = calloc(len + 9 + 1, sizeof(char));
+    memcpy(listnames[j], "<session>", 9);
+    for (i = 0; i < len; i++) {
+      if (varnames[j][i] == ':')
+	listnames[j][i+9] = '/';
+      else
+	listnames[j][i+9] = varnames[j][i];
+    }
+  }
+
+  columnlist = (int *) calloc(nvars, sizeof(int));
+  dls = (DYN_LIST **) calloc(nvars, sizeof(DYN_LIST *));
+
+  /* add new columns to dg and track indices */
+  for (i = 0; i < nvars; i++) {
+    columnlist[i] = dfuAddDynGroupNewList(dg, listnames[i], DF_LIST, 10);
+    free(listnames[i]);
+  }
+  free(listnames);
+
+  /* scan through file collecting session variable values */
+  while (dpoint_read(fp, &d) > 0) {
+    /* track obs period state */
+    if (d->data.e.dtype == DSERV_EVT) {
+      if (d->data.e.type == E_BEGINOBS) {
+	getting_trial = 1;
+      }
+      else if (d->data.e.type == E_ENDOBS) {
+	getting_trial = 0;
+      }
+      dpoint_free(d);
+      continue;
+    }
+
+    /* only process variables outside obs periods */
+    if (!getting_trial) {
+      for (i = 0; i < nvars; i++) {
+	if (!strcmp(d->varname, varnames[i])) {
+	  /* add this value to the accumulated list for this var */
+	  dls[i] = add_dpoint_to_list(dls[i], d);
+	  break;
+	}
+      }
+    }
+    dpoint_free(d);
+  }
+
+  /* move accumulated lists into the dg columns */
+  for (i = 0; i < nvars; i++) {
+    if (dls[i]) {
+      dfuMoveDynListList(DYN_GROUP_LIST(dg, columnlist[i]), dls[i]);
+    }
+  }
+
+  free(dls);
+  free(columnlist);
+  return 0;
 }
 
 
@@ -1105,9 +1254,21 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
     }
 
     /* now go back and add extra vars */
+    {
+      DYN_LIST *session_vars, *session_types;
 
-    dslog_find_dsvars(fp, &extra_vars, &extra_types);
-    dslog_add_dsvars(fp, extra_vars, extra_types, dg);
+      dslog_find_dsvars(fp, &extra_vars, &extra_types,
+			&session_vars, &session_types);
+      dslog_add_dsvars(fp, extra_vars, extra_types, dg);
+
+      /* add session-level variables (outside obs periods) */
+      dslog_add_session_vars(fp, session_vars, session_types, dg);
+
+      dfuFreeDynList(extra_vars);
+      dfuFreeDynList(extra_types);
+      dfuFreeDynList(session_vars);
+      dfuFreeDynList(session_types);
+    }
   }
 
   fclose(fp);
