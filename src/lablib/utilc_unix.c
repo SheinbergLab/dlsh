@@ -16,7 +16,7 @@
 #include <math.h>
 #include <ctype.h>
 
-#ifndef WIN32
+#ifndef _WIN32
 #define _REGEX_RE_COMP
 #include <regex.h>
 #include <sys/time.h>
@@ -545,7 +545,7 @@ void WaitForReturn (void)
 }
 
 
-#ifdef WIN32
+#ifdef _WIN32
 int strcasecmp(char *a,char *b) { return stricmp(a,b); }
 int strncasecmp(char *a,char *b, int n) 
 { 

@@ -159,7 +159,7 @@ void trSleep(int sleep_ms)
    delay(sleep_ms);
 }
 
-#elif defined(WIN32) || defined(WIN64)
+#elif defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #include <time.h>
 

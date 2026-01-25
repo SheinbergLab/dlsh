@@ -10,7 +10,7 @@
 #if defined (QNX) || defined (LYNX) || defined (FREEBSD) || defined (LINUX) 
 #include <unistd.h>
 #endif
-#if defined (WIN32) || defined (WIN64)
+#if defined (_WIN32) || defined (_WIN64)
 #include <io.h>
 #pragma warning (disable:4244)
 #pragma warning (disable:4305)
@@ -4381,7 +4381,7 @@ static char *look_for_file(char *name)
   char *delims = { ";" };
   char from[256], to[256];
 
-#if defined (WIN32) || defined (WIN64)
+#if defined (_WIN32) || defined (_WIN64)
   if (_access(name, 4) == 0) return name;
 #else
   if (access(name, R_OK) == 0) return name;
@@ -4406,7 +4406,7 @@ static char *look_for_file(char *name)
 
     if ((after = strstr(name, from))) {
       sprintf(newname, "%s/%s", to, &name[strlen(from)+1]);
-#if defined (WIN32) || defined (WIN64)
+#if defined (_WIN32) || defined (_WIN64)
       if (_access(newname, 04) == 0)
 #else
       if (access(newname, R_OK) == 0)

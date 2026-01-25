@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef WIN32
+#ifndef _WIN32
 #include <sys/time.h>
 #else
 #include <time.h>
@@ -37,7 +37,7 @@ static int my_rseed = 0;
 
 int raninit()
 {
-#ifdef WIN32
+#ifdef _WIN32
   __int64 timeval;
 
   if (!QueryPerformanceFrequency((LARGE_INTEGER *) &timeval)) {
@@ -92,7 +92,7 @@ int ranset(int seed)
     }
     else {
         /* Auto-seed from system entropy */
-#ifdef WIN32
+#ifdef _WIN32
         __int64 timeval;
         if (!QueryPerformanceFrequency((LARGE_INTEGER *) &timeval)) {
             struct tm time;
@@ -144,7 +144,7 @@ int ranget(void)
 
 int ran(int n)
 {
-#if defined (OS2) || defined(WIN32)
+#if defined (OS2) || defined(_WIN32)
   return((int) (ran4((int *)&my_rseed) * n));
 #else
   if (!n) return 0;
@@ -173,7 +173,7 @@ int ran_range (int lo, int hi)
 float
 frand()
 {
-#if defined (OS2) || defined (WIN32)
+#if defined (OS2) || defined (_WIN32)
   return(ran4((int *) &my_rseed));
 #else
   return((float) drand48());
