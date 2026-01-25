@@ -36,11 +36,16 @@ if(TARGET jansson)
         ${jansson_BINARY_DIR}/include
     )
 else()
-    target_include_directories(dg PRIVATE /usr/local/include)
-    if(APPLE)
-        target_include_directories(dg PRIVATE /opt/homebrew/include/)
+    # Allow CMAKE_PREFIX_PATH to provide include directories
+    if(WIN32)
+        # Windows: rely on CMAKE_PREFIX_PATH
+    else()
+        target_include_directories(dg PRIVATE /usr/local/include)
+        if(APPLE)
+            target_include_directories(dg PRIVATE /opt/homebrew/include/)
+        endif()
     endif()
-endif()
+endif()    
 
 option(BUILD_TESTING "Build tests" ON)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
