@@ -42,7 +42,8 @@ else()
     endif()
 endif()
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+option(BUILD_TESTING "Build tests" ON)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     add_subdirectory( test )
 endif()
 
