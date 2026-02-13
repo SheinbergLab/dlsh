@@ -291,7 +291,7 @@ jobs:
           zip -r ../dlsh-${{ github.ref_name }}.zip lib/
 
       - name: Create GitHub release
-        uses: ncipollo/release-action@v2
+        uses: ncipollo/release-action@v1
         with:
           artifacts: "dlsh-${{ github.ref_name }}.zip"
           body: |
