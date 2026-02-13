@@ -3,6 +3,7 @@
 #
 # Provides eye tracking analysis utilities including:
 #   - Biquadratic calibration fitting and transformation
+#   - Calibration extraction from datafiles and application to raw streams
 #   - Raw data stream processing (x/y separation, P1-P4 computation)
 #   - Timestamp normalization
 #   - (Future: saccade detection, fixation analysis, etc.)
@@ -160,29 +161,168 @@ namespace eval em {
         dl_return [dl_choose $data $v]
     }
     
+    ######################################################################
+    #                    Calibration Extraction                          #
+    ######################################################################
+    
+    #
+    # Extract biquadratic calibration coefficients from a loaded dg
+    #
+    # Calibration data is stored as an out-of-band session datapoint
+    # in the <session>em/biquadratic column.  The value is a dict:
+    #   source, filename, timestamp, x_coeffs, y_coeffs, rms_x, rms_y,
+    #   rms_error, n_trials
+    #
+    # Arguments:
+    #   g - loaded dg (from dslog::readESS or dg_read of obs file)
+    #
+    # Returns:
+    #   calibration dict, or "" if not found
+    #
+    proc extract_calibration_from_dg {g} {
+        if {![dl_exists $g:<session>em/biquadratic]} {
+            return ""
+        }
+        
+        # Session column holds one datapoint at index :0
+        # dl_tcllist returns it wrapped in extra {}'s, so lindex to unwrap
+        set calib_dict [lindex [dl_tcllist $g:<session>em/biquadratic:0] 0]
+        
+        if {$calib_dict eq ""} {
+            return ""
+        }
+        
+        # Validate required keys
+        if {![dict exists $calib_dict x_coeffs] || ![dict exists $calib_dict y_coeffs]} {
+            puts "em::extract_calibration_from_dg: missing x_coeffs or y_coeffs"
+            return ""
+        }
+        
+        return $calib_dict
+    }
+    
+    #
+    # Extract calibration from a df::File object
+    #
+    # Arguments:
+    #   f - df::File object (already opened)
+    #
+    # Returns:
+    #   calibration dict or "" if not found
+    #
+    proc extract_calibration {f} {
+        return [extract_calibration_from_dg [$f group]]
+    }
+    
+    #
+    # Get just the {x_coeffs y_coeffs} pair from a calibration dict
+    #
+    # This is the format expected by biquadratic_calibrate_dl and
+    # apply_calibration.
+    #
+    # Arguments:
+    #   calib - calibration dict (from extract_calibration)
+    #
+    # Returns:
+    #   {x_coeffs y_coeffs} or "" if calib is empty
+    #
+    proc calibration_coeffs {calib} {
+        if {$calib eq ""} {
+            return ""
+        }
+        return [list [dict get $calib x_coeffs] [dict get $calib y_coeffs]]
+    }
+    
+    #
+    # Log calibration provenance for diagnostics
+    #
+    proc calibration_info {calib} {
+        if {$calib eq ""} {
+            puts "em::calibration: none"
+            return
+        }
+        set source "unknown"
+        set rms "?"
+        set n "?"
+        if {[dict exists $calib source]} { set source [dict get $calib source] }
+        if {[dict exists $calib rms_error]} { set rms [format "%.4f" [dict get $calib rms_error]] }
+        if {[dict exists $calib n_trials]} { set n [dict get $calib n_trials] }
+        puts "em::calibration: source=$source rms=${rms}deg n_trials=$n"
+    }
+    
+    ######################################################################
+    #              Calibration Application (dl vectorized)               #
+    ######################################################################
+    
+    #
+    # Apply biquadratic calibration to nested per-trial eye data
+    #
+    # Transforms raw eye position (e.g., P1-P4 difference in pixels)
+    # to calibrated position (degrees visual angle) using biquadratic
+    # polynomial coefficients from emcalib.
+    #
+    # Works on nested dl lists (one sublist per trial) because
+    # dl_mult/dl_add broadcast across nested structure.
+    #
+    # Arguments:
+    #   coeffs - {x_coeffs y_coeffs} from calibration_coeffs
+    #   h_raw  - nested dl list of raw horizontal position
+    #   v_raw  - nested dl list of raw vertical position
+    #
+    # Returns:
+    #   list of two dl names: {h_deg v_deg}
+    #
+    proc apply_calibration {coeffs h_raw v_raw} {
+        lassign $coeffs x_coeffs y_coeffs
+        
+        dl_local h_deg [biquadratic_transform_dl $x_coeffs $h_raw $v_raw]
+        dl_local v_deg [biquadratic_transform_dl $y_coeffs $h_raw $v_raw]
+        
+        dl_return [dl_llist $h_deg $v_deg]
+    }
+    
+    ######################################################################
+    #              Process Raw Streams (main entry point)                #
+    ######################################################################
+    
     #
     # Process raw eye tracking streams into standard format
     #
-    # This is a convenience function that takes raw em streams and produces
-    # separated x,y components with consistent lengths, storing results in
-    # the provided dg.
+    # This is the main entry point called from extract functions.
+    # Takes raw em data streams, separates x/y, computes difference
+    # signals, optionally applies biquadratic calibration, and stores
+    # everything as columns in the output dg.
     #
     # Arguments:
     #   g       - dg to store results in (adds columns to existing dg)
     #   streams - dict with keys: pupil, p1, p4, time, pupil_r, blink, frame_id
     #             each value is a nested dl list (one per trial)
     #             pupil, p1, p4 are interleaved x,y
-    #   prefix  - optional prefix for output column names (default: "")
+    #   args    - optional key-value pairs:
+    #               -calibration {x_coeffs y_coeffs}  (from calibration_coeffs)
+    #               -prefix string                     (column name prefix, default "")
     #
     # Creates columns (with optional prefix):
-    #   pupil_x, pupil_y, p1_x, p1_y, p4_x, p4_y,
-    #   p1p4_h, p1p4_v, pupil_cr_h, pupil_cr_v,
-    #   em_time, em_seconds, pupil_r, in_blink, frame_id
+    #   Raw:        pupil_x, pupil_y, p1_x, p1_y, p4_x, p4_y
+    #   Difference: p1p4_h, p1p4_v, pupil_cr_h, pupil_cr_v
+    #   Calibrated: em_h_deg, em_v_deg  (only if -calibration provided)
+    #   Timing:     em_time, em_seconds
+    #   Other:      pupil_r, in_blink, frame_id
     #
-    proc process_raw_streams {g streams {prefix ""}} {
+    proc process_raw_streams {g streams args} {
+        # Parse options
+        set calibration ""
+        set prefix ""
+        foreach {key val} $args {
+            switch -- $key {
+                -calibration { set calibration $val }
+                -prefix      { set prefix $val }
+            }
+        }
+        
         # Compute minimum lengths across all streams
         set length_args [list]
-        foreach {key interleaved} {pupil 1 p1 1 p4 1 time 0 pupil_r 0 blink 0 frame_id 0} {
+        foreach {key interleaved} {pupil 1 p1 1 p4 1 eye_raw 1 time 0 pupil_r 0 blink 0 frame_id 0} {
             if {[dict exists $streams $key]} {
                 lappend length_args [dict get $streams $key] $interleaved
             }
@@ -219,6 +359,24 @@ namespace eval em {
                 $g:${prefix}p1_x $g:${prefix}p1_y]
             dl_set $g:${prefix}pupil_cr_h $pcr:0
             dl_set $g:${prefix}pupil_cr_v $pcr:1
+        }
+        
+        #
+        # Apply biquadratic calibration: raw pixels -> degrees visual angle
+        #
+        # Uses the eye_raw stream (eyetracking/raw from the realtime system),
+        # which is the same signal the biquadratic was fit to.  This accounts
+        # for any sign conventions or inversions applied at acquisition time.
+        #
+        if {$calibration ne "" && [dict exists $streams eye_raw]} {
+            dl_local raw_xy [separate_xy [dict get $streams eye_raw] $ns]
+            dl_set $g:${prefix}eye_raw_h $raw_xy:0
+            dl_set $g:${prefix}eye_raw_v $raw_xy:1
+            
+            dl_local cal [apply_calibration $calibration \
+                $g:${prefix}eye_raw_h $g:${prefix}eye_raw_v]
+            dl_set $g:${prefix}em_h_deg $cal:0
+            dl_set $g:${prefix}em_v_deg $cal:1
         }
         
         # Process scalar streams (truncate to consistent length)
@@ -288,28 +446,12 @@ namespace eval em {
     #
     # Apply biquadratic transform to eye data (scalar version)
     #
-    # Arguments:
-    #   coeffs - list of 9 coefficients {a0 a1 a2 a3 a4 a5 a6 a7 a8}
-    #   x      - raw horizontal eye position (scalar)
-    #   y      - raw vertical eye position (scalar)
-    #
-    # Returns:
-    #   transformed position (scalar)
-    #
     proc biquadratic_transform {coeffs x y} {
         return [biquadratic::evaluate $coeffs $x $y]
     }
     
     #
-    # Apply biquadratic transform to dl lists
-    #
-    # Arguments:
-    #   coeffs - list of 9 coefficients {a0 a1 a2 a3 a4 a5 a6 a7 a8}
-    #   x      - raw horizontal eye position (dl list)
-    #   y      - raw vertical eye position (dl list)
-    #
-    # Returns:
-    #   transformed position (dl list)
+    # Apply biquadratic transform to dl lists (flat or nested)
     #
     proc biquadratic_transform_dl {coeffs x y} {
         lassign $coeffs a0 a1 a2 a3 a4 a5 a6 a7 a8
@@ -335,15 +477,7 @@ namespace eval em {
     }
     
     #
-    # Apply full biquadratic calibration (both X and Y)
-    #
-    # Arguments:
-    #   coeffs - {x_coeffs y_coeffs} from biquadratic_fit
-    #   h_raw  - raw horizontal eye position
-    #   v_raw  - raw vertical eye position
-    #
-    # Returns:
-    #   {h_calibrated v_calibrated}
+    # Apply full biquadratic calibration (both X and Y, scalar)
     #
     proc biquadratic_calibrate {coeffs h_raw v_raw} {
         lassign $coeffs x_coeffs y_coeffs
@@ -360,24 +494,14 @@ namespace eval em {
     proc biquadratic_calibrate_dl {coeffs h_raw v_raw} {
         lassign $coeffs x_coeffs y_coeffs
         
-        set h_cal [biquadratic_transform_dl $x_coeffs $h_raw $v_raw]
-        set v_cal [biquadratic_transform_dl $y_coeffs $h_raw $v_raw]
+        dl_local h_cal [biquadratic_transform_dl $x_coeffs $h_raw $v_raw]
+        dl_local v_cal [biquadratic_transform_dl $y_coeffs $h_raw $v_raw]
         
-        return [list $h_cal $v_cal]
+        dl_return [dl_llist $h_cal $v_cal]
     }
     
     #
     # Calculate RMS error of biquadratic fit
-    #
-    # Arguments:
-    #   coeffs  - {x_coeffs y_coeffs} from biquadratic_fit
-    #   eye_x   - list of raw eye horizontal positions
-    #   eye_y   - list of raw eye vertical positions
-    #   calib_x - list of known calibration target X positions
-    #   calib_y - list of known calibration target Y positions
-    #
-    # Returns:
-    #   {rms_x rms_y} in same units as calibration targets
     #
     proc biquadratic_rms {coeffs eye_x eye_y calib_x calib_y} {
         return [biquadratic::calculate_rms_error $coeffs $eye_x $eye_y $calib_x $calib_y]
