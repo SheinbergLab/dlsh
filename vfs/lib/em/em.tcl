@@ -94,19 +94,17 @@ namespace eval em {
     }
     
     #
-    # Normalize timestamps to seconds from first sample
+    # Normalize timestamps to seconds from first sample of each trial
     #
     # Arguments:
-    #   timestamps - dl list of timestamps in microseconds (nested, one per trial)
+    #   timestamps - dl list of timestamps in seconds (nested, one per trial)
     #
     # Returns:
     #   dl list of timestamps in seconds, relative to first sample of each trial
     #
     proc normalize_timestamps {timestamps} {
-        # Get first timestamp from each trial
         dl_local start_times [dl_choose $timestamps [dl_llist [dl_ilist 0]]]
-        dl_local relative [dl_sub $timestamps $start_times]
-        dl_return [dl_div $relative 1000000.0]
+        dl_return [dl_sub $timestamps $start_times]
     }
     
     #
@@ -304,10 +302,15 @@ namespace eval em {
     #
     # Creates columns (with optional prefix):
     #   Raw:        pupil_x, pupil_y, p1_x, p1_y, p4_x, p4_y
-    #   Difference: p1p4_h, p1p4_v, pupil_cr_h, pupil_cr_v
+    #   Eye signal: eye_raw_h, eye_raw_v  (realtime-computed, with inversions applied)
     #   Calibrated: em_h_deg, em_v_deg  (only if -calibration provided)
     #   Timing:     em_time, em_seconds
     #   Other:      pupil_r, in_blink, frame_id
+    #
+    # Difference signals (p1p4, pupil_cr) are not stored as they are
+    # trivially recomputable from the raw components.
+    # eye_raw_h/v are kept because they include the inversion settings
+    # from acquisition and are the signal the biquadratic was fit to.
     #
     proc process_raw_streams {g streams args} {
         # Parse options
@@ -343,30 +346,15 @@ namespace eval em {
             }
         }
         
-        # Compute P1-P4 if we have both
-        if {[dict exists $streams p1] && [dict exists $streams p4]} {
-            dl_local p1p4 [compute_p1p4 \
-                $g:${prefix}p1_x $g:${prefix}p1_y \
-                $g:${prefix}p4_x $g:${prefix}p4_y]
-            dl_set $g:${prefix}p1p4_h $p1p4:0
-            dl_set $g:${prefix}p1p4_v $p1p4:1
-        }
-        
-        # Compute pupil-CR if we have pupil and p1 (CR1)
-        if {[dict exists $streams pupil] && [dict exists $streams p1]} {
-            dl_local pcr [compute_pupil_cr \
-                $g:${prefix}pupil_x $g:${prefix}pupil_y \
-                $g:${prefix}p1_x $g:${prefix}p1_y]
-            dl_set $g:${prefix}pupil_cr_h $pcr:0
-            dl_set $g:${prefix}pupil_cr_v $pcr:1
-        }
-        
         #
         # Apply biquadratic calibration: raw pixels -> degrees visual angle
         #
         # Uses the eye_raw stream (eyetracking/raw from the realtime system),
         # which is the same signal the biquadratic was fit to.  This accounts
         # for any sign conventions or inversions applied at acquisition time.
+        #
+        # Difference signals (p1p4, pupil_cr) are not stored as they are
+        # trivially recomputable from the raw components above.
         #
         if {$calibration ne "" && [dict exists $streams eye_raw]} {
             dl_local raw_xy [separate_xy [dict get $streams eye_raw] $ns]
