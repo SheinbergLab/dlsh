@@ -8303,6 +8303,12 @@ DYN_LIST *dynListAllLists(DYN_LIST *dl)
  * Recursion:
  *   - If mask is DF_LIST, recurses into sublists
  *   - Supports nested structures with matching shapes
+ *
+ * Flat mask with DF_LIST values:
+ *   - If mask is flat (DF_LONG/DF_CHAR) and both if_true/if_false are DF_LIST,
+ *     selects whole sublists based on mask value.
+ *   - Supports empty sublists (e.g., from dl_select on sparse events)
+ *   - Broadcasting: length-1 DF_LIST broadcasts to all positions
  */
 
 DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false)
@@ -8399,13 +8405,61 @@ DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false)
     return NULL;
   }
 
-  /* if_true/if_false cannot be DF_LIST at this point (mask is flat) */
+  length = DYN_LIST_N(mask);
+
+  /*
+   * Flat mask with DF_LIST values: select whole sublists
+   * This handles the common case of a per-obs-period boolean mask
+   * selecting between nested event data (which may contain empty sublists)
+   * and fill values.
+   */
   if (DYN_LIST_DATATYPE(if_true) == DF_LIST ||
       DYN_LIST_DATATYPE(if_false) == DF_LIST) {
-    return NULL;
-  }
 
-  length = DYN_LIST_N(mask);
+    DYN_LIST **tvals;
+    DYN_LIST **fvals;
+
+    /* Both must be DF_LIST */
+    if (DYN_LIST_DATATYPE(if_true) != DF_LIST ||
+        DYN_LIST_DATATYPE(if_false) != DF_LIST) {
+      return NULL;
+    }
+
+    tvals = (DYN_LIST **) DYN_LIST_VALS(if_true);
+    fvals = (DYN_LIST **) DYN_LIST_VALS(if_false);
+
+    /* Validate lengths (with broadcasting) */
+    if (DYN_LIST_N(if_true) == 1) copymode_true = 1;
+    else if (DYN_LIST_N(if_true) != length) return NULL;
+    if (DYN_LIST_N(if_false) == 1) copymode_false = 1;
+    else if (DYN_LIST_N(if_false) != length) return NULL;
+
+    newlist = dfuCreateDynList(DF_LIST, length);
+    if (!newlist) return NULL;
+
+    if (DYN_LIST_DATATYPE(mask) == DF_LONG) {
+      int *mvals = (int *) DYN_LIST_VALS(mask);
+      for (i = 0; i < length; i++) {
+        DYN_LIST *src = mvals[i] ?
+            tvals[copymode_true ? 0 : i] :
+            fvals[copymode_false ? 0 : i];
+        DYN_LIST *copy = dfuCopyDynList(src);
+        if (!copy) { dfuFreeDynList(newlist); return NULL; }
+        dfuMoveDynListList(newlist, copy);
+      }
+    } else { /* DF_CHAR */
+      char *mvals = (char *) DYN_LIST_VALS(mask);
+      for (i = 0; i < length; i++) {
+        DYN_LIST *src = mvals[i] ?
+            tvals[copymode_true ? 0 : i] :
+            fvals[copymode_false ? 0 : i];
+        DYN_LIST *copy = dfuCopyDynList(src);
+        if (!copy) { dfuFreeDynList(newlist); return NULL; }
+        dfuMoveDynListList(newlist, copy);
+      }
+    }
+    return newlist;
+  }
 
   /* Determine broadcasting for if_true */
   if (DYN_LIST_N(if_true) == 1) {
@@ -8519,8 +8573,6 @@ DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false)
 
   return newlist;
 }
-
-
 
 DYN_LIST *dynListShift(DYN_LIST *dl, int shifter, int mode)
 {
