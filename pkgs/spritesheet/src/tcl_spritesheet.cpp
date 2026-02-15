@@ -561,7 +561,7 @@ static int Tcl_ProcessSpritesheetJson(ClientData, Tcl_Interp* interp,
         output["_metadata"] = {
             {"source", input_path},
             {"sprite_sheet", sprite_path},
-            {"image", ase_json["meta"]["image"]},
+            {"image", sprite_path},
             {"texture_width", ase_json["meta"]["size"]["w"]},
             {"texture_height", ase_json["meta"]["size"]["h"]},
             {"frame_count", frame_count},
@@ -817,7 +817,7 @@ static int Tcl_ProcessXmlSpritesheet(ClientData, Tcl_Interp* interp,
             {"sprite_sheet", sprite_path},
             
             // ADD TEXTURE METADATA (matches Aseprite output)
-            {"image", ase_json["meta"]["image"]},
+            {"image", sprite_path},
             {"texture_width", ase_json["meta"]["size"]["w"]},
             {"texture_height", ase_json["meta"]["size"]["h"]},
             
