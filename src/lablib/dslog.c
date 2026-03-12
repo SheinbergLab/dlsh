@@ -20,10 +20,8 @@
 #ifndef _WIN32
 #include <unistd.h>
 #endif
-#include <tcl.h>
 #include <df.h>
 #include <dynio.h>
-#include <dfana.h>
 #include "datapoint.h"
 #include <dslog.h>
 #define DSERV_LOG_CURRENT_VERSION 3
