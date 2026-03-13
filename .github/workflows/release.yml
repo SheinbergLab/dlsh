@@ -267,7 +267,8 @@ jobs:
           tar xzf tk-src.tar.gz
           cd tk-${{ env.TK_TAG }}/unix
           ./configure --prefix=${{ github.workspace }}/tk-install \
-            --with-tcl=${{ github.workspace }}/tcl-install/lib
+            --with-tcl=${{ github.workspace }}/tcl-install/lib \
+            --enable-aqua
           make -j$(sysctl -n hw.ncpu)
           make install
 
