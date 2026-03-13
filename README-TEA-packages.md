@@ -171,9 +171,11 @@ Common TEA package download locations:
 - **thread**: `https://core.tcl-lang.org/thread/tarball/thread-<version>.tar.gz?uuid=thread-<tag>`
 - **sqlite**: `https://sqlite.org/<year>/sqlite-autoconf-<version>.tar.gz`
 - **tcllib**: `https://core.tcl-lang.org/tcllib/tarball/tcllib-<version>.tar.gz?uuid=tcllib-<tag>`
+- **Tktable**: `https://github.com/bohagan1/TkTable/releases/download/tktable-<tag>/tktable-<version>-src.tar.gz` (requires Tk build for `--with-tk=`)
 
 ## Notes
 
 - Pure Tcl packages (no binaries) can simply be dropped in `vfs/lib/` without platform subdirectories
-- The Tcl build is cached per-platform to speed up subsequent runs
+- The Tcl and Tk builds are cached per-platform to speed up subsequent runs
+- Tk is built only as a build dependency (for Tk extensions like Tktable) and is NOT included in the VFS
 - Binaries are NOT committed to the repo - CI builds them fresh each release
