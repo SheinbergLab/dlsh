@@ -354,7 +354,7 @@ proc switch_selection_mode { t } {
 # This was added by Sergey to fix the problem where tkTable jumps the active cell
 # to the top-left corner of the table when using the keyboard to move between cells.
 if { ![catch {package present Tk}] } {
-proc ::tk::table::MoveCell {w x y} {
+proc ::tktable::MoveCell {w x y} {
     if {[catch {$w index active row} r]} return
     set c [$w index active col]
     set cell [$w index [incr r $x],[incr c $y]]
