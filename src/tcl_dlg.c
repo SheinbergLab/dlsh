@@ -39,6 +39,67 @@ static CgraphContext *getDlgContext(Tcl_Interp *interp) {
     return ctx;
 }
 
+/*
+ * Named color support for -color option in dlg_markers, dlg_text, etc.
+ * Colors are packed as (r << 21) + (g << 13) + (b << 5) to match dlg_rgbcolor.
+ */
+#define DLG_PACK_RGB(r,g,b) (((r) << 21) + ((g) << 13) + ((b) << 5))
+
+typedef struct {
+    const char *name;
+    int value;
+} DlgNamedColor;
+
+static DlgNamedColor dlg_named_colors[] = {
+    { "white",        DLG_PACK_RGB(255, 255, 255) },
+    { "black",        DLG_PACK_RGB(  0,   0,   0) },
+    { "red",          DLG_PACK_RGB(255,   0,   0) },
+    { "green",        DLG_PACK_RGB(  0, 255,   0) },
+    { "blue",         DLG_PACK_RGB(  0,   0, 255) },
+    { "yellow",       DLG_PACK_RGB(255, 255,   0) },
+    { "cyan",         DLG_PACK_RGB(  0, 255, 255) },
+    { "magenta",      DLG_PACK_RGB(255,   0, 255) },
+    { "orange",       DLG_PACK_RGB(255, 165,   0) },
+    { "gray",         DLG_PACK_RGB(128, 128, 128) },
+    { "grey",         DLG_PACK_RGB(128, 128, 128) },
+    { "darkgray",     DLG_PACK_RGB( 64,  64,  64) },
+    { "darkgrey",     DLG_PACK_RGB( 64,  64,  64) },
+    { "lightgray",    DLG_PACK_RGB(192, 192, 192) },
+    { "lightgrey",    DLG_PACK_RGB(192, 192, 192) },
+    { "pink",         DLG_PACK_RGB(255, 192, 203) },
+    { "brown",        DLG_PACK_RGB(139,  69,  19) },
+    { "purple",       DLG_PACK_RGB(128,   0, 128) },
+    { NULL, 0 }
+};
+
+/*
+ * dlg_GetColor - parse a color argument as int or named color
+ *
+ * Tries Tcl_GetInt first (for numeric color indices from dlg_rgbcolor).
+ * Falls back to named color lookup. Returns TCL_OK/TCL_ERROR.
+ */
+static int dlg_GetColor(Tcl_Interp *interp, const char *str, int *colorOut)
+{
+    /* Try numeric first */
+    if (Tcl_GetInt(interp, str, colorOut) == TCL_OK) {
+        return TCL_OK;
+    }
+
+    /* Clear the integer parse error */
+    Tcl_ResetResult(interp);
+
+    /* Try named color lookup */
+    for (DlgNamedColor *c = dlg_named_colors; c->name != NULL; c++) {
+        if (strcasecmp(str, c->name) == 0) {
+            *colorOut = c->value;
+            return TCL_OK;
+        }
+    }
+
+    Tcl_AppendResult(interp, "unknown color: ", str, NULL);
+    return TCL_ERROR;
+}
+
 
 typedef int (*TCL_FUNCTION)(ClientData, Tcl_Interp *, int, char **);
 typedef struct {
@@ -863,7 +924,7 @@ static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
 			   ": no color specified", (char *) NULL);
 	  goto error;
 	}
-	if (Tcl_GetInt(interp, argv[i+1], &color) != TCL_OK) goto error;
+	if (dlg_GetColor(interp, argv[i+1], &color) != TCL_OK) goto error;
 	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
 	argc-=2;
 	i-=1;
@@ -2022,7 +2083,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
                            ": no arg to linecolor", (char *) NULL);
           goto error;
         }
-        if (Tcl_GetInt(interp, argv[i+1], &linecolor) != TCL_OK) goto error;
+        if (dlg_GetColor(interp, argv[i+1], &linecolor) != TCL_OK) goto error;
         linfo.linecolor = linecolor;
         for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
         argc-=2;
@@ -2108,7 +2169,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
                            ": no arg to fillcolor", (char *) NULL);
           goto error;
         }
-        if (Tcl_GetInt(interp, argv[i+1], &fillcolor) != TCL_OK) goto error;
+        if (dlg_GetColor(interp, argv[i+1], &fillcolor) != TCL_OK) goto error;
         linfo.fillcolor = fillcolor;
         linfo.filled = 1;
         for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
@@ -2968,7 +3029,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
                            ": no color specified", (char *) NULL);
           goto error;
         }
-        if (Tcl_GetInt(interp, argv[i+1], &tinfo.color) != TCL_OK) goto error;
+        if (dlg_GetColor(interp, argv[i+1], &tinfo.color) != TCL_OK) goto error;
         for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
         argc-=2;
         i-=1;
@@ -3612,7 +3673,7 @@ static int tclPostscriptDynList (ClientData data, Tcl_Interp *interp,
                            ": no frame color specified", (char *) NULL);
           return TCL_ERROR;
         }
-        if (Tcl_GetInt(interp, argv[i+1], &lcolor) != TCL_OK) return TCL_ERROR;
+        if (dlg_GetColor(interp, argv[i+1], &lcolor) != TCL_OK) return TCL_ERROR;
         for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
         argc-=2;
         i-=1;
@@ -3890,7 +3951,7 @@ static int tclImagePlace (ClientData data, Tcl_Interp *interp,
                            ": no frame color specified", (char *) NULL);
           return TCL_ERROR;
         }
-        if (Tcl_GetInt(interp, argv[i+1], &lcolor) != TCL_OK) return TCL_ERROR;
+        if (dlg_GetColor(interp, argv[i+1], &lcolor) != TCL_OK) return TCL_ERROR;
         for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
         argc-=2;
         i-=1;
