@@ -163,6 +163,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/points)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/postgres)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/spritesheet)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/tcljson)
+add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/tpool)
 
 # Install each package - the binary goes on top of vfs/lib structure
 install_tcl_package(NAME trajectory_analysis TARGET trajectory_analysis)
@@ -176,6 +177,7 @@ install_tcl_package(NAME points TARGET points)
 install_tcl_package(NAME postgres TARGET postgres)
 install_tcl_package(NAME spritesheet TARGET spritesheet)
 install_tcl_package(NAME tcljson TARGET tcljson)
+install_tcl_package(NAME tpool TARGET tpool)
 
 ###############################
 # dlsh itself
