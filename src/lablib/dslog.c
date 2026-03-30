@@ -24,7 +24,6 @@
 #include <dynio.h>
 #include "datapoint.h"
 #include <dslog.h>
-#define DSERV_LOG_CURRENT_VERSION 3
 #define DSERV_LOG_HEADER_SIZE    16
 
 #define E_BEGINOBS 19
@@ -42,7 +41,7 @@ static int addDservObsPeriod(
 /****************************** FILE I/O SUPPORT *****************************/
 /*****************************************************************************/
 
-static void dpoint_free(ds_datapoint_t *d)
+void dpoint_free(ds_datapoint_t *d)
 {
   if (d) {
     if (d->varname) {
@@ -55,7 +54,7 @@ static void dpoint_free(ds_datapoint_t *d)
   }
 }
 
-static int dslog_write_header(int fd, uint64_t timestamp)
+int dslog_write_header(int fd, uint64_t timestamp)
 {
   unsigned char buf[DSERV_LOG_HEADER_SIZE];
 
@@ -77,7 +76,7 @@ static int dslog_write_header(int fd, uint64_t timestamp)
   return 1;
 }
 
-static int dpoint_write(int fd, ds_datapoint_t *dpoint)
+int dpoint_write(int fd, ds_datapoint_t *dpoint)
 {
 #if 0
   printf("%s(%d) %d %d %d\n", dpoint->varname, dpoint->varlen,
@@ -129,7 +128,7 @@ static int dpoint_write(int fd, ds_datapoint_t *dpoint)
  *    0: file not recognized as ess_ds_log file
  *    1: OK
  */
-static int dslog_read_header(FILE *fp, int *version, uint64_t *timestamp)
+int dslog_read_header(FILE *fp, int *version, uint64_t *timestamp)
 {
   unsigned char header[DSERV_LOG_HEADER_SIZE];
   uint64_t *ts;
@@ -175,7 +174,7 @@ static int dslog_read_header(FILE *fp, int *version, uint64_t *timestamp)
  *    0: EOF
  *    1: OK
  */
-static int dpoint_read(FILE *fp, ds_datapoint_t **dpoint)
+int dpoint_read(FILE *fp, ds_datapoint_t **dpoint)
 {
   ds_datapoint_t *dp;
   uint16_t varlen;

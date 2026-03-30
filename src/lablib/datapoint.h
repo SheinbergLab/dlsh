@@ -1,5 +1,10 @@
 // dserv datapoints
 
+#ifndef DATAPOINT_H
+#define DATAPOINT_H
+
+#include <stdint.h>
+
 typedef enum {
   DSERV_BYTE = 0,
   DSERV_STRING,
@@ -56,3 +61,4 @@ typedef struct ds_datapoint
   ds_data_t data;
 } ds_datapoint_t;
 
+#endif /* DATAPOINT_H */
