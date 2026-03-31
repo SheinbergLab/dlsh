@@ -277,8 +277,8 @@ static int dslogOpenCmd(ClientData data, Tcl_Interp *interp,
   dslog_handle_t *h;
   char handle_name[32];
 
-  if (objc != 3) {
-    Tcl_WrongNumArgs(interp, 1, objv, "path r|w");
+  if (objc < 3 || objc > 4) {
+    Tcl_WrongNumArgs(interp, 1, objv, "path r|w ?timestamp?");
     return TCL_ERROR;
   }
 
@@ -309,7 +309,6 @@ static int dslogOpenCmd(ClientData data, Tcl_Interp *interp,
       return TCL_ERROR;
     }
   } else if (mode[0] == 'w') {
-    struct timeval tv;
     h->mode = DSLOG_MODE_WRITE;
     h->fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (h->fd < 0) {
@@ -317,8 +316,20 @@ static int dslogOpenCmd(ClientData data, Tcl_Interp *interp,
       Tcl_AppendResult(interp, "cannot create file: ", path, NULL);
       return TCL_ERROR;
     }
-    gettimeofday(&tv, NULL);
-    h->timestamp = (uint64_t) tv.tv_sec * 1000000ULL + tv.tv_usec;
+    if (objc == 4) {
+      /* use caller-supplied header timestamp */
+      Tcl_WideInt ts;
+      if (Tcl_GetWideIntFromObj(interp, objv[3], &ts) != TCL_OK) {
+	close(h->fd);
+	free(h);
+	return TCL_ERROR;
+      }
+      h->timestamp = (uint64_t) ts;
+    } else {
+      struct timeval tv;
+      gettimeofday(&tv, NULL);
+      h->timestamp = (uint64_t) tv.tv_sec * 1000000ULL + tv.tv_usec;
+    }
     h->version = DSERV_LOG_CURRENT_VERSION;
     if (!dslog_write_header(h->fd, h->timestamp)) {
       close(h->fd);
