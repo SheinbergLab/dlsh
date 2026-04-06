@@ -74,6 +74,7 @@ static void tpool_worker_func(tpool_worker_t *w)
         w->error = std::string("Tcl_Init failed: ")
                    + Tcl_GetStringResult(interp);
         Tcl_DeleteInterp(interp);
+        Tcl_FinalizeThread();
         return;
     }
 
@@ -86,6 +87,7 @@ static void tpool_worker_func(tpool_worker_t *w)
         w->error = std::string("Tcl_InitStubs failed: ")
                    + Tcl_GetStringResult(interp);
         Tcl_DeleteInterp(interp);
+        Tcl_FinalizeThread();
         return;
     }
 #endif
@@ -119,6 +121,11 @@ static void tpool_worker_func(tpool_worker_t *w)
     }
 
     Tcl_DeleteInterp(interp);
+
+    /* Clean up all Tcl thread-local storage for this thread.
+     * Without this, every worker thread leaks TLS allocated by
+     * Tcl core and loaded packages (box2d, dlsh, etc.). */
+    Tcl_FinalizeThread();
 }
 
 static int tpool_detect_cpus()
