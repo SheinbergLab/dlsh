@@ -191,6 +191,7 @@ static DYN_LIST *pickpoints (int n, int old, float xs[], float ys[], float mindi
 
   free(new_xs);
   free(new_ys);
+  dfuFreeDynList(p);
 
   return new_points;
 }
@@ -330,7 +331,8 @@ static int pickpointsCmd (ClientData data, Tcl_Interp *interp,
     // call pickpoints for this set of variables
     curlist = pickpoints(this_ndist, this_nold, xs, ys, this_mindist, this_maxx, this_maxy);
     dfuAddDynListList(retlist, curlist);
-    
+    dfuFreeDynList(curlist);
+
     // free memory
     free(xs);
     free(ys);
@@ -393,10 +395,11 @@ static DYN_LIST *pickpoints_ecc (int n, int old, float xs[], float ys[],
     }
     free(new_xs);
     free(new_ys);
-    
+    dfuFreeDynList(p);
+
     return new_points;
   }
-  
+
   mindist2 = mindist * mindist;
   
   for (i = 0; i < n; i++) {
@@ -460,6 +463,7 @@ static DYN_LIST *pickpoints_ecc (int n, int old, float xs[], float ys[],
 
   free(new_xs);
   free(new_ys);
+  dfuFreeDynList(p);
 
   return new_points;
 }
@@ -632,9 +636,10 @@ static int pickpointsEccCmd (ClientData data, Tcl_Interp * interp,
     }   
 
     // call pickpoints for this set of variables
-    curlist = pickpoints_ecc(this_ndist, this_nold, xs, ys, 
+    curlist = pickpoints_ecc(this_ndist, this_nold, xs, ys,
 			     this_mindist, this_maxx, this_maxy, this_ecc, this_anchor);
     dfuAddDynListList(retlist, curlist);
+    dfuFreeDynList(curlist);
 
     // free memory
     free(xs);
@@ -749,6 +754,7 @@ static DYN_LIST *pickpoints_away_from (int n, int old, float xs[], float ys[],
 
   free(new_xs);
   free(new_ys);
+  dfuFreeDynList(p);
 
   return new_points;
 }
@@ -922,9 +928,10 @@ static int pickpointsAwayFromCmd (ClientData data, Tcl_Interp * interp,
     }   
 
     // call pickpoints for this set of variables
-    curlist = pickpoints_away_from(this_ndist, this_nold, xs, ys, 
+    curlist = pickpoints_away_from(this_ndist, this_nold, xs, ys,
 				   this_mindist, this_maxx, this_maxy, this_ecc, this_anchor);
     dfuAddDynListList(retlist, curlist);
+    dfuFreeDynList(curlist);
 
     // free memory
     free(xs);
