@@ -167,32 +167,46 @@ static int find_revolute_joint(BOX2D_WORLD *bw, char *name, b2JointId *j)
 /***********************************************************************/
 
 
-static void Box2DDelete(BOX2D_WORLD *bw) 
+static void Box2DDelete(BOX2D_WORLD *bw)
 {
   b2BodyId *body;
   Tcl_HashEntry *entryPtr;
   Tcl_HashSearch search;
 
-  /* iterate over the table of bodies and free userdata */
+  /* iterate over the table of bodies and free userdata and local id copies */
   for (entryPtr = Tcl_FirstHashEntry(&bw->bodyTable, &search);
        entryPtr != NULL;
        entryPtr = Tcl_NextHashEntry(&search)) {
     body = (b2BodyId *) Tcl_GetHashValue(entryPtr);
-    if (body && b2Body_IsValid(*body)) {  // Add validity check
-      void *userdata = b2Body_GetUserData(*body);
-      if (userdata) {  // Check for NULL
-	free(userdata);
+    if (body) {
+      if (b2Body_IsValid(*body)) {
+	void *userdata = b2Body_GetUserData(*body);
+	if (userdata) {
+	  free(userdata);
+	}
       }
-    }    
+      free(body);
+    }
   }
 
-  /* free hash table */
   Tcl_DeleteHashTable(&bw->bodyTable);
+
+  /* free local joint id copies */
+  for (entryPtr = Tcl_FirstHashEntry(&bw->jointTable, &search);
+       entryPtr != NULL;
+       entryPtr = Tcl_NextHashEntry(&search)) {
+    b2JointId *joint = (b2JointId *) Tcl_GetHashValue(entryPtr);
+    if (joint) {
+      free(joint);
+    }
+  }
+
+  Tcl_DeleteHashTable(&bw->jointTable);
 
   Tcl_MutexLock(&Box2D_Mutex);
   b2DestroyWorld(bw->worldId);
   Tcl_MutexUnlock(&Box2D_Mutex);
-  
+
   free((void *) bw);
 }
 
