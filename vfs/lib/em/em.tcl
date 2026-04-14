@@ -510,6 +510,98 @@ namespace eval em {
         biquadratic::print_coefficients $coeffs
     }
     
+    ######################################################################
+    #                    Event extraction (facade)                       #
+    ######################################################################
+
+    #
+    # Run saccade + PSO detection on calibrated eye data and copy all
+    # detection columns into the target dg.
+    #
+    # Expects these input columns to already exist on g:
+    #   em_h_deg, em_v_deg, em_seconds, in_blink (optional)
+    #
+    # Writes these output columns to g (one sublist per trial):
+    #   sac_starts, sac_stops            (int32 sample indices)
+    #   sac_t_start, sac_t_stop          (float seconds)
+    #   sac_amps, sac_dirs, sac_peakvels, sac_durs
+    #   sac_from_h, sac_from_v, sac_to_h, sac_to_v
+    #   sac_to_h_raw, sac_to_v_raw       (pre-PSO landing, for tuning)
+    #   pso_starts, pso_stops
+    #   pso_t_start, pso_t_stop, pso_peakvels, pso_amps
+    #
+    # Also records the detection parameter dict and version under
+    # <session>em/detection for provenance.
+    #
+    # Arguments:
+    #   g     - dg to read input columns from and write output columns to
+    #   args  - -params <dict>    override detector options
+    #           -no_blink         ignore in_blink even if present
+    #           -provenance bool  if true (default false), write a
+    #                             <session>em/detection column with the
+    #                             full parameter dict + version.  Off by
+    #                             default to keep the dg strictly
+    #                             rectangular — opt in when you want
+    #                             self-documenting files.
+    #
+    proc extract_events {g args} {
+        set params [dict create]
+        set use_blink 1
+        set provenance 0
+        foreach {key val} $args {
+            switch -- $key {
+                -params     { set params $val }
+                -no_blink   { set use_blink 0 }
+                -provenance { set provenance $val }
+            }
+        }
+
+        if {![dl_exists $g:em_h_deg] ||
+            ![dl_exists $g:em_v_deg] ||
+            ![dl_exists $g:em_seconds]} {
+            error "em::extract_events: g must contain em_h_deg, em_v_deg, em_seconds"
+        }
+
+        # --- Saccade + PSO detection -----------------------------------
+        set blink_arg ""
+        if {$use_blink && [dl_exists $g:in_blink]} {
+            set blink_arg $g:in_blink
+        }
+        set rg [em::c::detect_saccades $g:em_h_deg $g:em_v_deg $g:em_seconds \
+                    $blink_arg $params]
+
+        foreach col [dg_tclListnames $rg] {
+            dl_set $g:$col $rg:$col
+        }
+        dg_delete $rg
+
+        # --- Pursuit + fixation + per-sample em_state ------------------
+        set cg [em::c::classify $g:em_h_deg $g:em_v_deg $g:em_seconds \
+                    $blink_arg \
+                    $g:sac_starts $g:sac_stops $g:pso_starts $g:pso_stops \
+                    $params]
+
+        foreach col [dg_tclListnames $cg] {
+            dl_set $g:$col $cg:$col
+        }
+        dg_delete $cg
+
+        # --- Optional provenance ---------------------------------------
+        # Off by default so the dg stays strictly rectangular.  When on,
+        # stores a dict of parameters + version at <session>em/detection
+        # (same pattern used by the calibration block).
+        if {$provenance} {
+            set prov [dict create \
+                em_version    [em::c::version] \
+                params        $params \
+                timestamp     [clock seconds] \
+                source        "em::extract_events"]
+            dl_set $g:<session>em/detection [dl_slist [list $prov]]
+        }
+
+        return
+    }
+
     #
     # Calculate per-point errors for diagnostics
     #
