@@ -1395,6 +1395,183 @@ static int em_classify_cmd(ClientData data, Tcl_Interp *interp,
 
 /*****************************************************************************
  *                                                                           *
+ *                  Tcl command: em::c::extend_blink_mask                    *
+ *                                                                           *
+ *  em::c::extend_blink_mask in_blink pupil_r ?options_dict?                 *
+ *                                                                           *
+ *  Returns a new nested DF_CHAR list shaped like in_blink, with each        *
+ *  blink's trailing edge extended forward until pupil_r has stabilized.     *
+ *  At every 1->0 transition we walk forward and mark samples as blink       *
+ *  until the range of pupil_r over the trailing hold_samps window drops     *
+ *  below stable_range, or we hit the max_samps cap.                         *
+ *                                                                           *
+ *  Options keys:                                                            *
+ *     extend_max_samps     int   upper bound on extension (default 25)      *
+ *     extend_hold_samps    int   stability window length (default 3)        *
+ *     extend_stable_range  float pupil_r range to consider stable (1.0)     *
+ *                                                                           *
+ *****************************************************************************/
+
+static int em_extend_blink_mask_cmd(ClientData data, Tcl_Interp *interp,
+                                    int objc, Tcl_Obj *const objv[])
+{
+  DYN_LIST *ball, *pall;
+  Tcl_Obj *opts_obj = NULL;
+  int max_samps    = 25;    /* 100 ms @ 250 Hz */
+  int hold_samps   = 3;     /*  12 ms @ 250 Hz */
+  double stable_range = 1.0;
+  int i, k;
+
+  if (objc < 3 || objc > 4) {
+    Tcl_WrongNumArgs(interp, 1, objv, "in_blink pupil_r ?options?");
+    return TCL_ERROR;
+  }
+
+  if (tclFindDynList(interp, Tcl_GetString(objv[1]), &ball) != TCL_OK) return TCL_ERROR;
+  if (tclFindDynList(interp, Tcl_GetString(objv[2]), &pall) != TCL_OK) return TCL_ERROR;
+  if (objc == 4) opts_obj = objv[3];
+
+  if (opts_obj) {
+    int rc;
+    rc = get_int_from_dict(interp, opts_obj, "extend_max_samps", &max_samps);
+    if (rc == TCL_ERROR) return TCL_ERROR;
+    rc = get_int_from_dict(interp, opts_obj, "extend_hold_samps", &hold_samps);
+    if (rc == TCL_ERROR) return TCL_ERROR;
+    rc = get_double_from_dict(interp, opts_obj, "extend_stable_range", &stable_range);
+    if (rc == TCL_ERROR) return TCL_ERROR;
+  }
+
+  if (hold_samps < 1) hold_samps = 1;
+  if (max_samps  < 0) max_samps  = 0;
+
+  if (DYN_LIST_DATATYPE(ball) != DF_LIST ||
+      DYN_LIST_DATATYPE(pall) != DF_LIST) {
+    Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+                     ": expected nested dl for in_blink and pupil_r", NULL);
+    return TCL_ERROR;
+  }
+
+  int ntr = DYN_LIST_N(ball);
+  if (DYN_LIST_N(pall) != ntr) {
+    Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+                     ": unequal trial counts", NULL);
+    return TCL_ERROR;
+  }
+
+  DYN_LIST **bsub = (DYN_LIST **) DYN_LIST_VALS(ball);
+  DYN_LIST **psub = (DYN_LIST **) DYN_LIST_VALS(pall);
+  DYN_LIST *result = dfuCreateDynList(DF_LIST, ntr);
+
+  for (i = 0; i < ntr; i++) {
+    DYN_LIST *bl = bsub[i];
+    DYN_LIST *pl = psub[i];
+    int n = DYN_LIST_N(bl);
+
+    if (DYN_LIST_N(pl) != n) {
+      dfuFreeDynList(result);
+      Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+                       ": pupil_r length != in_blink length", NULL);
+      return TCL_ERROR;
+    }
+
+    /* Load pupil_r as float, regardless of storage type */
+    float *pr = (float *) malloc((n > 0 ? n : 1) * sizeof(float));
+    switch (DYN_LIST_DATATYPE(pl)) {
+    case DF_FLOAT: {
+      float *s = (float *) DYN_LIST_VALS(pl);
+      memcpy(pr, s, n * sizeof(float));
+      break;
+    }
+    case DF_LONG: {
+      int *s = (int *) DYN_LIST_VALS(pl);
+      for (k = 0; k < n; k++) pr[k] = (float) s[k];
+      break;
+    }
+    case DF_SHORT: {
+      short *s = (short *) DYN_LIST_VALS(pl);
+      for (k = 0; k < n; k++) pr[k] = (float) s[k];
+      break;
+    }
+    default:
+      free(pr);
+      dfuFreeDynList(result);
+      Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+                       ": pupil_r must be numeric", NULL);
+      return TCL_ERROR;
+    }
+
+    /* Load in_blink into a byte mask */
+    unsigned char *mask = (unsigned char *) calloc(n > 0 ? n : 1, 1);
+    switch (DYN_LIST_DATATYPE(bl)) {
+    case DF_CHAR: {
+      unsigned char *s = (unsigned char *) DYN_LIST_VALS(bl);
+      for (k = 0; k < n; k++) mask[k] = s[k] ? 1 : 0;
+      break;
+    }
+    case DF_SHORT: {
+      short *s = (short *) DYN_LIST_VALS(bl);
+      for (k = 0; k < n; k++) mask[k] = s[k] ? 1 : 0;
+      break;
+    }
+    case DF_LONG: {
+      int *s = (int *) DYN_LIST_VALS(bl);
+      for (k = 0; k < n; k++) mask[k] = s[k] ? 1 : 0;
+      break;
+    }
+    case DF_FLOAT: {
+      float *s = (float *) DYN_LIST_VALS(bl);
+      for (k = 0; k < n; k++) mask[k] = (s[k] != 0.0f) ? 1 : 0;
+      break;
+    }
+    default:
+      free(mask); free(pr);
+      dfuFreeDynList(result);
+      Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+                       ": in_blink must be numeric", NULL);
+      return TCL_ERROR;
+    }
+
+    /* Walk the mask; at every 1->0 transition, extend forward */
+    for (k = 1; k < n; k++) {
+      if (mask[k-1] == 1 && mask[k] == 0) {
+        int j = k;
+        int extended = 0;
+        int first_real = k;   /* first sample after original blink end */
+        while (j < n && extended < max_samps) {
+          /* When we have at least hold_samps of trailing pupil_r, check
+             the range; if it is <= stable_range, the recovery has
+             plateaued and we stop extending. */
+          if (j - first_real + 1 >= hold_samps) {
+            int ws = j - hold_samps + 1;
+            float pmin = pr[ws], pmax = pr[ws];
+            for (int w = ws + 1; w <= j; w++) {
+              if (pr[w] < pmin) pmin = pr[w];
+              if (pr[w] > pmax) pmax = pr[w];
+            }
+            if ((pmax - pmin) <= (float) stable_range) break;
+          }
+          mask[j] = 1;
+          j++;
+          extended++;
+        }
+        /* Jump scan past the extended region (the outer for loop will
+           then advance k++ to find the next real transition). */
+        k = j;
+      }
+    }
+
+    DYN_LIST *out = dfuCreateDynList(DF_CHAR, n > 0 ? n : 1);
+    for (k = 0; k < n; k++) dfuAddDynListChar(out, mask[k]);
+    dfuMoveDynListList(result, out);
+    free(mask);
+    free(pr);
+  }
+
+  return tclPutList(interp, result);
+}
+
+/*****************************************************************************
+ *                                                                           *
  *                                Em_Init                                    *
  *                                                                           *
  *****************************************************************************/
@@ -1445,6 +1622,11 @@ int Em_Init(Tcl_Interp *interp)
 
   Tcl_CreateObjCommand(interp, "em::c::classify",
                        em_classify_cmd,
+                       (ClientData) NULL,
+                       (Tcl_CmdDeleteProc *) NULL);
+
+  Tcl_CreateObjCommand(interp, "em::c::extend_blink_mask",
+                       em_extend_blink_mask_cmd,
                        (ClientData) NULL,
                        (Tcl_CmdDeleteProc *) NULL);
 

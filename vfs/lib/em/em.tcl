@@ -535,24 +535,37 @@ namespace eval em {
     #
     # Arguments:
     #   g     - dg to read input columns from and write output columns to
-    #   args  - -params <dict>    override detector options
-    #           -no_blink         ignore in_blink even if present
-    #           -provenance bool  if true (default false), write a
-    #                             <session>em/detection column with the
-    #                             full parameter dict + version.  Off by
-    #                             default to keep the dg strictly
-    #                             rectangular — opt in when you want
-    #                             self-documenting files.
+    #   args  - -params <dict>     override detector options
+    #           -no_blink          ignore in_blink even if present
+    #           -extend_blink mode "auto" (default) extends each blink
+    #                              forward until pupil_r stabilizes, when
+    #                              pupil_r is present on the dg; "on"
+    #                              requires pupil_r (errors if missing);
+    #                              "off" uses in_blink as-is
+    #           -save_extended_blink bool
+    #                              if true, writes the extended mask to
+    #                              g:in_blink_ext for inspection
+    #                              (default false)
+    #           -provenance bool   if true (default false), writes a
+    #                              <session>em/detection column with the
+    #                              full parameter dict + version.  Off
+    #                              by default to keep the dg strictly
+    #                              rectangular — opt in when you want
+    #                              self-documenting files.
     #
     proc extract_events {g args} {
         set params [dict create]
         set use_blink 1
+        set extend_blink auto
+        set save_extended_blink 0
         set provenance 0
         foreach {key val} $args {
             switch -- $key {
-                -params     { set params $val }
-                -no_blink   { set use_blink 0 }
-                -provenance { set provenance $val }
+                -params               { set params $val }
+                -no_blink             { set use_blink 0 }
+                -extend_blink         { set extend_blink $val }
+                -save_extended_blink  { set save_extended_blink $val }
+                -provenance           { set provenance $val }
             }
         }
 
@@ -562,10 +575,43 @@ namespace eval em {
             error "em::extract_events: g must contain em_h_deg, em_v_deg, em_seconds"
         }
 
-        # --- Saccade + PSO detection -----------------------------------
+        # --- Optional post-blink mask extension ------------------------
+        # When the tracker flags a blink, the samples just after the
+        # flag often still carry "held" values while pupil_r is still
+        # ramping.  Extending the blink forward until pupil_r plateaus
+        # prevents those recovery samples from being mis-detected as
+        # giant saccades at trial start.
         set blink_arg ""
         if {$use_blink && [dl_exists $g:in_blink]} {
-            set blink_arg $g:in_blink
+            set have_pupil_r [dl_exists $g:pupil_r]
+            set do_extend 0
+            switch -- $extend_blink {
+                auto { set do_extend $have_pupil_r }
+                on   {
+                    if {!$have_pupil_r} {
+                        error "em::extract_events: -extend_blink on requires g:pupil_r"
+                    }
+                    set do_extend 1
+                }
+                off  { set do_extend 0 }
+                default {
+                    error "em::extract_events: -extend_blink must be auto/on/off"
+                }
+            }
+            if {$do_extend} {
+                dl_local ext [em::c::extend_blink_mask $g:in_blink $g:pupil_r $params]
+                if {$save_extended_blink} {
+                    dl_set $g:in_blink_ext $ext
+                    set blink_arg $g:in_blink_ext
+                } else {
+                    # store under a scratch name on g so the C detector
+                    # can find it via tclFindDynList
+                    dl_set $g:_em_blink_scratch $ext
+                    set blink_arg $g:_em_blink_scratch
+                }
+            } else {
+                set blink_arg $g:in_blink
+            }
         }
         set rg [em::c::detect_saccades $g:em_h_deg $g:em_v_deg $g:em_seconds \
                     $blink_arg $params]
@@ -585,6 +631,11 @@ namespace eval em {
             dl_set $g:$col $cg:$col
         }
         dg_delete $cg
+
+        # --- Clean up scratch column if we wrote one -------------------
+        if {[dl_exists $g:_em_blink_scratch]} {
+            dl_delete $g:_em_blink_scratch
+        }
 
         # --- Optional provenance ---------------------------------------
         # Off by default so the dg stays strictly rectangular.  When on,
