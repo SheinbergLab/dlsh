@@ -178,25 +178,64 @@ namespace eval em {
     #   calibration dict, or "" if not found
     #
     proc extract_calibration_from_dg {g} {
-        if {![dl_exists $g:<session>em/biquadratic]} {
+        # Primary source: em/biquadratic (published post-close by emcalib_analyze.tcl)
+        if {[dl_exists $g:<session>em/biquadratic]} {
+            # Session column holds one datapoint at index :0
+            # dl_tcllist returns it wrapped in extra {}'s, so lindex to unwrap
+            set calib_dict [lindex [dl_tcllist $g:<session>em/biquadratic:0] 0]
+            if {$calib_dict ne "" \
+                && [dict exists $calib_dict x_coeffs] \
+                && [dict exists $calib_dict y_coeffs]} {
+                return $calib_dict
+            }
+        }
+
+        # Fallback: em/settings captures bq coeffs during the runtime fit
+        # (9point's finale -> em::do_fit, before file close), which survives
+        # cases where the post-close analyzer never ran (truncated session,
+        # extractor crash on aborted obs, etc.)
+        return [extract_calibration_from_settings $g]
+    }
+
+    #
+    # Build a calibration dict from the em/settings session datapoint.
+    #
+    # Returns "" when settings are absent, missing bq coeffs, or still at
+    # the emconf.tcl defaults (all zeros).
+    #
+    proc extract_calibration_from_settings {g} {
+        if {![dl_exists $g:<session>em/settings]} {
             return ""
         }
-        
-        # Session column holds one datapoint at index :0
-        # dl_tcllist returns it wrapped in extra {}'s, so lindex to unwrap
-        set calib_dict [lindex [dl_tcllist $g:<session>em/biquadratic:0] 0]
-        
-        if {$calib_dict eq ""} {
+
+        set settings [lindex [dl_tcllist $g:<session>em/settings:0] 0]
+        if {$settings eq ""} {
             return ""
         }
-        
-        # Validate required keys
-        if {![dict exists $calib_dict x_coeffs] || ![dict exists $calib_dict y_coeffs]} {
-            puts "em::extract_calibration_from_dg: missing x_coeffs or y_coeffs"
+        if {![dict exists $settings bq_h_coeffs] \
+            || ![dict exists $settings bq_v_coeffs]} {
             return ""
         }
-        
-        return $calib_dict
+
+        set x_coeffs [dict get $settings bq_h_coeffs]
+        set y_coeffs [dict get $settings bq_v_coeffs]
+        if {[llength $x_coeffs] != 9 || [llength $y_coeffs] != 9} {
+            return ""
+        }
+
+        # Reject the emconf default (all zeros) -- no calibration ever ran
+        set any_nonzero 0
+        foreach c [concat $x_coeffs $y_coeffs] {
+            if {$c != 0} { set any_nonzero 1; break }
+        }
+        if {!$any_nonzero} {
+            return ""
+        }
+
+        return [dict create \
+            source   "em/settings" \
+            x_coeffs $x_coeffs \
+            y_coeffs $y_coeffs]
     }
     
     #
