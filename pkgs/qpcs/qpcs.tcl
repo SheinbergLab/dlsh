@@ -6,6 +6,11 @@ namespace eval qpcs {
 
     variable qnxport 2560
     variable dsport  4620
+
+    # Type mappings for binary protocol
+    variable _binfmt   [dict create char c float f short s long i]
+    variable _dtypes   [dict create char 0 float 2 short 4 long 5]
+    variable _eltsizes [dict create char 1 float 4 short 2 long 4]
     
     set data(0) null
     unset data(0)
@@ -579,7 +584,70 @@ namespace eval qpcs {
 	catch {gets $sock status}
 	return $status
     }
-   
+
+    # Send a dl_list to dserv using the '>' fixed-length binary
+    # protocol over a pre-opened persistent socket. No base64,
+    # no handshake — single 128-byte write per call.
+    #
+    # Socket must be configured: -translation binary -buffering full
+    #
+    # Payload limit: varname + data must fit in ~100 bytes
+    # (128 - header overhead). For larger payloads use dsSocketPutData.
+    proc dsSocketSendBinary { sock varname dl } {
+	variable _binfmt
+	variable _dtypes
+	variable _eltsizes
+	set dtype [dl_datatype $dl]
+	set type [dict get $_dtypes $dtype]
+	set eltsize [dict get $_eltsizes $dtype]
+	set n [dl_length $dl]
+	set datalen [expr {$eltsize * $n}]
+	set varlen [string length $varname]
+
+	set fmt [dict get $_binfmt $dtype]
+	set data [binary format ${fmt}* [dl_tcllist $dl]]
+
+	# Build entire 128-byte message as a single binary format
+	# to avoid Tcl string/ByteArray representation mixing which
+	# can corrupt bytes >127 in the float data.
+	#
+	# Layout: '>' + varlen(u16) + varname + timestamp(u64=0)
+	#         + type(u32) + datalen(u32) + data + zero padding
+	set hdrlen [expr {1 + 2 + $varlen + 8 + 4 + 4 + $datalen}]
+	set pad [expr {128 - $hdrlen}]
+	if { $pad < 0 } { set pad 0 }
+
+	set msg [binary format \
+	    csa${varlen}wiia${datalen}x${pad} \
+	    0x3E $varlen $varname 0 $type $datalen $data]
+
+	puts -nonewline $sock $msg
+	flush $sock
+    }
+
+    # Like dsPutData but uses a pre-opened persistent socket.
+    # Uses the '@set' framed protocol with explicit lengths and
+    # multi-step handshake. Data is base64-encoded for transport.
+    proc dsSocketPutData { sock varname dl } {
+	set d [dict create char 0 float 2 short 4 long 5]
+	set dtype [dl_datatype $dl]
+	set type [dict get $d $dtype]
+	set d [dict create char 1 float 4 short 2 long 4]
+	set eltsize [dict get $d $dtype]
+	set len [dl_toString64 $dl _v64]
+	set datalen [expr {$eltsize * [dl_length $dl]}]
+
+	set varlen [expr {[string len $varname] + 2}]
+	puts $sock "@set $varlen $type $datalen"
+	gets $sock
+	puts $sock $varname
+	gets $sock
+	puts $sock $_v64
+	set status [gets $sock]
+	unset _v64
+	return $status
+    }
+
     proc dsSocketGet { sock var } {
 	puts $sock "%get $var"
 	catch {gets $sock status}
