@@ -298,7 +298,9 @@ add_library(dlsh SHARED
     src/dgjson.c 
     src/dgmsgpack.c
     src/dgarrow.c
-    src/lablib/gbufutl.c 
+    src/dlnoise.c
+    src/open-simplex-noise.c
+    src/lablib/gbufutl.c
     src/lablib/gbuf.c 
     src/lablib/cg_base.c 
     src/lablib/axes.c 

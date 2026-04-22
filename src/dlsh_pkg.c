@@ -24,6 +24,7 @@ extern int Df_Init(Tcl_Interp * interp) ;
 extern int Dlg_Init(Tcl_Interp * interp) ;
 extern int Cgps_Init(Tcl_Interp * interp) ;
 extern int Cgbase_Init(Tcl_Interp * interp) ;
+extern int DlNoise_Init(Tcl_Interp * interp) ;
 
 EXPORT(int,Dlsh_Init) (Tcl_Interp *interp)
 {
@@ -31,6 +32,7 @@ EXPORT(int,Dlsh_Init) (Tcl_Interp *interp)
   if (Df_Init(interp) == TCL_ERROR) return(TCL_ERROR);
   if (Dlg_Init(interp) == TCL_ERROR) return(TCL_ERROR);
   if (Cgbase_Init(interp) == TCL_ERROR) return(TCL_ERROR) ;
+  if (DlNoise_Init(interp) == TCL_ERROR) return(TCL_ERROR);
 
   Tcl_PkgProvide(interp, "dlsh", "1.2");
 
