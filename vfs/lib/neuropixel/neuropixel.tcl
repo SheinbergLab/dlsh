@@ -79,10 +79,11 @@ namespace eval ::neuropixel {
     variable DEFAULT_TIME_UNITS "ms_from_obs_start"
 
     namespace export \
-        open_package resolve_block_id \
+        open_package resolve_block_id package_label \
+        list_blocks match_trials_dir \
         unit_depths unit_metadata firing_unit_ids spikes_by_obs \
         add_spikes add_unit_metadata add_schema_columns \
-        append_spikes_file
+        append_spikes_file append_spikes_dir
 }
 
 # ---------------------------------------------------------------------------
@@ -104,6 +105,19 @@ proc ::neuropixel::open_package {db_path args} {
 }
 
 # ---------------------------------------------------------------------------
+# package_label db
+#
+# Return the package_label string (e.g. "bank_a"). Useful as a suffix for
+# disambiguating output filenames when multiple packages (different channel
+# subsets) cover the same behavior session. Returns "" if no label is set.
+# ---------------------------------------------------------------------------
+proc ::neuropixel::package_label {db} {
+    set label [$db onecolumn {SELECT package_label FROM packages LIMIT 1}]
+    if {$label eq ""} { return "" }
+    return $label
+}
+
+# ---------------------------------------------------------------------------
 # resolve_block_id db path_or_stem
 # ---------------------------------------------------------------------------
 proc ::neuropixel::resolve_block_id {db path_or_stem} {
@@ -118,6 +132,86 @@ proc ::neuropixel::resolve_block_id {db path_or_stem} {
         SELECT block_id FROM dgz_sources WHERE session_stem = :stem
     }]
     return $bid
+}
+
+# ---------------------------------------------------------------------------
+# list_blocks db
+#
+# Return a list of dicts describing every block with an associated dgz
+# source in the package. Each dict has:
+#
+#   block_id       integer
+#   block_name     full block name (usually includes date/time suffix)
+#   session_stem   the dgz session stem (matches behavior .dgz filename)
+#   dgz_path       path stored at packaging time (may be foreign, e.g.
+#                  Windows paths); do NOT assume it resolves locally
+#
+# Ordered by block_index.
+# ---------------------------------------------------------------------------
+proc ::neuropixel::list_blocks {db} {
+    set out [list]
+    $db eval {
+        SELECT s.block_id       AS block_id,
+               b.block_name     AS block_name,
+               s.session_stem   AS session_stem,
+               s.dgz_path       AS dgz_path
+        FROM dgz_sources s
+        JOIN blocks b ON b.block_id = s.block_id
+        ORDER BY b.block_index
+    } row {
+        lappend out [dict create \
+            block_id     $row(block_id)     \
+            block_name   $row(block_name)   \
+            session_stem $row(session_stem) \
+            dgz_path     $row(dgz_path)]
+    }
+    return $out
+}
+
+# ---------------------------------------------------------------------------
+# match_trials_dir db trials_dir ?-pattern glob?
+#
+# Scan a local directory for .dgz / .trials.dgz files whose stems match a
+# session_stem in the package. Returns a list of dicts:
+#
+#   block_id
+#   session_stem
+#   path            local filesystem path to the matched dgz
+#
+# Files that don't match any session_stem in the DB are silently skipped.
+# ---------------------------------------------------------------------------
+proc ::neuropixel::match_trials_dir {db trials_dir args} {
+    set pattern "*.dgz"
+    foreach {opt val} $args {
+        switch -- $opt {
+            -pattern { set pattern $val }
+            default  { error "match_trials_dir: unknown option $opt" }
+        }
+    }
+
+    # Build session_stem -> block_id lookup
+    set stem2bid [dict create]
+    foreach blk [list_blocks $db] {
+        dict set stem2bid [dict get $blk session_stem] [dict get $blk block_id]
+    }
+
+    set matches [list]
+    foreach path [lsort [glob -nocomplain -directory $trials_dir $pattern]] {
+        set stem [file tail $path]
+        foreach suffix {.trials.dgz .dgz .obs.dgz} {
+            if {[string match *$suffix $stem]} {
+                set stem [string range $stem 0 end-[string length $suffix]]
+                break
+            }
+        }
+        if {[dict exists $stem2bid $stem]} {
+            lappend matches [dict create \
+                block_id     [dict get $stem2bid $stem] \
+                session_stem $stem \
+                path         $path]
+        }
+    }
+    return $matches
 }
 
 # ---------------------------------------------------------------------------
@@ -496,4 +590,80 @@ proc ::neuropixel::append_spikes_file {db_path in_dgz out_dgz args} {
         n_src    $n_src    \
         nunits   [llength $unit_ids] \
         n_spikes $n_spikes]
+}
+
+# ---------------------------------------------------------------------------
+# append_spikes_dir db_path trials_dir out_dir ?options?
+#
+# Batch variant of append_spikes_file: match every dgz in $trials_dir
+# against the package's session_stems and write an augmented dgz for each
+# match into $out_dir. Unmatched files are skipped.
+#
+# Output filename:
+#   "<session_stem>.<suffix>.spikes.dgz" if a non-empty suffix is used
+#   "<session_stem>.spikes.dgz"          otherwise
+#
+# Suffix resolution:
+#   -suffix <string>   explicit; "" forces bare names
+#   (not supplied)     auto — use packages.package_label from the DB if
+#                      non-empty (e.g. "bank_a"), else bare.
+#
+# Other options are forwarded per-file to append_spikes_file (e.g.
+# -with_unit_meta, -with_schema, -obsid_col). -block_id / -require_block
+# are not accepted here since matching is automatic.
+#
+# Returns a list of per-file info dicts, each extending the
+# append_spikes_file result with:
+#
+#   session_stem   matched stem
+#   in_path        input dgz path
+#   out_path       written dgz path
+#   suffix         effective suffix applied ("" if none)
+# ---------------------------------------------------------------------------
+proc ::neuropixel::append_spikes_dir {db_path trials_dir out_dir args} {
+    # Split -suffix out of args; pass the rest through to append_spikes_file.
+    set suffix_given 0
+    set suffix ""
+    set forwarded [list]
+    foreach {opt val} $args {
+        switch -- $opt {
+            -block_id - -require_block {
+                error "append_spikes_dir: $opt is not applicable in batch mode"
+            }
+            -suffix {
+                set suffix $val
+                set suffix_given 1
+            }
+            default {
+                lappend forwarded $opt $val
+            }
+        }
+    }
+
+    file mkdir $out_dir
+
+    set db [open_package $db_path]
+    set matches [match_trials_dir $db $trials_dir]
+    if {!$suffix_given} {
+        set suffix [package_label $db]
+    }
+    $db close
+
+    set results [list]
+    foreach m $matches {
+        set in_path  [dict get $m path]
+        set stem     [dict get $m session_stem]
+        set out_name [expr {$suffix eq "" \
+            ? "${stem}.spikes.dgz" \
+            : "${stem}.${suffix}.spikes.dgz"}]
+        set out_path [file join $out_dir $out_name]
+        set info [append_spikes_file $db_path $in_path $out_path \
+                    -block_id [dict get $m block_id] {*}$forwarded]
+        dict set info session_stem $stem
+        dict set info in_path      $in_path
+        dict set info out_path     $out_path
+        dict set info suffix       $suffix
+        lappend results $info
+    }
+    return $results
 }
