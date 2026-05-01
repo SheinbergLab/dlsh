@@ -140,8 +140,12 @@ IMG_IMAGE *CImg_edgeDetectImg(IMG_IMAGE *img, int mode, double alpha, double thr
 
   CImg<unsigned char> edge(img->width, img->height);
 
-  /* hard coded crop window seems wrong? */
-  CImg<> visu_bw = CImg<>(image).get_crop(0,0,256,256).get_norm().normalize(0,255).resize(-100,-100,1,2,2);
+  /* Was: get_crop(0,0,256,256) -- hard-coded crop region that
+     silently truncated images larger than 256x256 and zero-padded
+     smaller ones, corrupting edge-detection results for any image
+     not exactly 256x256. Removed; the gradient is now computed on
+     the whole image as intended. */
+  CImg<> visu_bw = CImg<>(image).get_norm().normalize(0,255).resize(-100,-100,1,2,2);
   edge.fill(255); // Background color in the edge-detection window is white.
   CImgList<> grad(visu_bw.blur((float)alpha).normalize(0,255).get_gradient());
   
@@ -304,16 +308,36 @@ IMG_IMAGE *CImg_drawPolygonAlt(IMG_IMAGE *img, int np, float *x, float *y,
   CImg<> npoints = points>'x';
 
   image.draw_polygon(npoints, color, 1, 0xffffffff);
-  
-  /* ensure point is in polygon to fill from */
-  fillx = image.width()/2;
-  filly = image.height()/2;
-  while (!pointInPolygon(np, x, y, fillx, filly)) {
-    fillx = rand()*image.width();
-    filly = rand()*image.height();
-    if (tries++ > maxtries) break;
+
+  /* Pick a flood-fill seed inside the polygon. Try the polygon's
+     centroid first (always inside a convex polygon); fall back to the
+     image center; then sample random points within the polygon's
+     bounding box. Previously this used `rand()*image.width()` which
+     overflows to garbage out-of-bounds coordinates, so the fallback
+     never found a valid seed and small/off-center polygons were drawn
+     as outlines only. */
+  float cx = 0.0f, cy = 0.0f;
+  float xmin = x[0], xmax = x[0], ymin = y[0], ymax = y[0];
+  for (i = 0; i < np; i++) {
+    cx += x[i]; cy += y[i];
+    if (x[i] < xmin) xmin = x[i]; if (x[i] > xmax) xmax = x[i];
+    if (y[i] < ymin) ymin = y[i]; if (y[i] > ymax) ymax = y[i];
   }
-  image.draw_fill(fillx, filly, color);
+  cx /= np; cy /= np;
+
+  fillx = cx; filly = cy;
+  if (!pointInPolygon(np, x, y, fillx, filly)) {
+    fillx = image.width()  / 2.0f;
+    filly = image.height() / 2.0f;
+    while (!pointInPolygon(np, x, y, fillx, filly)) {
+      fillx = xmin + ((float) rand() / (float) RAND_MAX) * (xmax - xmin);
+      filly = ymin + ((float) rand() / (float) RAND_MAX) * (ymax - ymin);
+      if (tries++ > maxtries) break;
+    }
+  }
+  if (tries <= maxtries) {
+    image.draw_fill(fillx, filly, color);
+  }
   return(cimg2img(image, name));
 }
 
@@ -332,16 +356,26 @@ IMG_IMAGE *CImg_fillPolygonOutside(IMG_IMAGE *img, int np, float *x, float *y,
   
   CImg<> npoints = points>'x';
   image.draw_polygon(npoints, color, 1, 0xffffffff);
-  
-  /* ensure point is in polygon to fill from */
-  fillx = image.width()/10;
-  filly = image.height()/10;
-  while (pointInPolygon(np, x, y, fillx, filly)) {
-    fillx = rand()*image.width();
-    filly = rand()*image.height();
-    if (tries++ > maxtries) break;
+
+  /* Pick a flood-fill seed OUTSIDE the polygon. Same `rand()` overflow
+     bug as in CImg_drawPolygonAlt was here too -- fixed identically.
+     The image corners are guaranteed outside any polygon that fits
+     within the image, so try those first before falling back to
+     random sampling within the image. */
+  fillx = 0.0f;
+  filly = 0.0f;
+  if (pointInPolygon(np, x, y, fillx, filly)) {
+    fillx = (float) image.width()  - 1.0f;
+    filly = (float) image.height() - 1.0f;
+    while (pointInPolygon(np, x, y, fillx, filly)) {
+      fillx = ((float) rand() / (float) RAND_MAX) * (float) image.width();
+      filly = ((float) rand() / (float) RAND_MAX) * (float) image.height();
+      if (tries++ > maxtries) break;
+    }
   }
-  image.draw_fill(fillx, filly, color);
+  if (tries <= maxtries) {
+    image.draw_fill(fillx, filly, color);
+  }
 
   return(cimg2img(image, name));
 }
