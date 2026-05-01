@@ -341,9 +341,54 @@ IMG_IMAGE *CImg_drawPolygonAlt(IMG_IMAGE *img, int np, float *x, float *y,
   return(cimg2img(image, name));
 }
 
-IMG_IMAGE *CImg_fillPolygonOutside(IMG_IMAGE *img, int np, float *x, float *y, 
+/* Filled-polygon scan-line fill writing only selected channels.
+ *
+ *   channel_mask is a bitmask of which channels to write:
+ *       bit 0 (1) = R, bit 1 (2) = G, bit 2 (4) = B, bit 3 (8) = A.
+ *       Combine with OR -- e.g. mask = 9 (0b1001) writes R and A.
+ *   color carries the value to write into each enabled channel
+ *       (color[0]=R, color[1]=G, color[2]=B, color[3]=A); channels
+ *       not selected by the mask are not touched.
+ *
+ * Internally uses CImg's get_shared_channel(c) to obtain a single-
+ * channel view sharing the underlying pixel buffer, then runs the
+ * standard scan-line draw on that view. Each enabled channel costs
+ * one polygon scan-conversion pass, so a 4-channel write is 4x the
+ * work of CImg_drawPolygon -- typical use writes 1-2 channels.
+ *
+ * Use case: packing multiple semantic layers into the channels of a
+ * single RGBA texture (e.g. obstacles in alpha, choice zones in R/G,
+ * frame markers in B). With this function you can rasterize each
+ * layer in any order without disturbing the others; without it you
+ * have to carefully sequence draws so later writes don't clobber
+ * earlier channels (see CImg_drawPolygon, which writes all four).
+ */
+IMG_IMAGE *CImg_drawPolygonChannelMask(IMG_IMAGE *img, int np, float *x, float *y,
+				       unsigned char *color, int channel_mask,
+				       char *name)
+{
+  CImg<unsigned char> image = img2cimg(img);
+  CImgList<float> points;
+  int i;
+  for (i = 0; i < np; i++) {
+    points.insert(CImg<>::vector(x[i], y[i]));
+  }
+  CImg<> npoints = points>'x';
+
+  int spectrum = image.spectrum();
+  for (int c = 0; c < 4 && c < spectrum; c++) {
+    if (channel_mask & (1 << c)) {
+      CImg<unsigned char> ch = image.get_shared_channel(c);
+      unsigned char single[1] = { color[c] };
+      ch.draw_polygon(npoints, single);
+    }
+  }
+  return(cimg2img(image, name));
+}
+
+IMG_IMAGE *CImg_fillPolygonOutside(IMG_IMAGE *img, int np, float *x, float *y,
 				   unsigned char *color, unsigned int pattern,
-				   char *name) 
+				   char *name)
 {
   CImg<unsigned char> image = img2cimg(img);
   CImgList<float> points;

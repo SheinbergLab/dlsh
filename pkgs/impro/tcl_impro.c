@@ -122,6 +122,7 @@ static int imgEdgeDetectImgCmd       (ClientData, Tcl_Interp *, int, char **);
 static int imgFillDetectImgCmd       (ClientData, Tcl_Interp *, int, char **);
 
 static int imgDrawPolygonCmd         (ClientData, Tcl_Interp *, int, char **);
+static int imgDrawPolygonChannelCmd  (ClientData, Tcl_Interp *, int, char **);
 static int imgDrawPolygonFastCmd     (ClientData, Tcl_Interp *, int, char **);
 static int imgDrawPolylineCmd        (ClientData, Tcl_Interp *, int, char **);
 
@@ -252,8 +253,10 @@ static TCL_COMMANDS IMGcommands[] = {
     "draw polygon in color fillcolor" },
   { "img_drawPolygonFast", imgDrawPolygonCmd, (ClientData) IMPRO_POLY1, 
     "draw polygon in color fillcolor (faster method)" },
-  { "img_fillPolygonOutside", imgDrawPolygonCmd, (ClientData) IMPRO_POLY3, 
+  { "img_fillPolygonOutside", imgDrawPolygonCmd, (ClientData) IMPRO_POLY3,
     "fill around polygon in color fillcolor" },
+  { "img_drawPolygonChannel", imgDrawPolygonChannelCmd, NULL,
+    "draw polygon writing only channels selected by mask (1=R 2=G 4=B 8=A)" },
   { "img_drawPolyline", imgDrawPolylineCmd, NULL, "draw polygon in using patterned color" },
 
   { "img_edgeDetect",imgEdgeDetectImgCmd, NULL, "edge detect img using cimg library" },
@@ -1324,6 +1327,87 @@ static int imgDrawPolygonCmd (ClientData data, Tcl_Interp *interp,
   /*
    * Add to hash table which contains list of open images
    */
+  if (newimage != img) return imgAddImage(interp, newimage, imgname);
+  else {
+    Tcl_AppendResult(interp, img->name, (char *) NULL);
+    return TCL_OK;
+  }
+}
+
+/* img_drawPolygonChannel image xs ys r g b a channel_mask
+ *
+ * Filled-polygon scan-line draw that writes only the channels selected
+ * by channel_mask (bit 0=R, 1=G, 2=B, 3=A; combine with OR).
+ *
+ * Use case: packing multiple semantic layers into the channels of a
+ * single RGBA texture without later writes clobbering earlier ones.
+ * Example: write planks to alpha (mask=8), zones to R (mask=1), and
+ * a frame to B (mask=4), all on one image, in any order.
+ */
+static int imgDrawPolygonChannelCmd(ClientData data, Tcl_Interp *interp,
+				    int argc, char *argv[])
+{
+  IMG_IMAGE *img, *newimage;
+  DYN_LIST *x, *y;
+  float *xvals, *yvals;
+  static char imgname[32];
+  int r, g, b, a;
+  int channel_mask;
+  unsigned char fillcolor[4];
+
+  if (argc < 9) {
+    Tcl_AppendResult(interp, "usage: ", argv[0],
+		     " image xs ys r g b a channel_mask",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  if (imgFindImg(interp, argv[1], &img) != TCL_OK) return TCL_ERROR;
+  sprintf(imgname, "img%d", imgCount++);
+
+  if (tclFindDynList(interp, argv[2], &x) != TCL_OK) return TCL_ERROR;
+  if (tclFindDynList(interp, argv[3], &y) != TCL_OK) return TCL_ERROR;
+
+  if (Tcl_GetInt(interp, argv[4], &r) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetInt(interp, argv[5], &g) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetInt(interp, argv[6], &b) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetInt(interp, argv[7], &a) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetInt(interp, argv[8], &channel_mask) != TCL_OK) return TCL_ERROR;
+  if (channel_mask < 0 || channel_mask > 15) {
+    Tcl_AppendResult(interp, argv[0], ": channel_mask must be 0..15",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  fillcolor[0] = (unsigned char) r;
+  fillcolor[1] = (unsigned char) g;
+  fillcolor[2] = (unsigned char) b;
+  fillcolor[3] = (unsigned char) a;
+
+  if (DYN_LIST_DATATYPE(x) != DF_FLOAT ||
+      DYN_LIST_DATATYPE(y) != DF_FLOAT) {
+    Tcl_AppendResult(interp, argv[0],
+		     ": x, y must be of type float",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+  if (DYN_LIST_N(x) != DYN_LIST_N(y)) {
+    Tcl_AppendResult(interp, argv[0],
+		     ": source lists must be same length",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  xvals = (float *) DYN_LIST_VALS(x);
+  yvals = (float *) DYN_LIST_VALS(y);
+
+  if (!(newimage = CImg_drawPolygonChannelMask(img, DYN_LIST_N(x), xvals, yvals,
+					       fillcolor, channel_mask, imgname))) {
+    Tcl_AppendResult(interp, argv[0], ": unable to draw polygon ", imgname,
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+
   if (newimage != img) return imgAddImage(interp, newimage, imgname);
   else {
     Tcl_AppendResult(interp, img->name, (char *) NULL);

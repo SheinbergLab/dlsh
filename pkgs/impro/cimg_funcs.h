@@ -17,11 +17,14 @@ extern "C" {
 			      unsigned char *fillcolor, char *name);
   IMG_IMAGE *CImg_edgeDetectImg(IMG_IMAGE *img, int mode, double thresL, double thresH, double alpha, char *name);
   int CImg_fillDoubleDetect(IMG_IMAGE *img, char *name);
-  IMG_IMAGE *CImg_drawPolygon(IMG_IMAGE *img, int n, float *x, float *y, 
+  IMG_IMAGE *CImg_drawPolygon(IMG_IMAGE *img, int n, float *x, float *y,
 			      unsigned char *color, unsigned int pattern, char *name);
-  IMG_IMAGE *CImg_drawPolygonAlt(IMG_IMAGE *img, int n, float *x, float *y, 
+  IMG_IMAGE *CImg_drawPolygonAlt(IMG_IMAGE *img, int n, float *x, float *y,
 				 unsigned char *color, unsigned int pattern, char *name);
-  IMG_IMAGE *CImg_fillPolygonOutside(IMG_IMAGE *img, int n, float *x, float *y, 
+  IMG_IMAGE *CImg_drawPolygonChannelMask(IMG_IMAGE *img, int n, float *x, float *y,
+					 unsigned char *color, int channel_mask,
+					 char *name);
+  IMG_IMAGE *CImg_fillPolygonOutside(IMG_IMAGE *img, int n, float *x, float *y,
 				     unsigned char *color, unsigned int pattern, char *name);
   IMG_IMAGE *CImg_fftImg(IMG_IMAGE *img, int rmin, int rmax, char *name);
   IMG_IMAGE *CImg_blurImg(IMG_IMAGE *image, float sigma, int boundary_conditions, int is_gaussian, char *name);
