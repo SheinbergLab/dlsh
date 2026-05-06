@@ -284,4 +284,112 @@ dg_delete $tl_t
 dg_delete $ens_p
 dg_delete $ens_t
 
+# ------------------------------------------------------------
+# 9. Envelope dispatcher: composed product of cosine_ramp and
+#    sum_gaussians produces an onset-eased pulse train. The first
+#    pulse should be suppressed (sigmoid still rising) compared to
+#    later pulses.
+# ------------------------------------------------------------
+puts "\nTest 9: composed envelope (cosine_ramp * sum_gaussians)"
+
+set composed_spec [dict create \
+    meta {duration 2.0 dt 0.0167 patch_size_dva 13.0} \
+    endpoints {target   {coh 1.0 speed 0.6 dir 0.0 life 0.5} \
+               surround {coh 0.0 speed 0.23 dir 0.0 life 0.08}} \
+    envelope {kind product
+              parts {
+                  {kind cosine_ramp t0 0.0 t1 0.5 base_coh 1.0}
+                  {kind sum_gaussians n_pulses 5 sigma_ms 80 base_coh 1.0}
+              }} \
+    trajectory {kind static}]
+
+set tlc [mp_sim::compile_spec $composed_spec -gname mp_sim_tlc]
+# Pulse 0 (center 0.2) is during the ramp -- value at peak should be
+# attenuated. Pulse 4 (center 1.8) is well past the ramp -- value
+# should be near base_coh.
+set p0_peak_t 0.2
+set p4_peak_t 1.8
+dl_local d0 [dl_abs [dl_sub $tlc:t $p0_peak_t]]
+dl_local d4 [dl_abs [dl_sub $tlc:t $p4_peak_t]]
+set i0 [dl_minIndex $d0]
+set i4 [dl_minIndex $d4]
+set v0 [dl_get $tlc:coherence $i0]
+set v4 [dl_get $tlc:coherence $i4]
+puts "  composed peak0 = $v0   peak4 = $v4   (expect peak0 attenuated, peak4 ~1.0)"
+assert {$v0 < 0.6}                                   "first pulse suppressed by ramp"
+assert {$v4 > 0.95}                                  "later pulse near base_coh"
+dg_delete $tlc
+
+# ------------------------------------------------------------
+# 10. trapezoid_train + step_sequence + callbacks.
+#     Build a 3-position mapping spec and verify (a) coherence reaches
+#     plateau between rises, (b) mask_offset switches in OFF windows,
+#     (c) on/off callbacks fire at the right number of frames.
+# ------------------------------------------------------------
+puts "\nTest 10: mapping spec (trapezoid_train + step_sequence + callbacks)"
+
+# Track callback firings.
+set ::__test10_on_count  0
+set ::__test10_off_count 0
+proc test10_on  {name fi t v} { incr ::__test10_on_count }
+proc test10_off {name fi t v} { incr ::__test10_off_count }
+
+set base_spec [dict create \
+    meta {dt 0.0167 patch_size_dva 13.0} \
+    endpoints {target   {coh 1.0 speed 0.6 dir 0.0 life 0.5} \
+               surround {coh 0.0 speed 0.23 dir 0.0 life 0.08}}]
+
+set tl_map [mp_sim::compile_mapping_spec $base_spec \
+                -positions {{-2 0} {0 0} {2 0}} \
+                -on_dur 0.150 -off_dur 0.050 -ease_dur 0.050 \
+                -on_callback test10_on -off_callback test10_off \
+                -gname mp_sim_tl_map]
+mp_sim::validate_timeline $tl_map
+
+# Each tile = on + 2*ease + off = 0.150 + 0.10 + 0.050 = 0.300s
+# pre = 0.100. Total duration = 0.100 + 3*0.300 = 1.000s.
+set dur [dl_get $tl_map:duration 0]
+puts "  mapping duration = $dur (expect 1.000)"
+assert {abs($dur - 1.000) < 0.005}                   "total duration matches tile arithmetic"
+
+# Coherence should reach base_coh = 1.0 in each plateau.
+assert {[dl_max $tl_map:coherence] > 0.99}           "coherence reaches plateau"
+assert {[dl_min $tl_map:coherence] < 0.01}           "coherence returns to zero between plateaus"
+
+# 3 unique positions in mask_offset_x.
+dl_local mox_unique [dl_unique $tl_map:mask_offset_x]
+assert {[dl_length $mox_unique] == 3}                "3 distinct x positions in trajectory"
+
+# Callbacks: 3 on + 3 off events.
+set count [dl_get $tl_map:callbacks_count 0]
+assert {$count == 2}                                 "2 callbacks registered"
+set on_frames  [dl_length $tl_map:callback_0_frames]
+set off_frames [dl_length $tl_map:callback_1_frames]
+puts "  scheduled on=$on_frames  off=$off_frames"
+assert {$on_frames == 3}                             "3 on-crossings scheduled"
+assert {$off_frames == 3}                            "3 off-crossings scheduled"
+
+# Dispatch: walk every frame and fire any due callbacks.
+set n [dl_length $tl_map:t]
+for {set i 0} {$i < $n} {incr i} {
+    mp_sim::dispatch_callbacks_at $tl_map $i
+}
+puts "  fired on=$::__test10_on_count  off=$::__test10_off_count"
+assert {$::__test10_on_count == 3}                   "on callback fired 3 times"
+assert {$::__test10_off_count == 3}                  "off callback fired 3 times"
+
+dg_delete $tl_map
+
+# ------------------------------------------------------------
+# 11. eval_envelope with cosine_ramp matches analytical raised cosine
+#     0.5*(1 - cos(pi * (t-t0)/(t1-t0))) at midpoint = 0.5.
+# ------------------------------------------------------------
+puts "\nTest 11: cosine_ramp midpoint check"
+dl_local ts_test [dl_flist 0.25]
+dl_local v [mp_sim::eval_envelope \
+                {kind cosine_ramp t0 0.0 t1 0.5 base_coh 1.0} $ts_test]
+set mid [dl_get $v 0]
+puts "  cosine_ramp midpoint = $mid (expect 0.5)"
+assert {abs($mid - 0.5) < 1e-4}                      "cosine ramp midpoint = 0.5"
+
 puts "\nAll tests passed."

@@ -25,11 +25,488 @@
 #
 #   See testmp_sim.tcl for usage.
 
-package provide mp_sim 0.1
+package provide mp_sim 0.2
 package require dlsh
 
 namespace eval mp_sim {
     variable pi 3.14159265358979323846
+}
+
+# ============================================================
+# Layer A.0: envelope + trajectory dispatchers
+# ============================================================
+#
+# An envelope is a Tcl dict describing how the modulating value
+# evolves over time. atomic kinds compute a per-frame value directly;
+# compositors (product, sum) recurse into a list of sub-envelopes and
+# combine their outputs. Adding a new kind = one switch case in
+# eval_envelope + a small private proc.
+#
+# Kinds:
+#   {kind flat              base_coh V}                    -- constant
+#   {kind sum_gaussians     n_pulses N sigma_ms S         -- pulse train
+#                           ?centers C? base_coh V}
+#   {kind cosine_ramp       t0 T0 t1 T1 base_coh V}        -- raised-cosine 0->base over [t0, t1]
+#   {kind gate              t0 T0 t1 T1 base_coh V}        -- rectangular 1 inside [t0, t1]
+#   {kind sigmoid           t0 T0 tau TAU base_coh V}      -- logistic ramp
+#   {kind trapezoid_train   centers {t0 t1 ...}            -- trapezoidal pulse train
+#                           plateau_dur P ease_dur E base_coh V}
+#   {kind product           parts {<env1> <env2> ...}}     -- multiply parts
+#   {kind sum               parts {<env1> <env2> ...}      -- add parts (clamp to base_coh)
+#                           base_coh V}
+#   {kind callback          proc procname ?args A?}        -- arbitrary user fn
+
+# mp_sim::eval_envelope env ts
+#   Evaluate an envelope dict at time grid ts (a dl). Returns a dl of
+#   per-frame values clamped to [0, base_coh] for the leaf kinds; the
+#   compositors do their own clamping to keep intermediate intermediate
+#   composition well-defined.
+proc mp_sim::eval_envelope {env ts} {
+    set kind [dict get $env kind]
+    # dl_return at every dispatch level: the inner _env_* procs return
+    # dl-return-named lists (>#<) that live only in their caller's
+    # scope; passing them through this dispatcher with a plain `return`
+    # would let them be reaped before compile_spec consumes them.
+    switch -- $kind {
+        flat              { dl_return [mp_sim::_env_flat              $env $ts] }
+        sum_gaussians     { dl_return [mp_sim::_env_sum_gaussians     $env $ts] }
+        cosine_ramp       { dl_return [mp_sim::_env_cosine_ramp       $env $ts] }
+        gate              { dl_return [mp_sim::_env_gate              $env $ts] }
+        sigmoid           { dl_return [mp_sim::_env_sigmoid           $env $ts] }
+        trapezoid_train   { dl_return [mp_sim::_env_trapezoid_train   $env $ts] }
+        product           { dl_return [mp_sim::_env_product           $env $ts] }
+        sum               { dl_return [mp_sim::_env_sum               $env $ts] }
+        callback          { dl_return [mp_sim::_env_callback          $env $ts] }
+        default           { error "mp_sim::eval_envelope: unknown kind '$kind'" }
+    }
+}
+
+# mp_sim::collect_tile_times env duration
+#   Walk an envelope dict (recursing into compositors) and return a
+#   flat Tcl list of all pulse-center times. Used for resolving
+#   bounce phase=peak/trough regardless of how the envelope was
+#   composed.
+proc mp_sim::collect_tile_times {env duration} {
+    set kind [dict get $env kind]
+    switch -- $kind {
+        sum_gaussians {
+            if {[dict exists $env centers]} {
+                return [dict get $env centers]
+            } else {
+                set n_pulses [dict get $env n_pulses]
+                return [mp_sim::evenly_spaced_pulse_centers $n_pulses $duration]
+            }
+        }
+        trapezoid_train {
+            if {[dict exists $env centers]} {
+                return [dict get $env centers]
+            } else {
+                return [list]
+            }
+        }
+        product - sum {
+            set out [list]
+            foreach sub [dict get $env parts] {
+                lappend out {*}[mp_sim::collect_tile_times $sub $duration]
+            }
+            return $out
+        }
+        default { return [list] }
+    }
+}
+
+# ---- Atomic envelope kinds -----------------------------------------
+
+proc mp_sim::_env_base_coh {env {default 1.0}} {
+    if {[dict exists $env base_coh]} { return [dict get $env base_coh] }
+    return $default
+}
+
+proc mp_sim::_env_flat {env ts} {
+    set base [mp_sim::_env_base_coh $env]
+    dl_return [dl_mult $base [dl_ones [dl_length $ts]]]
+}
+
+proc mp_sim::_env_sum_gaussians {env ts} {
+    set base [mp_sim::_env_base_coh $env]
+    set sigma_s [expr {[dict get $env sigma_ms] / 1000.0}]
+    if {[dict exists $env centers]} {
+        set centers [dict get $env centers]
+    } else {
+        # 'centers' wasn't pre-resolved; we don't know duration here so
+        # require either centers or n_pulses+duration upstream. For
+        # backwards compat, allow a duration field on the envelope.
+        set n_pulses [dict get $env n_pulses]
+        set dur [expr {[dict exists $env duration] ? [dict get $env duration] : ([dl_get $ts [expr {[dl_length $ts] - 1}]])}]
+        set centers [mp_sim::evenly_spaced_pulse_centers $n_pulses $dur]
+    }
+    set n [dl_length $ts]
+    if {$sigma_s <= 0.0 || [llength $centers] == 0} {
+        return [dl_mult $base [dl_ones $n]]
+    }
+    dl_local sum [dl_zeros $n]
+    foreach c $centers {
+        dl_local z [dl_div [dl_sub $ts $c] $sigma_s]
+        dl_local g [dl_exp [dl_mult -0.5 [dl_mult $z $z]]]
+        dl_local sum [dl_add $sum $g]
+    }
+    dl_local v [dl_mult $base $sum]
+    dl_local hi [dl_gte $v $base]
+    dl_local v  [dl_add [dl_mult [dl_sub 1.0 $hi] $v] [dl_mult $hi $base]]
+    dl_local lo [dl_lt $v 0.0]
+    dl_local v  [dl_mult [dl_sub 1.0 $lo] $v]
+    dl_return $v
+}
+
+# Raised cosine: rises from 0 to base over [t0, t1], stays at base
+# for t > t1, is 0 for t < t0. Useful as an onset ramp or as the
+# building block for trapezoid_train ease segments.
+proc mp_sim::_env_cosine_ramp {env ts} {
+    variable pi
+    set base [mp_sim::_env_base_coh $env]
+    set t0 [dict get $env t0]
+    set t1 [dict get $env t1]
+    set n [dl_length $ts]
+    if {$t1 <= $t0} {
+        # degenerate ramp -> step
+        dl_local mask [dl_gte $ts $t0]
+        return [dl_mult $base $mask]
+    }
+    set width [expr {$t1 - $t0}]
+    # phase = clamp((t-t0)/width, 0, 1)
+    dl_local phase [dl_div [dl_sub $ts $t0] $width]
+    dl_local hi [dl_gte $phase 1.0]
+    dl_local lo [dl_lt $phase 0.0]
+    dl_local phase [dl_add [dl_mult [dl_sub 1.0 $hi] $phase] [dl_mult $hi 1.0]]
+    dl_local phase [dl_mult [dl_sub 1.0 $lo] $phase]
+    # raised cosine: 0.5 * (1 - cos(pi * phase))
+    dl_local v [dl_mult [expr {0.5 * $base}] \
+                       [dl_sub 1.0 [dl_cos [dl_mult $pi $phase]]]]
+    dl_return $v
+}
+
+proc mp_sim::_env_gate {env ts} {
+    set base [mp_sim::_env_base_coh $env]
+    set t0 [dict get $env t0]
+    set t1 [dict get $env t1]
+    dl_local hi [dl_gte $ts $t0]
+    dl_local lo [dl_lt  $ts $t1]
+    dl_local mask [dl_mult $hi $lo]
+    dl_return [dl_mult $base $mask]
+}
+
+proc mp_sim::_env_sigmoid {env ts} {
+    set base [mp_sim::_env_base_coh $env]
+    set t0  [dict get $env t0]
+    set tau [dict get $env tau]
+    if {$tau <= 0.0} {
+        # degenerate -> step at t0
+        dl_local mask [dl_gte $ts $t0]
+        return [dl_mult $base $mask]
+    }
+    dl_local z [dl_div [dl_sub $ts $t0] $tau]
+    dl_local v [dl_div 1.0 [dl_add 1.0 [dl_exp [dl_mult -1.0 $z]]]]
+    dl_return [dl_mult $base $v]
+}
+
+# Trapezoidal pulse train: each pulse is a raised-cosine rise of
+# ease_dur, plateau of plateau_dur at base, raised-cosine fall of
+# ease_dur. centers is a Tcl list of pulse PEAK midpoints.
+#
+# Per-pulse layout, centered at c:
+#   [c - plateau/2 - ease,  c - plateau/2]  -- rise
+#   [c - plateau/2,         c + plateau/2]  -- plateau
+#   [c + plateau/2,         c + plateau/2 + ease]  -- fall
+#
+# Pulses are summed; if the user spaces them too closely they overlap
+# and the sum is clamped to base_coh.
+proc mp_sim::_env_trapezoid_train {env ts} {
+    variable pi
+    set base    [mp_sim::_env_base_coh $env]
+    set plateau [dict get $env plateau_dur]
+    set ease    [dict get $env ease_dur]
+    set centers [dict get $env centers]
+    set n [dl_length $ts]
+    dl_local sum [dl_zeros $n]
+    foreach c $centers {
+        set rise_t0 [expr {$c - $plateau / 2.0 - $ease}]
+        set rise_t1 [expr {$c - $plateau / 2.0}]
+        set plat_t1 [expr {$c + $plateau / 2.0}]
+        set fall_t1 [expr {$c + $plateau / 2.0 + $ease}]
+        # Rise: raised-cosine ramp 0 -> 1 over [rise_t0, rise_t1]
+        if {$ease > 0.0} {
+            dl_local rise_phase [dl_div [dl_sub $ts $rise_t0] $ease]
+            dl_local rise_hi    [dl_gte $rise_phase 1.0]
+            dl_local rise_lo    [dl_lt  $rise_phase 0.0]
+            dl_local rise_phase [dl_add [dl_mult [dl_sub 1.0 $rise_hi] $rise_phase] $rise_hi]
+            dl_local rise_phase [dl_mult [dl_sub 1.0 $rise_lo] $rise_phase]
+            dl_local rise [dl_mult 0.5 [dl_sub 1.0 [dl_cos [dl_mult $pi $rise_phase]]]]
+        } else {
+            dl_local rise [dl_gte $ts $rise_t1]
+        }
+        # Plateau gate: 1 inside [rise_t1, plat_t1)
+        dl_local plat [dl_mult [dl_gte $ts $rise_t1] [dl_lt $ts $plat_t1]]
+        # Fall: raised-cosine 1 -> 0 over [plat_t1, fall_t1]
+        if {$ease > 0.0} {
+            dl_local fall_phase [dl_div [dl_sub $ts $plat_t1] $ease]
+            dl_local fall_hi    [dl_gte $fall_phase 1.0]
+            dl_local fall_lo    [dl_lt  $fall_phase 0.0]
+            dl_local fall_phase [dl_add [dl_mult [dl_sub 1.0 $fall_hi] $fall_phase] $fall_hi]
+            dl_local fall_phase [dl_mult [dl_sub 1.0 $fall_lo] $fall_phase]
+            dl_local fall [dl_mult 0.5 [dl_add 1.0 [dl_cos [dl_mult $pi $fall_phase]]]]
+        } else {
+            dl_local fall [dl_lt $ts $plat_t1]
+        }
+        # Pulse contribution: rise where t<rise_t1, plateau in between,
+        # fall where rise_t1<=t<plat_t1+ease. Use indicator masks to
+        # combine without double-counting.
+        dl_local in_rise [dl_mult [dl_gte $ts $rise_t0] [dl_lt $ts $rise_t1]]
+        dl_local in_plat [dl_mult [dl_gte $ts $rise_t1] [dl_lt $ts $plat_t1]]
+        dl_local in_fall [dl_mult [dl_gte $ts $plat_t1] [dl_lt $ts $fall_t1]]
+        dl_local pulse [dl_add \
+                          [dl_mult $in_rise $rise] \
+                          [dl_mult $in_plat 1.0] \
+                          [dl_mult $in_fall $fall]]
+        dl_local sum [dl_add $sum $pulse]
+    }
+    dl_local v [dl_mult $base $sum]
+    dl_local hi [dl_gte $v $base]
+    dl_local v [dl_add [dl_mult [dl_sub 1.0 $hi] $v] [dl_mult $hi $base]]
+    dl_local lo [dl_lt $v 0.0]
+    dl_local v [dl_mult [dl_sub 1.0 $lo] $v]
+    dl_return $v
+}
+
+# ---- Compositors ---------------------------------------------------
+
+proc mp_sim::_env_product {env ts} {
+    set parts [dict get $env parts]
+    if {[llength $parts] == 0} {
+        return [dl_ones [dl_length $ts]]
+    }
+    dl_local v [mp_sim::eval_envelope [lindex $parts 0] $ts]
+    foreach p [lrange $parts 1 end] {
+        dl_local sub [mp_sim::eval_envelope $p $ts]
+        dl_local v [dl_mult $v $sub]
+    }
+    dl_return $v
+}
+
+proc mp_sim::_env_sum {env ts} {
+    set parts [dict get $env parts]
+    set base [mp_sim::_env_base_coh $env]
+    set n [dl_length $ts]
+    dl_local v [dl_zeros $n]
+    foreach p $parts {
+        dl_local sub [mp_sim::eval_envelope $p $ts]
+        dl_local v [dl_add $v $sub]
+    }
+    dl_local hi [dl_gte $v $base]
+    dl_local v [dl_add [dl_mult [dl_sub 1.0 $hi] $v] [dl_mult $hi $base]]
+    dl_local lo [dl_lt $v 0.0]
+    dl_local v [dl_mult [dl_sub 1.0 $lo] $v]
+    dl_return $v
+}
+
+proc mp_sim::_env_callback {env ts} {
+    set p [dict get $env proc]
+    set args_dict [expr {[dict exists $env args] ? [dict get $env args] : [dict create]}]
+    dl_return [{*}$p $ts $args_dict]
+}
+
+# ---- Envelope duration resolution ---------------------------------
+#
+# Some envelope kinds need a 'duration' to compute their centers (e.g.
+# sum_gaussians with n_pulses, or trapezoid_train if we ever support
+# a similar shorthand). This walks the dict and fills in resolvable
+# fields, so eval_envelope doesn't need to know the trial duration.
+proc mp_sim::_resolve_envelope_durations {env duration} {
+    set kind [dict get $env kind]
+    switch -- $kind {
+        sum_gaussians {
+            if {![dict exists $env centers] && [dict exists $env n_pulses]} {
+                set centers [mp_sim::evenly_spaced_pulse_centers \
+                                 [dict get $env n_pulses] $duration]
+                dict set env centers $centers
+            }
+            return $env
+        }
+        trapezoid_train {
+            if {![dict exists $env centers] && [dict exists $env n_pulses]} {
+                set centers [mp_sim::evenly_spaced_pulse_centers \
+                                 [dict get $env n_pulses] $duration]
+                dict set env centers $centers
+            }
+            return $env
+        }
+        product - sum {
+            set new_parts [list]
+            foreach p [dict get $env parts] {
+                lappend new_parts [mp_sim::_resolve_envelope_durations $p $duration]
+            }
+            dict set env parts $new_parts
+            return $env
+        }
+        default { return $env }
+    }
+}
+
+# ============================================================
+# Layer A.1: trajectory dispatcher
+# ============================================================
+#
+# Trajectory kinds:
+#   {kind static    ?x X? ?y Y?}
+#   {kind sweep     x0 X0 x1 X1 ?y Y?}
+#   {kind callback  proc procname}             -- user proc takes $t, returns {x y}
+#   {kind step_sequence positions {{x y} ...}  -- discrete location switches
+#                       step_times {t0 t1 ...}}    holds position from step_times[i]
+#                                                  to step_times[i+1]; len must be
+#                                                  positions+1
+#
+proc mp_sim::eval_trajectory {traj ts duration} {
+    set kind [dict get $traj kind]
+    set n [dl_length $ts]
+    switch -- $kind {
+        static {
+            set sx [expr {[dict exists $traj x] ? [dict get $traj x] : 0.0}]
+            set sy [expr {[dict exists $traj y] ? [dict get $traj y] : 0.0}]
+            dl_local mox [dl_mult $sx [dl_ones $n]]
+            dl_local moy [dl_mult $sy [dl_ones $n]]
+            dl_return [dl_llist $mox $moy]
+        }
+        sweep {
+            set x0 [dict get $traj x0]
+            set x1 [dict get $traj x1]
+            set y  [expr {[dict exists $traj y] ? [dict get $traj y] : 0.0}]
+            dl_local mox [dl_add $x0 [dl_mult $ts [expr {($x1 - $x0) / $duration}]]]
+            dl_local moy [dl_mult $y [dl_ones $n]]
+            dl_return [dl_llist $mox $moy]
+        }
+        callback {
+            set cb [dict get $traj proc]
+            set xs [list]; set ys [list]
+            foreach t [dl_tcllist $ts] {
+                lassign [{*}$cb $t] x y
+                lappend xs $x
+                lappend ys $y
+            }
+            dl_local mox [dl_flist {*}$xs]
+            dl_local moy [dl_flist {*}$ys]
+            dl_return [dl_llist $mox $moy]
+        }
+        step_sequence {
+            set positions  [dict get $traj positions]
+            set step_times [dict get $traj step_times]
+            if {[llength $step_times] != [llength $positions] + 1} {
+                error "mp_sim::eval_trajectory step_sequence: step_times must have length(positions)+1"
+            }
+            # Build per-frame (mox, moy) by walking ts and looking up
+            # which interval each t falls into. O(n_frames) with a
+            # single pass; positions are typically << n_frames.
+            set xs [list]; set ys [list]
+            set npos [llength $positions]
+            foreach t [dl_tcllist $ts] {
+                set idx 0
+                for {set i 0} {$i < $npos} {incr i} {
+                    set t_lo [lindex $step_times $i]
+                    set t_hi [lindex $step_times [expr {$i + 1}]]
+                    if {$t >= $t_lo && $t < $t_hi} { set idx $i; break }
+                }
+                # If t is past all intervals, hold last position.
+                if {$idx >= $npos} { set idx [expr {$npos - 1}] }
+                lassign [lindex $positions $idx] x y
+                lappend xs $x
+                lappend ys $y
+            }
+            dl_local mox [dl_flist {*}$xs]
+            dl_local moy [dl_flist {*}$ys]
+            dl_return [dl_llist $mox $moy]
+        }
+        default { error "mp_sim::eval_trajectory: unknown kind '$kind'" }
+    }
+}
+
+# ============================================================
+# Layer A.2: callback / threshold-crossing pre-computation
+# ============================================================
+#
+# A spec may include a `callbacks` field, a list of dicts each describing
+# a threshold to monitor. compile_spec scans the per-frame envelope and
+# pre-computes the frame indices at which each crossing occurs, storing
+# them in the timeline dg under per-callback columns. Both headless
+# run_trial and the live prescript can then dispatch by frame index
+# without re-scanning.
+#
+# Callback dict format:
+#   {name N threshold T direction (rising|falling|both) proc P}
+# At dispatch, callback proc is called as:
+#   {*}$P $name $frame_idx $t $value
+proc mp_sim::compile_callbacks {timeline_dg coh_per_frame ts_per_frame callbacks} {
+    set count 0
+    foreach cb $callbacks {
+        set name [dict get $cb name]
+        set thr  [dict get $cb threshold]
+        set dir  [expr {[dict exists $cb direction] ? [dict get $cb direction] : "rising"}]
+        set p    [dict get $cb proc]
+        set frames [list]
+        set n [dl_length $coh_per_frame]
+        # Find sign-change crossings of (coh - thr).
+        # For rising: prev < thr AND curr >= thr.
+        # For falling: prev >= thr AND curr < thr.
+        for {set i 1} {$i < $n} {incr i} {
+            set prev [dl_get $coh_per_frame [expr {$i - 1}]]
+            set curr [dl_get $coh_per_frame $i]
+            switch -- $dir {
+                rising  { if {$prev <  $thr && $curr >= $thr} { lappend frames $i } }
+                falling { if {$prev >= $thr && $curr <  $thr} { lappend frames $i } }
+                both    {
+                    if {$prev <  $thr && $curr >= $thr} { lappend frames $i }
+                    if {$prev >= $thr && $curr <  $thr} { lappend frames $i }
+                }
+            }
+        }
+        # Persist into the timeline dg.
+        dl_set $timeline_dg:callback_${count}_name      [dl_slist $name]
+        dl_set $timeline_dg:callback_${count}_proc      [dl_slist $p]
+        dl_set $timeline_dg:callback_${count}_threshold [dl_flist $thr]
+        dl_set $timeline_dg:callback_${count}_direction [dl_slist $dir]
+        if {[llength $frames] > 0} {
+            dl_set $timeline_dg:callback_${count}_frames [dl_ilist {*}$frames]
+        } else {
+            dl_set $timeline_dg:callback_${count}_frames [dl_ilist]
+        }
+        incr count
+    }
+    dl_set $timeline_dg:callbacks_count [dl_ilist $count]
+}
+
+# mp_sim::dispatch_callbacks_at timeline frame_idx
+#   For every callback registered in the timeline, if frame_idx is in
+#   its frames list, fire the registered proc as
+#       {*}$proc $name $frame_idx $t $value
+#   Returns the list of fired callback names (useful for tests).
+proc mp_sim::dispatch_callbacks_at {timeline frame_idx} {
+    set fired [list]
+    if {![dl_exists $timeline:callbacks_count]} { return $fired }
+    set count [dl_get $timeline:callbacks_count 0]
+    set t     [dl_get $timeline:t $frame_idx]
+    set v     [dl_get $timeline:coherence $frame_idx]
+    for {set k 0} {$k < $count} {incr k} {
+        set frames_dl $timeline:callback_${k}_frames
+        if {[dl_length $frames_dl] == 0} continue
+        # Linear search; n_frames per callback is small in practice.
+        foreach f [dl_tcllist $frames_dl] {
+            if {$f == $frame_idx} {
+                set name [dl_get $timeline:callback_${k}_name 0]
+                set p    [dl_get $timeline:callback_${k}_proc 0]
+                catch {{*}$p $name $frame_idx $t $v}
+                lappend fired $name
+                break
+            }
+        }
+    }
+    return $fired
 }
 
 # ============================================================
@@ -125,25 +602,13 @@ proc mp_sim::compile_spec {spec args} {
     # Time grid -- closed interval [0, n_frames*dt).
     dl_local ts [dl_mult $dt [dl_fromto 0 $n_frames]]
 
-    # Envelope -- coherence at each t.
-    set kind [dict get $envelope kind]
-    switch -- $kind {
-        sum_gaussians {
-            if {[dict exists $envelope centers]} {
-                set centers [dict get $envelope centers]
-            } else {
-                set n_pulses [dict get $envelope n_pulses]
-                set centers [mp_sim::evenly_spaced_pulse_centers $n_pulses $duration]
-            }
-            set sigma_s [expr {[dict get $envelope sigma_ms] / 1000.0}]
-            dl_local coh [mp_sim::envelope_sum_gaussians $ts $centers $sigma_s $base_coh]
-        }
-        flat {
-            dl_local coh [dl_mult $base_coh [dl_ones $n_frames]]
-            set centers [list]
-        }
-        default { error "mp_sim::compile_spec: unknown envelope kind '$kind'" }
-    }
+    # Envelope -- coherence at each t. Pre-resolve sum_gaussians centers
+    # against the spec's duration so eval_envelope doesn't have to look
+    # at ts to derive them. Also prepares centers for bounce phase
+    # resolution and for tile_times metadata.
+    set envelope_resolved [mp_sim::_resolve_envelope_durations $envelope $duration]
+    dl_local coh [mp_sim::eval_envelope $envelope_resolved $ts]
+    set centers [mp_sim::collect_tile_times $envelope_resolved $duration]
 
     # Tween fraction.
     if {$base_coh > 0.0} {
@@ -213,35 +678,11 @@ proc mp_sim::compile_spec {spec args} {
                               [dl_mult $mask $post_dir]]
     }
 
-    # Trajectory -> mask_offset(t).
-    set traj_kind [dict get $trajectory kind]
-    switch -- $traj_kind {
-        static {
-            set sx [expr {[dict exists $trajectory x] ? [dict get $trajectory x] : 0.0}]
-            set sy [expr {[dict exists $trajectory y] ? [dict get $trajectory y] : 0.0}]
-            dl_local mox [dl_mult $sx [dl_ones $n_frames]]
-            dl_local moy [dl_mult $sy [dl_ones $n_frames]]
-        }
-        sweep {
-            set x0 [dict get $trajectory x0]
-            set x1 [dict get $trajectory x1]
-            set y  [expr {[dict exists $trajectory y] ? [dict get $trajectory y] : 0.0}]
-            dl_local mox [dl_add $x0 [dl_mult $ts [expr {($x1 - $x0) / $duration}]]]
-            dl_local moy [dl_mult $y [dl_ones $n_frames]]
-        }
-        callback {
-            set cb [dict get $trajectory proc]
-            set xs [list]; set ys [list]
-            foreach t [dl_tcllist $ts] {
-                lassign [{*}$cb $t] x y
-                lappend xs $x
-                lappend ys $y
-            }
-            dl_local mox [dl_flist {*}$xs]
-            dl_local moy [dl_flist {*}$ys]
-        }
-        default { error "mp_sim::compile_spec: unknown trajectory kind '$traj_kind'" }
-    }
+    # Trajectory -> mask_offset(t). eval_trajectory returns a 2-element
+    # llist {mox moy} of per-frame offsets.
+    dl_local _traj_pair [mp_sim::eval_trajectory $trajectory $ts $duration]
+    dl_local mox $_traj_pair:0
+    dl_local moy $_traj_pair:1
 
     # Build the dg.
     set gname $opts(-gname)
@@ -274,7 +715,143 @@ proc mp_sim::compile_spec {spec args} {
         dl_set $g:bounce_post_dir [dl_flist $post_dir]
         dl_set $g:bounce_phase    [dl_slist $b_phase]
     }
+    # Pre-compute threshold-crossing frames for each registered callback.
+    # The live prescript / headless run_trial can dispatch by frame
+    # index without re-scanning the envelope.
+    set callbacks [expr {[dict exists $spec callbacks] ? [dict get $spec callbacks] : [list]}]
+    mp_sim::compile_callbacks $g $coh $ts $callbacks
     return $g
+}
+
+# mp_sim::compile_mapping_spec base_spec ?-positions L? ?-on_dur D? ?-off_dur D?
+#                              ?-ease_dur D? ?-direction R? ?-on_callback P?
+#                              ?-off_callback P? ?-base_coh V?
+#                              ?-pre_dur D? ?-gname N?
+#
+#   Convenience wrapper that builds an envelope=trapezoid_train +
+#   trajectory=step_sequence consistent with each other for a "rapid
+#   RF mapping with persistent surround" experiment.
+#
+#   Per-location duty cycle:
+#     [pre_dur][ease][on_dur][ease][off_dur] = "tile"
+#   The pulse train has one tile per position; positions step in OFF
+#   windows so position changes never overlap a coherent plateau.
+#
+#   Callback wiring:
+#     -on_callback  : fires when envelope crosses 0.5*base_coh rising  (effective patch-on)
+#     -off_callback : fires when envelope crosses 0.5*base_coh falling (effective patch-off)
+#     Each receives {name frame_idx t value}; consumers can derive row
+#     index from frame timing or position lookup.
+#
+#   Returns the timeline dg name.
+proc mp_sim::compile_mapping_spec {base_spec args} {
+    array set opts {
+        -positions     {{0 0}}
+        -on_dur        0.150
+        -off_dur       0.050
+        -ease_dur      0.050
+        -direction     0.0
+        -on_callback   {}
+        -off_callback  {}
+        -base_coh      1.0
+        -pre_dur       0.100
+        -gname         {}
+    }
+    array set opts $args
+
+    set positions [list]
+    foreach p $opts(-positions) {
+        if {[llength $p] != 2} {
+            error "mp_sim::compile_mapping_spec: each position must be {x y}"
+        }
+        lappend positions $p
+    }
+    set npos [llength $positions]
+    if {$npos < 1} { error "mp_sim::compile_mapping_spec: need >= 1 position" }
+
+    set on   $opts(-on_dur)
+    set off  $opts(-off_dur)
+    set ease $opts(-ease_dur)
+    set pre  $opts(-pre_dur)
+
+    # Tile = ease + on + ease + off. Center of the plateau is at
+    # offset (pre + ease + on/2) from t=0. Each subsequent tile starts
+    # at the previous tile's end.
+    set tile [expr {$on + 2.0 * $ease + $off}]
+    set duration [expr {$pre + $tile * $npos}]
+
+    set centers   [list]
+    set step_times [list 0.0]   ;# n+1 boundaries
+    for {set k 0} {$k < $npos} {incr k} {
+        set tile_start [expr {$pre + $k * $tile}]
+        set plateau_center [expr {$tile_start + $ease + $on / 2.0}]
+        lappend centers $plateau_center
+        # Position k spans the entire tile (its rise, plateau, and
+        # fall). The position SWITCH (k -> k+1) happens at the start
+        # of the next tile's pre-rise OFF window, which is during the
+        # current tile's `off` segment.
+        if {$k < $npos - 1} {
+            lappend step_times [expr {$tile_start + 2.0 * $ease + $on + $off / 2.0}]
+        } else {
+            lappend step_times $duration
+        }
+    }
+
+    # Synthesize the envelope and trajectory dicts.
+    set envelope [dict create \
+        kind        trapezoid_train \
+        centers     $centers \
+        plateau_dur $on \
+        ease_dur    $ease \
+        base_coh    $opts(-base_coh)]
+    set trajectory [dict create \
+        kind        step_sequence \
+        positions   $positions \
+        step_times  $step_times]
+
+    # Endpoints: target carries the configured direction, surround is
+    # whatever was in base_spec. If base_spec doesn't set direction, we
+    # write the configured direction into target.
+    if {[dict exists $base_spec endpoints]} {
+        set endpoints [dict get $base_spec endpoints]
+    } else {
+        set endpoints [dict create \
+            target   {coh 1.0 speed 0.6 dir 0.0 life 0.5} \
+            surround {coh 0.0 speed 0.23 dir 0.0 life 0.08}]
+    }
+    set tgt [dict get $endpoints target]
+    dict set tgt dir $opts(-direction)
+    dict set endpoints target $tgt
+
+    # Callbacks
+    set callbacks [list]
+    set thr [expr {0.5 * $opts(-base_coh)}]
+    if {$opts(-on_callback) ne ""} {
+        lappend callbacks [dict create \
+            name patch_on threshold $thr direction rising \
+            proc $opts(-on_callback)]
+    }
+    if {$opts(-off_callback) ne ""} {
+        lappend callbacks [dict create \
+            name patch_off threshold $thr direction falling \
+            proc $opts(-off_callback)]
+    }
+
+    # Final spec: take meta from base_spec but override duration with
+    # what we computed.
+    set meta [dict create \
+        duration       $duration \
+        dt             [expr {[dict exists $base_spec meta] && [dict exists [dict get $base_spec meta] dt] ? [dict get $base_spec meta dt] : 0.0167}] \
+        patch_size_dva [expr {[dict exists $base_spec meta] && [dict exists [dict get $base_spec meta] patch_size_dva] ? [dict get $base_spec meta patch_size_dva] : 1.0}]]
+
+    set spec [dict create \
+        meta       $meta \
+        endpoints  $endpoints \
+        envelope   $envelope \
+        trajectory $trajectory \
+        callbacks  $callbacks]
+
+    return [mp_sim::compile_spec $spec -gname $opts(-gname)]
 }
 
 # Stash the source path so ::mp_sim_reload can find it after the
