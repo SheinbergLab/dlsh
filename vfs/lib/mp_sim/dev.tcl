@@ -1,21 +1,26 @@
 # dev.tcl -- dlshell startup snippet for working on mp_sim in-tree.
 #
 # Usage from a dlshell session (one-time per session):
-#   source /Users/sheinb/src/dlsh/pkgs/mp_sim/dev.tcl
+#   source /Users/sheinb/src/dlsh/vfs/lib/mp_sim/dev.tcl
 #
-# That puts this checkout's pkgs dir at the front of auto_path so
-# `package require mp_sim` picks up the current source rather than any
-# installed/zipped copy. Re-source any time you've edited mp_sim.tcl
-# and want a fresh load -- it forgets the package and re-requires it,
-# so namespace state from the prior load is wiped.
+# Puts vfs/lib at the front of auto_path so `package require mp_sim`
+# picks up on-disk edits rather than any version mounted from a
+# (potentially older) deployed dlsh.zip. Re-source any time you've
+# edited mp_sim.tcl -- forgets the package and re-requires it so a
+# fresh evaluation runs from scratch.
+#
+# vfs/lib is the source-of-truth for pure-Tcl packages: the dlsh.zip
+# build sweeps it into the deployed zip, so this is also where the
+# release version lives. No separate pkgs/ folder needed for
+# pure-Tcl -- pkgs/ is reserved for packages with C extensions.
 
-set pkgs_dir /Users/sheinb/src/dlsh/pkgs
+set lib_dir /Users/sheinb/src/dlsh/vfs/lib
 
-# Front-of-path so it shadows any installed mp_sim.
-if {[lsearch -exact $auto_path $pkgs_dir] >= 0} {
-    set auto_path [lsearch -inline -all -not -exact $auto_path $pkgs_dir]
+# Front-of-path so on-disk shadows the zip-mounted copy.
+if {[lsearch -exact $auto_path $lib_dir] >= 0} {
+    set auto_path [lsearch -inline -all -not -exact $auto_path $lib_dir]
 }
-set auto_path [linsert $auto_path 0 $pkgs_dir]
+set auto_path [linsert $auto_path 0 $lib_dir]
 
 # Force a fresh load: forget the package + delete the namespace, so
 # `package require` re-evaluates mp_sim.tcl from scratch.

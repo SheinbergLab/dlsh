@@ -751,6 +751,7 @@ proc mp_sim::compile_mapping_spec {base_spec args} {
         -off_dur       0.050
         -ease_dur      0.050
         -direction     0.0
+        -directions    {}
         -on_callback   {}
         -off_callback  {}
         -base_coh      1.0
@@ -768,6 +769,16 @@ proc mp_sim::compile_mapping_spec {base_spec args} {
     }
     set npos [llength $positions]
     if {$npos < 1} { error "mp_sim::compile_mapping_spec: need >= 1 position" }
+
+    # -directions: per-tile target direction (radians). When provided,
+    # length must match positions; the timeline's direction column is
+    # overwritten with each tile's direction so the patch points the
+    # configured way at each location. When omitted, the scalar
+    # -direction applies uniformly.
+    set per_tile_dirs $opts(-directions)
+    if {[llength $per_tile_dirs] > 0 && [llength $per_tile_dirs] != $npos} {
+        error "mp_sim::compile_mapping_spec: -directions length ([llength $per_tile_dirs]) must match -positions ($npos)"
+    }
 
     set on   $opts(-on_dur)
     set off  $opts(-off_dur)
@@ -851,24 +862,58 @@ proc mp_sim::compile_mapping_spec {base_spec args} {
         trajectory $trajectory \
         callbacks  $callbacks]
 
-    return [mp_sim::compile_spec $spec -gname $opts(-gname)]
+    set tl [mp_sim::compile_spec $spec -gname $opts(-gname)]
+
+    # Per-tile direction overlay: write each tile's direction into the
+    # timeline's `direction` column. step_times divides time into
+    # npos+1 boundaries; tile k spans [step_times[k], step_times[k+1]).
+    if {[llength $per_tile_dirs] > 0} {
+        set ts [dl_tcllist $tl:t]
+        set new_dir [list]
+        foreach t $ts {
+            # Find which tile this t belongs to. Linear scan is fine
+            # for the modest position counts we use (< ~50).
+            set k 0
+            for {set i 0} {$i < $npos} {incr i} {
+                set t_lo [lindex $step_times $i]
+                set t_hi [lindex $step_times [expr {$i + 1}]]
+                if {$t >= $t_lo && $t < $t_hi} { set k $i; break }
+                if {$i == $npos - 1 && $t >= $t_hi} { set k $i }
+            }
+            lappend new_dir [lindex $per_tile_dirs $k]
+        }
+        dl_set $tl:direction [dl_flist {*}$new_dir]
+        # Persist the per-tile direction list as a metadata column for
+        # downstream consumers / analysis.
+        dl_set $tl:tile_directions [dl_flist {*}$per_tile_dirs]
+    }
+
+    return $tl
 }
 
 # Stash the source path so ::mp_sim_reload can find it after the
 # namespace gets blown away. This file is sourced (not loaded) by the
-# pkgIndex, so $dir is the pkg directory at this point in evaluation.
+# pkgIndex, so $dir is the pkg directory at this point in evaluation
+# -- typically /Users/sheinb/src/dlsh/vfs/lib/mp_sim during dev, or
+# the zipfs root path during deployed runs.
 set ::__mp_sim_pkg_dir [file dirname [info script]]
 
 # ::mp_sim_reload  (global, NOT in mp_sim:: namespace -- needs to
 # survive the namespace delete it triggers).
 #   Force a fresh re-source of mp_sim.tcl by forgetting the package and
 #   wiping its namespace, then re-requiring. Useful in a long-running
-#   tkcon when iterating on the package.
+#   tkcon when iterating on the package on disk.
+#
+#   The auto_path is augmented with the parent of the captured pkg
+#   directory so a fresh `package require mp_sim` finds the on-disk
+#   pkgIndex.tcl. If mp_sim was loaded from inside the zipfs and the
+#   user wants to override with a checkout, set ::__mp_sim_pkg_dir to
+#   the dev location BEFORE calling mp_sim_reload.
 proc ::mp_sim_reload {} {
-    set pkgs_dir $::__mp_sim_pkg_dir
+    set pkg_dir $::__mp_sim_pkg_dir
     package forget mp_sim
     catch {namespace delete ::mp_sim}
-    set parent [file dirname $pkgs_dir]
+    set parent [file dirname $pkg_dir]
     if {[lsearch -exact $::auto_path $parent] < 0} {
         set ::auto_path [linsert $::auto_path 0 $parent]
     }

@@ -13,11 +13,18 @@ if {![info exists ::__mp_sim_test_loaded]} {
     catch {zipfs mount $dlshlib $base}
     set auto_path [linsert $auto_path [set auto_path 0] $base/lib]
     package require dlsh
-    # Add this checkout's pkgs directory if not already present.
+    # On-disk vfs/lib (the parent of this checkout) goes at the FRONT
+    # of auto_path so that on-disk mp_sim shadows any (possibly older)
+    # version inside the deployed dlsh.zip. Without this, tests for
+    # newly-added features would silently load the deployed copy and
+    # fail.
     set pkgs_dir [file normalize [file join [file dirname [info script]] ..]]
-    if {[lsearch -exact $auto_path $pkgs_dir] < 0} {
-        lappend auto_path $pkgs_dir
+    if {[lsearch -exact $auto_path $pkgs_dir] >= 0} {
+        set auto_path [lsearch -inline -all -not -exact $auto_path $pkgs_dir]
     }
+    set auto_path [linsert $auto_path 0 $pkgs_dir]
+    catch {package forget mp_sim}
+    catch {namespace delete ::mp_sim}
     set ::__mp_sim_test_loaded 1
 }
 
@@ -391,5 +398,47 @@ dl_local v [mp_sim::eval_envelope \
 set mid [dl_get $v 0]
 puts "  cosine_ramp midpoint = $mid (expect 0.5)"
 assert {abs($mid - 0.5) < 1e-4}                      "cosine ramp midpoint = 0.5"
+
+# ------------------------------------------------------------
+# 12. compile_mapping_spec -directions: per-tile direction overlay
+#     places each position's configured direction into the timeline's
+#     `direction` column for that tile, and persists the per-tile
+#     directions list as a metadata column.
+# ------------------------------------------------------------
+puts "\nTest 12: compile_mapping_spec -directions"
+
+set base_spec_d [dict create \
+    meta {dt 0.0167 patch_size_dva 13.0} \
+    endpoints {target   {coh 1.0 speed 0.6 dir 0.0 life 0.5} \
+               surround {coh 0.0 speed 0.23 dir 0.0 life 0.08}}]
+
+set positions_d {{0 0} {1 0} {0 1}}
+set dirs_d      {0.0 1.5707963 3.1415926}
+
+set tl_d [mp_sim::compile_mapping_spec $base_spec_d \
+              -positions $positions_d \
+              -directions $dirs_d \
+              -on_dur 0.150 -off_dur 0.050 -ease_dur 0.050 \
+              -gname mp_sim_tl_dirs]
+
+# Sample direction at the plateau midpoint of each tile.
+# tile_dur = on + 2*ease + off = 0.300s; pre_dur = 0.100s.
+# plateau_mid_k = pre + k*tile + ease + on/2
+set tile_dur 0.300
+set pre 0.100
+for {set k 0} {$k < 3} {incr k} {
+    set t_mid [expr {$pre + $k * $tile_dur + 0.050 + 0.075}]
+    dl_local d [dl_abs [dl_sub $tl_d:t $t_mid]]
+    set i [dl_minIndex $d]
+    set t_at [dl_get $tl_d:t $i]
+    set d_at [dl_get $tl_d:direction $i]
+    set expected [lindex $dirs_d $k]
+    puts "  tile $k  t_mid=$t_mid  i=$i  t_at=$t_at  dir=$d_at  expected=$expected"
+    assert {abs($d_at - $expected) < 1e-5}           "tile $k direction matches"
+}
+assert {[dl_exists $tl_d:tile_directions]}           "tile_directions metadata persisted"
+assert {[dl_length $tl_d:tile_directions] == 3}      "tile_directions length matches positions"
+
+dg_delete $tl_d
 
 puts "\nAll tests passed."
