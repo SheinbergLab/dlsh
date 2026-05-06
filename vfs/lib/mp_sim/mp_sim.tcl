@@ -1,0 +1,1177 @@
+# mp_sim --
+#   Headless simulator and design-spec compiler for "cryptic motion"
+#   pulsed-coherence random-dot kinematograms. Mirrors the dot-update
+#   semantics of stim2's motionpatch.c without a display, so trial
+#   ensembles can be run in bulk for figure generation, parameter
+#   sweeps, and statistical verification of the manipulation.
+#
+#   Two layers:
+#     Layer A (design): compile a high-level spec dict into a per-frame
+#                       "state timeline" dynamic group. The timeline is
+#                       a strict subset of motionpatch_logExport's
+#                       schema, so a recorded trial is also a valid
+#                       timeline and the sim/recording can share an
+#                       analysis pipeline.
+#     Layer B (kernel): consume a state timeline plus (n_dots, dt, seed)
+#                       and produce a per-frame + per-dot log dg whose
+#                       schema matches motionpatch_logExport exactly.
+#
+#   Conventions:
+#     - direction stored in radians
+#     - speed in patch-local-units per second
+#     - lifetime_s in seconds
+#     - mask_offset_x/y in patch-local units
+#     - dot positions in [-0.5, 0.5] (toroidal wrap)
+#
+#   See testmp_sim.tcl for usage.
+
+package provide mp_sim 0.1
+package require dlsh
+
+namespace eval mp_sim {
+    variable pi 3.14159265358979323846
+}
+
+# ============================================================
+# Layer A: design-spec -> state timeline
+# ============================================================
+
+# mp_sim::envelope_sum_gaussians ts centers sigma_s base_coh
+#   Sample a sum-of-N-Gaussians envelope at every t in ts. Returns a
+#   dl flist of envelope values clamped to [0, base_coh].
+proc mp_sim::envelope_sum_gaussians {ts centers sigma_s base_coh} {
+    set n [dl_length $ts]
+    if {$sigma_s <= 0.0 || [llength $centers] == 0} {
+        return [dl_mult $base_coh [dl_ones $n]]
+    }
+    dl_local sum [dl_zeros $n]
+    foreach c $centers {
+        dl_local z [dl_div [dl_sub $ts $c] $sigma_s]
+        dl_local g [dl_exp [dl_mult -0.5 [dl_mult $z $z]]]
+        dl_local sum [dl_add $sum $g]
+    }
+    dl_local v [dl_mult $base_coh $sum]
+    # Clamp to [0, base_coh]. Cap above first using a mask captured
+    # BEFORE we mutate the values.
+    dl_local hi [dl_gte $v $base_coh]
+    dl_local v  [dl_add [dl_mult [dl_sub 1.0 $hi] $v] [dl_mult $hi $base_coh]]
+    dl_local lo [dl_lt $v 0.0]
+    dl_local v  [dl_mult [dl_sub 1.0 $lo] $v]
+    dl_return $v
+}
+
+# mp_sim::evenly_spaced_pulse_centers n_pulses duration
+#   N evenly-spaced centers at mid-interval positions in [0, duration]:
+#   t_k = T*(k+0.5)/N for k = 0..N-1. Mirrors mp_pulsed.tcl.
+proc mp_sim::evenly_spaced_pulse_centers {n_pulses duration} {
+    set out [list]
+    if {$n_pulses <= 0} { return $out }
+    for {set k 0} {$k < $n_pulses} {incr k} {
+        lappend out [expr {$duration * ($k + 0.5) / $n_pulses}]
+    }
+    return $out
+}
+
+# mp_sim::compile_spec spec ?-gname name?
+#   Compile a high-level spec dict into a state-timeline dg.
+#
+#   Spec dict shape:
+#     meta       {duration <sec> dt <sec> ?patch_size_dva <dva>?}
+#     endpoints  {target   {coh <0..1> speed <pu/s> dir <rad> life <s>}
+#                 surround {coh <0..1> speed <pu/s> dir <rad> life <s>}}
+#     envelope   {kind sum_gaussians n_pulses <int> sigma_ms <ms>
+#                 ?centers <list>? ?base_coh <0..1>?}
+#                {kind flat ?base_coh <0..1>?}
+#     trajectory {kind static ?x <pu>? ?y <pu>?}
+#                {kind sweep x0 <pu> x1 <pu> ?y <pu>?}
+#                {kind callback proc <procname>}
+#
+#   The endpoints' coh/speed/dir/life are tweened in lockstep by the
+#   normalized envelope frac = coh/base_coh -- the "single knob across
+#   multiple parameters" property that makes the trough state
+#   statistically identical to the surround.
+proc mp_sim::compile_spec {spec args} {
+    array set opts {-gname {}}
+    array set opts $args
+
+    set meta       [dict get $spec meta]
+    set endpoints  [dict get $spec endpoints]
+    set envelope   [dict get $spec envelope]
+    set trajectory [dict get $spec trajectory]
+
+    set duration       [dict get $meta duration]
+    set dt             [dict get $meta dt]
+    set patch_size_dva [expr {[dict exists $meta patch_size_dva] ? [dict get $meta patch_size_dva] : 1.0}]
+
+    if {$duration <= 0.0 || $dt <= 0.0} {
+        error "mp_sim::compile_spec: duration and dt must be positive"
+    }
+    set n_frames [expr {int(round($duration / $dt)) + 1}]
+
+    set tgt [dict get $endpoints target]
+    set sur [dict get $endpoints surround]
+    set base_coh [expr {[dict exists $envelope base_coh] ? [dict get $envelope base_coh] : [dict get $tgt coh]}]
+
+    # Bounce: optional direction-discontinuity overlay. When the spec
+    # contains a 'bounce' block, the smooth direction tween is replaced
+    # by a step function -- pre_dir before bounce_t, post_dir after --
+    # that simulates a sudden trajectory turn for the peak-vs-trough
+    # leakage manipulation.
+    set has_bounce [dict exists $spec bounce]
+    if {$has_bounce} {
+        set bounce [dict get $spec bounce]
+    }
+
+    # Time grid -- closed interval [0, n_frames*dt).
+    dl_local ts [dl_mult $dt [dl_fromto 0 $n_frames]]
+
+    # Envelope -- coherence at each t.
+    set kind [dict get $envelope kind]
+    switch -- $kind {
+        sum_gaussians {
+            if {[dict exists $envelope centers]} {
+                set centers [dict get $envelope centers]
+            } else {
+                set n_pulses [dict get $envelope n_pulses]
+                set centers [mp_sim::evenly_spaced_pulse_centers $n_pulses $duration]
+            }
+            set sigma_s [expr {[dict get $envelope sigma_ms] / 1000.0}]
+            dl_local coh [mp_sim::envelope_sum_gaussians $ts $centers $sigma_s $base_coh]
+        }
+        flat {
+            dl_local coh [dl_mult $base_coh [dl_ones $n_frames]]
+            set centers [list]
+        }
+        default { error "mp_sim::compile_spec: unknown envelope kind '$kind'" }
+    }
+
+    # Tween fraction.
+    if {$base_coh > 0.0} {
+        dl_local frac [dl_div $coh $base_coh]
+    } else {
+        dl_local frac [dl_zeros $n_frames]
+    }
+    dl_local one_minus_frac [dl_sub 1.0 $frac]
+
+    # Linear tween of (speed, lifetime, direction) between surround and
+    # target, gated by frac.
+    dl_local speed [dl_add [dl_mult $frac           [dict get $tgt speed]] \
+                            [dl_mult $one_minus_frac [dict get $sur speed]]]
+    dl_local life  [dl_add [dl_mult $frac           [dict get $tgt life]] \
+                            [dl_mult $one_minus_frac [dict get $sur life]]]
+    set tdir [dict get $tgt dir]
+    set sdir [dict get $sur dir]
+    if {abs($tdir - $sdir) < 1e-12} {
+        dl_local dir [dl_mult $tdir [dl_ones $n_frames]]
+    } else {
+        dl_local dir [dl_add [dl_mult $frac           $tdir] \
+                              [dl_mult $one_minus_frac $sdir]]
+    }
+
+    # Bounce overrides direction. Sets a clean step function based on
+    # phase=peak/trough/custom + pulse_index. We use the just-built
+    # tile_times list to resolve phase, then overwrite direction.
+    set bounce_t 0.0
+    if {$has_bounce} {
+        set b_phase    [expr {[dict exists $bounce phase]    ? [dict get $bounce phase]    : "custom"}]
+        set b_idx      [expr {[dict exists $bounce pulse_index] ? [dict get $bounce pulse_index] : 0}]
+        set b_t_custom [expr {[dict exists $bounce t_custom] ? [dict get $bounce t_custom] : 0.0}]
+        set pre_dir    [expr {[dict exists $bounce pre_dir]  ? [dict get $bounce pre_dir]  : 0.0}]
+        set post_dir   [expr {[dict exists $bounce post_dir] ? [dict get $bounce post_dir] : 0.0}]
+
+        switch -- $b_phase {
+            peak {
+                if {[llength $centers] == 0} {
+                    error "mp_sim::compile_spec: bounce phase=peak needs an envelope with pulses"
+                }
+                set k $b_idx
+                if {$k < 0} { set k 0 }
+                if {$k >= [llength $centers]} { set k [expr {[llength $centers] - 1}] }
+                set bounce_t [lindex $centers $k]
+            }
+            trough {
+                if {[llength $centers] < 2} {
+                    error "mp_sim::compile_spec: bounce phase=trough needs >=2 pulses"
+                }
+                set k $b_idx
+                if {$k < 0} { set k 0 }
+                if {$k > [expr {[llength $centers] - 2}]} {
+                    set k [expr {[llength $centers] - 2}]
+                }
+                set ta [lindex $centers $k]
+                set tb [lindex $centers [expr {$k + 1}]]
+                set bounce_t [expr {0.5 * ($ta + $tb)}]
+            }
+            custom { set bounce_t $b_t_custom }
+            default { error "mp_sim::compile_spec: unknown bounce phase '$b_phase'" }
+        }
+
+        # Build step direction: pre_dir for t < bounce_t, post_dir for
+        # t >= bounce_t. Vectorized via mask.
+        dl_local mask [dl_gte $ts $bounce_t]
+        dl_local dir [dl_add [dl_mult [dl_sub 1.0 $mask] $pre_dir] \
+                              [dl_mult $mask $post_dir]]
+    }
+
+    # Trajectory -> mask_offset(t).
+    set traj_kind [dict get $trajectory kind]
+    switch -- $traj_kind {
+        static {
+            set sx [expr {[dict exists $trajectory x] ? [dict get $trajectory x] : 0.0}]
+            set sy [expr {[dict exists $trajectory y] ? [dict get $trajectory y] : 0.0}]
+            dl_local mox [dl_mult $sx [dl_ones $n_frames]]
+            dl_local moy [dl_mult $sy [dl_ones $n_frames]]
+        }
+        sweep {
+            set x0 [dict get $trajectory x0]
+            set x1 [dict get $trajectory x1]
+            set y  [expr {[dict exists $trajectory y] ? [dict get $trajectory y] : 0.0}]
+            dl_local mox [dl_add $x0 [dl_mult $ts [expr {($x1 - $x0) / $duration}]]]
+            dl_local moy [dl_mult $y [dl_ones $n_frames]]
+        }
+        callback {
+            set cb [dict get $trajectory proc]
+            set xs [list]; set ys [list]
+            foreach t [dl_tcllist $ts] {
+                lassign [{*}$cb $t] x y
+                lappend xs $x
+                lappend ys $y
+            }
+            dl_local mox [dl_flist {*}$xs]
+            dl_local moy [dl_flist {*}$ys]
+        }
+        default { error "mp_sim::compile_spec: unknown trajectory kind '$traj_kind'" }
+    }
+
+    # Build the dg.
+    set gname $opts(-gname)
+    if {$gname eq ""} { set gname [dg_tempname] }
+    catch {dg_delete $gname}
+    set g [dg_create $gname]
+
+    dl_set $g:t              $ts
+    dl_set $g:mask_offset_x  $mox
+    dl_set $g:mask_offset_y  $moy
+    dl_set $g:direction      $dir
+    dl_set $g:coherence      $coh
+    dl_set $g:speed          $speed
+    dl_set $g:lifetime_s     $life
+
+    # Group-level scalars (1-element lists).
+    dl_set $g:dt              [dl_flist $dt]
+    dl_set $g:n_frames        [dl_ilist $n_frames]
+    dl_set $g:patch_size_dva  [dl_flist $patch_size_dva]
+    dl_set $g:duration        [dl_flist $duration]
+    dl_set $g:base_coh        [dl_flist $base_coh]
+    if {[llength $centers] > 0} {
+        dl_set $g:tile_times [dl_flist {*}$centers]
+    } else {
+        dl_set $g:tile_times [dl_flist]
+    }
+    if {$has_bounce} {
+        dl_set $g:bounce_t        [dl_flist $bounce_t]
+        dl_set $g:bounce_pre_dir  [dl_flist $pre_dir]
+        dl_set $g:bounce_post_dir [dl_flist $post_dir]
+        dl_set $g:bounce_phase    [dl_slist $b_phase]
+    }
+    return $g
+}
+
+# Stash the source path so ::mp_sim_reload can find it after the
+# namespace gets blown away. This file is sourced (not loaded) by the
+# pkgIndex, so $dir is the pkg directory at this point in evaluation.
+set ::__mp_sim_pkg_dir [file dirname [info script]]
+
+# ::mp_sim_reload  (global, NOT in mp_sim:: namespace -- needs to
+# survive the namespace delete it triggers).
+#   Force a fresh re-source of mp_sim.tcl by forgetting the package and
+#   wiping its namespace, then re-requiring. Useful in a long-running
+#   tkcon when iterating on the package.
+proc ::mp_sim_reload {} {
+    set pkgs_dir $::__mp_sim_pkg_dir
+    package forget mp_sim
+    catch {namespace delete ::mp_sim}
+    set parent [file dirname $pkgs_dir]
+    if {[lsearch -exact $::auto_path $parent] < 0} {
+        set ::auto_path [linsert $::auto_path 0 $parent]
+    }
+    package require mp_sim
+    return [package present mp_sim]
+}
+
+# ============================================================
+# Visualization helpers
+# ============================================================
+
+# mp_sim::colorize_to_image values ?-cmap MAP? ?-vmin V? ?-vmax V?
+#   Map a 1D dl of values onto an RGB image suitable for dlg_image.
+#   Returns a packed char-list of length 3*N (R,G,B,R,G,B,...). Mirrors
+#   the planko_trials.tcl idiom; works with any dlsh colormap name
+#   (VIRIDIS, JET, BWR, etc., resolved via dlg_heatmap).
+#
+#   With -vmin / -vmax provided, values are mapped onto the colormap
+#   linearly and clamped to [vmin, vmax]; otherwise the input's own
+#   min/max are used. Use -vmin/-vmax when you want consistent coloring
+#   across multiple heatmaps (e.g. side-by-side panels).
+proc mp_sim::colorize_to_image {values args} {
+    array set opts {-cmap VIRIDIS -vmin {} -vmax {}}
+    array set opts $args
+    dl_local heatmap [dlg_heatmap $opts(-cmap)]
+    set nsteps [dl_length $heatmap:0]
+
+    set vmin $opts(-vmin)
+    set vmax $opts(-vmax)
+    if {$vmin eq ""} { set vmin [dl_min $values] }
+    if {$vmax eq ""} { set vmax [dl_max $values] }
+    set vrange [expr {$vmax - $vmin}]
+    set ndata [dl_length $values]
+
+    if {$vrange < 1e-10} {
+        dl_local indices [dl_replicate [expr {$nsteps/2}] $ndata]
+    } else {
+        dl_local clamped [dl_div [dl_sub $values $vmin] $vrange]
+        # Clamp to [0, 1].
+        dl_local clamped [dl_mult [dl_lt $clamped 1.0] $clamped]
+        dl_local clamped [dl_add $clamped [dl_mult [dl_gte $clamped 1.0] 1.0]]
+        dl_local clamped [dl_mult [dl_gte $clamped 0.0] $clamped]
+        dl_local indices [dl_int [dl_mult $clamped [expr {$nsteps - 1}]]]
+    }
+
+    dl_local r [dl_choose $heatmap:0 $indices]
+    dl_local g [dl_choose $heatmap:1 $indices]
+    dl_local b [dl_choose $heatmap:2 $indices]
+    # Interleave RGB triplets and pack as char.
+    dl_return [dl_char [dl_collapse [dl_transpose [dl_llist $r $g $b]]]]
+}
+
+# mp_sim::draw_heatmap cx cy values width height nx ny ?-cmap M? ?-vmin V? ?-vmax V?
+#   Render a 2D grid of values as a heatmap centered at (cx, cy) with
+#   the given world-space width and height. values is a flat dl list of
+#   length nx*ny in COLUMN-MAJOR order: cell at (col, row) = (xi, yi)
+#   is at index xi*ny + yi. (This matches mp_sim::_grid_cells which
+#   walks the first vary key fastest -- so a sweep over keys
+#   {sigma_ms, n_dots} produces (sigma, n_dots) pairs in column-major
+#   order with sigma indexing columns and n_dots indexing rows.)
+#
+#   Drawn as nx*ny filled rectangles via filledrect rather than
+#   dlg_image, which gave us strange interpolation artefacts with very
+#   small images. Filled rectangles are pixel-exact regardless of
+#   resolution.
+#
+#   Caller is responsible for the surrounding axis/labels; this proc
+#   only draws the colored cells.
+proc mp_sim::draw_heatmap {cx cy values width height nx ny args} {
+    array set opts {-cmap VIRIDIS -vmin {} -vmax {}}
+    array set opts $args
+    dl_local heatmap [dlg_heatmap $opts(-cmap)]
+    set nsteps [dl_length $heatmap:0]
+
+    set vmin $opts(-vmin)
+    set vmax $opts(-vmax)
+    if {$vmin eq ""} { set vmin [dl_min $values] }
+    if {$vmax eq ""} { set vmax [dl_max $values] }
+    set vrange [expr {$vmax - $vmin}]
+    if {$vrange < 1e-10} { set vrange 1.0 }
+
+    set cell_w [expr {$width  / double($nx)}]
+    set cell_h [expr {$height / double($ny)}]
+    set xL0    [expr {$cx - $width  / 2.0}]
+    set yL0    [expr {$cy - $height / 2.0}]
+
+    # Precompute color table for fast per-cell lookup.
+    dl_local r_tab [dl_int $heatmap:0]
+    dl_local g_tab [dl_int $heatmap:1]
+    dl_local b_tab [dl_int $heatmap:2]
+
+    set n [dl_length $values]
+    for {set k 0} {$k < $n} {incr k} {
+        set v [dl_get $values $k]
+        set norm [expr {($v - $vmin) / $vrange}]
+        if {$norm < 0.0} { set norm 0.0 }
+        if {$norm > 1.0} { set norm 1.0 }
+        set ci [expr {int($norm * ($nsteps - 1))}]
+        set rr [dl_get $r_tab $ci]
+        set gg [dl_get $g_tab $ci]
+        set bb [dl_get $b_tab $ci]
+        # Column-major: k = xi*ny + yi
+        set xi [expr {$k / $ny}]
+        set yi [expr {$k % $ny}]
+        set xL [expr {$xL0 + $xi * $cell_w}]
+        set yL [expr {$yL0 + $yi * $cell_h}]
+        set xR [expr {$xL + $cell_w}]
+        set yR [expr {$yL + $cell_h}]
+        setcolor [dlg_rgbcolor $rr $gg $bb]
+        filledrect $xL $yL $xR $yR
+    }
+}
+
+# mp_sim::leakage_projection ens_dg post_dir
+#   Given an ensemble dg and a post-bounce direction (radians), compute
+#   per-frame "new-direction signal":
+#     proj(t) = mean_dx(t) * cos(post_dir) + mean_dy(t) * sin(post_dir)
+#   averaged across trials. Returns a dl name (kept persistent in the
+#   ens_dg under the column 'proj_post_dir', so it survives this proc).
+#
+#   This is the natural metric for "how much motion energy in the new
+#   direction is being delivered at frame t" -- the signal a downstream
+#   direction-tuned cell tuned to post_dir would integrate. At a peak
+#   bounce instant, we expect proj ~= speed * coh_recorded (full peak
+#   delivery). At a trough bounce instant, we expect proj ~= speed *
+#   c_trough -- the leakage.
+proc mp_sim::leakage_projection {ens_dg post_dir} {
+    dl_local mean_dx [dl_means [dl_transpose $ens_dg:dx_mean]]
+    dl_local mean_dy [dl_means [dl_transpose $ens_dg:dy_mean]]
+    set c [expr {cos($post_dir)}]
+    set s [expr {sin($post_dir)}]
+    dl_local proj [dl_add [dl_mult $mean_dx $c] [dl_mult $mean_dy $s]]
+    dl_set $ens_dg:proj_post_dir $proj
+    return $ens_dg:proj_post_dir
+}
+
+# mp_sim::validate_timeline gname
+#   Check required state-timeline columns exist and are length-aligned.
+#   Throws on failure with a descriptive message.
+proc mp_sim::validate_timeline {gname} {
+    set required {t mask_offset_x mask_offset_y direction coherence speed lifetime_s}
+    foreach col $required {
+        if {![dl_exists $gname:$col]} {
+            error "mp_sim::validate_timeline: missing column '$col' in $gname"
+        }
+    }
+    set n [dl_length $gname:t]
+    foreach col $required {
+        if {[dl_length $gname:$col] != $n} {
+            error "mp_sim::validate_timeline: column '$col' length mismatch ($n expected)"
+        }
+    }
+    return 1
+}
+
+# ============================================================
+# Layer B: state timeline -> per-trial dot-field log
+# ============================================================
+
+# Toroidal wrap of a position dl to [-0.5, 0.5). Implemented via floor-
+# based shift so it's correct for arbitrary FP values, including those
+# that wrap multiple cells in a single frame after a large dt.
+proc mp_sim::_wrap_pos {p} {
+    dl_local p [dl_add $p 0.5]
+    dl_local p [dl_sub $p [dl_floor $p]]
+    dl_local p [dl_sub $p 0.5]
+    dl_return $p
+}
+
+# Dot state is held in a persistent scratch dg with columns
+# {x, y, theta, coherent}. Storing in a dg (rather than passing
+# dl_local references between procs) is essential: dl_local dynlists
+# are auto-deleted when their owning proc exits, so a dict of names
+# returned from a helper proc would carry dangling references. The
+# scratch dg lives until the trial ends and is deleted explicitly.
+
+# mp_sim::_init_dot_state state_dg n_dots coherence direction direction_jitter
+#   Populate state_dg with a fresh dot field consistent with
+#   motionpatch.c initial conditions: positions uniform in [-0.5,
+#   0.5]^2; floor(coherence*n_dots) random dots flagged coherent;
+#   coherent thetas ~ N(0, jitter); incoherent thetas ~ U(0, 2pi).
+proc mp_sim::_init_dot_state {state_dg n_dots coherence direction direction_jitter} {
+    variable pi
+    dl_local x [dl_sub [dl_urand $n_dots] 0.5]
+    dl_local y [dl_sub [dl_urand $n_dots] 0.5]
+
+    set n_coh [expr {int(floor($coherence * $n_dots + 0.5))}]
+    if {$n_coh < 0} { set n_coh 0 }
+    if {$n_coh > $n_dots} { set n_coh $n_dots }
+    if {$n_coh == 0} {
+        dl_local coh_flag [dl_zeros $n_dots]
+    } elseif {$n_coh == $n_dots} {
+        dl_local coh_flag [dl_ones $n_dots]
+    } else {
+        dl_local rkey [dl_urand $n_dots]
+        dl_local sidx [dl_sortIndices $rkey]
+        dl_local picks [dl_choose $sidx [dl_fromto 0 $n_coh]]
+        dl_local coh_flag [dl_zeros $n_dots]
+        dl_local coh_flag [dl_replaceByIndex $coh_flag $picks [dl_ones $n_coh]]
+    }
+
+    dl_local theta_coh [dl_mult $direction_jitter [dl_zrand $n_dots]]
+    dl_local theta_inc [dl_mult [expr {2.0 * $pi}] [dl_urand $n_dots]]
+    dl_local theta [dl_add [dl_mult $coh_flag $theta_coh] \
+                            [dl_mult [dl_sub 1.0 $coh_flag] $theta_inc]]
+
+    dl_set $state_dg:x        $x
+    dl_set $state_dg:y        $y
+    dl_set $state_dg:theta    $theta
+    dl_set $state_dg:coherent $coh_flag
+    return
+}
+
+# mp_sim::_step state_dg direction speed lifetime_s coherence dt jitter
+#   Advance the dot field one frame, mutating state_dg's columns in
+#   place. Order:
+#     1. Coherence rebalance (stable membership: flip the minimum
+#        number of flags; resample theta only on flipped dots)
+#     2. Poisson respawn mask
+#     3. Integrate all dots once (vectorized)
+#     4. Toroidal wrap to [-0.5, 0.5)
+#     5. Overwrite respawn slots with fresh positions / thetas
+proc mp_sim::_step {state_dg direction speed lifetime_s coherence dt direction_jitter} {
+    variable pi
+    set n [dl_length $state_dg:x]
+
+    # ---- 1. Coherence rebalance ----
+    set target  [expr {int(floor($coherence * $n + 0.5))}]
+    if {$target < 0} { set target 0 }
+    if {$target > $n} { set target $n }
+    set current [expr {int(round([dl_sum $state_dg:coherent]))}]
+    set delta   [expr {$target - $current}]
+    if {$delta != 0} {
+        if {$delta > 0} {
+            dl_local cand [dl_indices [dl_eq $state_dg:coherent 0]]
+            set flip_count $delta
+        } else {
+            dl_local cand [dl_indices [dl_eq $state_dg:coherent 1]]
+            set flip_count [expr {-$delta}]
+        }
+        set ncand [dl_length $cand]
+        if {$ncand >= $flip_count && $flip_count > 0} {
+            dl_local rkey [dl_urand $ncand]
+            dl_local sidx [dl_sortIndices $rkey]
+            dl_local picks [dl_choose $cand [dl_choose $sidx [dl_fromto 0 $flip_count]]]
+            if {$delta > 0} {
+                dl_local cf2 [dl_replaceByIndex $state_dg:coherent $picks [dl_ones $flip_count]]
+                dl_local fresh_th [dl_mult $direction_jitter [dl_zrand $flip_count]]
+                dl_local th2 [dl_replaceByIndex $state_dg:theta $picks $fresh_th]
+            } else {
+                dl_local cf2 [dl_replaceByIndex $state_dg:coherent $picks [dl_zeros $flip_count]]
+                dl_local fresh_th [dl_mult [expr {2.0 * $pi}] [dl_urand $flip_count]]
+                dl_local th2 [dl_replaceByIndex $state_dg:theta $picks $fresh_th]
+            }
+            dl_set $state_dg:coherent $cf2
+            dl_set $state_dg:theta    $th2
+        }
+    }
+
+    # ---- 2. Respawn mask ----
+    set p_respawn 0.0
+    if {$lifetime_s > 0.0} {
+        set p_respawn [expr {$dt / $lifetime_s}]
+        if {$p_respawn > 1.0} { set p_respawn 1.0 }
+    }
+    if {$p_respawn > 0.0} {
+        dl_local respawn [dl_lt [dl_urand $n] $p_respawn]
+    } else {
+        dl_local respawn [dl_zeros $n]
+    }
+
+    # ---- 3. Integrate all dots ----
+    # angle = (coherent ? direction + theta : theta). Direction is a
+    # scalar; theta is per-dot. cf*direction adds direction only to
+    # coherent dots.
+    dl_local angle [dl_add $state_dg:theta \
+                            [dl_mult $state_dg:coherent $direction]]
+    set v [expr {$speed * $dt}]
+    dl_local nx [dl_add $state_dg:x [dl_mult [dl_cos $angle] $v]]
+    dl_local ny [dl_add $state_dg:y [dl_mult [dl_sin $angle] $v]]
+
+    # ---- 4. Wrap ----
+    dl_local nx [mp_sim::_wrap_pos $nx]
+    dl_local ny [mp_sim::_wrap_pos $ny]
+
+    # ---- 5. Respawn overwrites ----
+    dl_local respawn_idx [dl_indices $respawn]
+    set n_respawn [dl_length $respawn_idx]
+    if {$n_respawn > 0} {
+        dl_local rx [dl_sub [dl_urand $n_respawn] 0.5]
+        dl_local ry [dl_sub [dl_urand $n_respawn] 0.5]
+        dl_local nx [dl_replaceByIndex $nx $respawn_idx $rx]
+        dl_local ny [dl_replaceByIndex $ny $respawn_idx $ry]
+        dl_local cf_re [dl_choose $state_dg:coherent $respawn_idx]
+        dl_local th_coh [dl_mult $direction_jitter [dl_zrand $n_respawn]]
+        dl_local th_inc [dl_mult [expr {2.0 * $pi}] [dl_urand $n_respawn]]
+        dl_local th_re [dl_add [dl_mult $cf_re $th_coh] \
+                                [dl_mult [dl_sub 1.0 $cf_re] $th_inc]]
+        dl_local th_new [dl_replaceByIndex $state_dg:theta $respawn_idx $th_re]
+        dl_set $state_dg:theta $th_new
+    }
+
+    dl_set $state_dg:x $nx
+    dl_set $state_dg:y $ny
+    return
+}
+
+# mp_sim::_compute_frame_summary state_dg direction speed dt n
+#   Compute per-frame summary stats from the current dot state. Returns
+#   a Tcl dict with: coh_recorded, dir_mean_coh, dir_circ_var_coh,
+#   dir_mean_inc, dx_mean, dy_mean, speed_mean, alive_count.
+#
+#   Math:
+#     angle_i  = direction + theta_i   for coherent dots
+#               theta_i                for incoherent dots
+#     coh_recorded     = (#coherent) / N
+#     dir_mean_coh     = atan2(sum sin angle_i over coherent,
+#                              sum cos angle_i over coherent)
+#     dir_circ_var_coh = 1 - sqrt(C^2 + S^2) / n_coh    (coherent only)
+#     dx_mean / dy_mean = population mean per-dot velocity vector,
+#                         (1/N) * sum [cos|sin](angle_i) * speed
+#                         -- the "delivered motion vector" you'd get
+#                         out of an ideal motion-energy pooling.
+#
+#   speed and dt are passed in scalar form so the kernel doesn't need
+#   to look them up again.
+proc mp_sim::_compute_frame_summary {state_dg direction speed dt n} {
+    set n_coh_int [expr {int(round([dl_sum $state_dg:coherent]))}]
+    set coh_recorded [expr {double($n_coh_int) / double($n)}]
+
+    # angle = theta + coherent * direction (vectorized: incoherent dots
+    # get +0, coherent get +direction).
+    dl_local angle [dl_add $state_dg:theta \
+                            [dl_mult $state_dg:coherent $direction]]
+    dl_local ca [dl_cos $angle]
+    dl_local sa [dl_sin $angle]
+
+    set sum_cos_all [dl_sum $ca]
+    set sum_sin_all [dl_sum $sa]
+
+    # Coherent-only sums via mask multiplication.
+    set sum_cos_coh [dl_sum [dl_mult $ca $state_dg:coherent]]
+    set sum_sin_coh [dl_sum [dl_mult $sa $state_dg:coherent]]
+
+    if {$n_coh_int > 0} {
+        set dir_mean_coh     [expr {atan2($sum_sin_coh, $sum_cos_coh)}]
+        set R_coh            [expr {hypot($sum_cos_coh, $sum_sin_coh) / double($n_coh_int)}]
+        set dir_circ_var_coh [expr {1.0 - $R_coh}]
+    } else {
+        set dir_mean_coh     0.0
+        set dir_circ_var_coh 0.0
+    }
+
+    # Incoherent dots: angle = theta only.
+    set n_inc_int [expr {$n - $n_coh_int}]
+    if {$n_inc_int > 0} {
+        # incoherent mask = 1 - coherent
+        dl_local inc_mask [dl_sub 1.0 $state_dg:coherent]
+        # For incoherent dots, angle == theta, so we can just use
+        # cos/sin of theta. Recompute to keep the mask multiplication
+        # correct -- the +direction term added zero for incoherent dots
+        # because of cf, so ca/sa already encode theta on those rows.
+        set sum_cos_inc [dl_sum [dl_mult $ca $inc_mask]]
+        set sum_sin_inc [dl_sum [dl_mult $sa $inc_mask]]
+        set dir_mean_inc [expr {atan2($sum_sin_inc, $sum_cos_inc)}]
+    } else {
+        set dir_mean_inc 0.0
+    }
+
+    set dx_mean [expr {$sum_cos_all * $speed / double($n)}]
+    set dy_mean [expr {$sum_sin_all * $speed / double($n)}]
+    set speed_mean $speed
+    set alive_count $n
+
+    return [dict create \
+        coh_recorded     $coh_recorded \
+        dir_mean_coh     $dir_mean_coh \
+        dir_circ_var_coh $dir_circ_var_coh \
+        dir_mean_inc     $dir_mean_inc \
+        dx_mean          $dx_mean \
+        dy_mean          $dy_mean \
+        speed_mean       $speed_mean \
+        alive_count      $alive_count]
+}
+
+# mp_sim::_run_trial_compute timeline n_dots seed jitter record_dots
+#   Internal: run one trial and return a Tcl dict with per-frame
+#   accumulator lists (one entry per frame). When record_dots is true,
+#   also accumulates 2-deep nested lists of dot positions/thetas/flags
+#   (outer = frame, inner = dot).
+#
+#   Splits cleanly from any dg-building so the ensemble layer can call
+#   this directly without paying per-trial dg create/delete overhead.
+proc mp_sim::_run_trial_compute {timeline n_dots seed jitter record_dots} {
+    if {$seed ne ""} { dl_srand $seed }
+
+    set nframes [dl_length $timeline:t]
+    set dt     [dl_get $timeline:dt 0]
+
+    set state_dg [dg_tempname]
+    catch {dg_delete $state_dg}
+    dg_create $state_dg
+
+    set coh0 [dl_get $timeline:coherence 0]
+    set dir0 [dl_get $timeline:direction 0]
+
+    # Per-frame accumulator lists.
+    set acc_t                [list]
+    set acc_coh_recorded     [list]
+    set acc_dir_mean_coh     [list]
+    set acc_dir_circ_var_coh [list]
+    set acc_dir_mean_inc     [list]
+    set acc_dx_mean          [list]
+    set acc_dy_mean          [list]
+    set acc_speed_mean       [list]
+    set acc_alive_count      [list]
+    # Per-frame dot fields (only populated when record_dots is true);
+    # each entry is itself a list of n_dots values.
+    set acc_dot_x  [list]
+    set acc_dot_y  [list]
+    set acc_dot_th [list]
+    set acc_dot_cf [list]
+
+    try {
+        mp_sim::_init_dot_state $state_dg $n_dots $coh0 $dir0 $jitter
+
+        for {set i 0} {$i < $nframes} {incr i} {
+            set t   [dl_get $timeline:t $i]
+            set dir [dl_get $timeline:direction $i]
+            set sp  [dl_get $timeline:speed $i]
+            set lf  [dl_get $timeline:lifetime_s $i]
+            set ch  [dl_get $timeline:coherence $i]
+            if {$i > 0} {
+                mp_sim::_step $state_dg $dir $sp $lf $ch $dt $jitter
+            }
+            set s [mp_sim::_compute_frame_summary $state_dg $dir $sp $dt $n_dots]
+            lappend acc_t                $t
+            lappend acc_coh_recorded     [dict get $s coh_recorded]
+            lappend acc_dir_mean_coh     [dict get $s dir_mean_coh]
+            lappend acc_dir_circ_var_coh [dict get $s dir_circ_var_coh]
+            lappend acc_dir_mean_inc     [dict get $s dir_mean_inc]
+            lappend acc_dx_mean          [dict get $s dx_mean]
+            lappend acc_dy_mean          [dict get $s dy_mean]
+            lappend acc_speed_mean       [dict get $s speed_mean]
+            lappend acc_alive_count      [dict get $s alive_count]
+            if {$record_dots} {
+                lappend acc_dot_x  [dl_tcllist $state_dg:x]
+                lappend acc_dot_y  [dl_tcllist $state_dg:y]
+                lappend acc_dot_th [dl_tcllist $state_dg:theta]
+                lappend acc_dot_cf [dl_tcllist $state_dg:coherent]
+            }
+        }
+    } finally {
+        catch {dg_delete $state_dg}
+    }
+
+    return [dict create \
+        t                $acc_t \
+        coh_recorded     $acc_coh_recorded \
+        dir_mean_coh     $acc_dir_mean_coh \
+        dir_circ_var_coh $acc_dir_circ_var_coh \
+        dir_mean_inc     $acc_dir_mean_inc \
+        dx_mean          $acc_dx_mean \
+        dy_mean          $acc_dy_mean \
+        speed_mean       $acc_speed_mean \
+        alive_count      $acc_alive_count \
+        dot_x            $acc_dot_x \
+        dot_y            $acc_dot_y \
+        dot_theta        $acc_dot_th \
+        dot_coherent     $acc_dot_cf]
+}
+
+# mp_sim::run_trial timeline ?-n_dots N? ?-seed S? ?-direction_jitter J?
+#                            ?-gname name? ?-record_dots BOOL?
+#   Run one trial. Returns a single-row ensemble dg containing per-frame
+#   summary stats and (if -record_dots 1) per-frame raw dot positions
+#   nested as frames-of-dots-lists.
+proc mp_sim::run_trial {timeline args} {
+    array set opts {-n_dots 1000 -seed {} -direction_jitter 0.0 \
+                    -gname {} -record_dots 0}
+    array set opts $args
+
+    mp_sim::validate_timeline $timeline
+
+    set data [mp_sim::_run_trial_compute $timeline $opts(-n_dots) \
+                  $opts(-seed) $opts(-direction_jitter) $opts(-record_dots)]
+
+    set gname $opts(-gname)
+    if {$gname eq ""} { set gname [dg_tempname] }
+    catch {dg_delete $gname}
+    set g [dg_create $gname]
+
+    # Per-trial scalars (single-element lists -- this is the row).
+    set seed_val [expr {$opts(-seed) eq "" ? -1 : $opts(-seed)}]
+    dl_set $g:trial_id [dl_ilist 0]
+    dl_set $g:seed     [dl_ilist $seed_val]
+    dl_set $g:n_dots   [dl_ilist $opts(-n_dots)]
+
+    # Per-frame timecourses, one nested entry per row.
+    foreach col {coh_recorded dir_mean_coh dir_circ_var_coh dir_mean_inc \
+                 dx_mean dy_mean speed_mean} {
+        dl_set $g:$col [dl_llist [dl_flist {*}[dict get $data $col]]]
+    }
+    dl_set $g:alive_count [dl_llist [dl_ilist {*}[dict get $data alive_count]]]
+
+    if {$opts(-record_dots)} {
+        # 3-deep: row -> frame -> dot. Build the per-frame lists first,
+        # then wrap them in an outer 1-element llist.
+        foreach {col srckey type} {
+            dot_x        dot_x        flist
+            dot_y        dot_y        flist
+            dot_theta    dot_theta    flist
+            dot_coherent dot_coherent ilist
+        } {
+            set frames [list]
+            foreach row [dict get $data $srckey] {
+                if {$type eq "ilist"} {
+                    lappend frames [dl_ilist {*}$row]
+                } else {
+                    lappend frames [dl_flist {*}$row]
+                }
+            }
+            dl_set $g:$col [dl_llist [dl_llist {*}$frames]]
+        }
+    }
+
+    # Group-level: timeline columns + metadata. Stored unwrapped so they
+    # can be plotted directly against any single-trial timecourse.
+    foreach col {t mask_offset_x mask_offset_y direction coherence speed lifetime_s} {
+        dl_set $g:${col}_design $timeline:$col
+    }
+    foreach col {patch_size_dva duration base_coh tile_times n_frames dt} {
+        if {[dl_exists $timeline:$col]} {
+            dl_set $g:$col $timeline:$col
+        }
+    }
+    dl_set $g:n_trials [dl_ilist 1]
+    return $g
+}
+
+# mp_sim::ensemble timeline ?-n_dots N? ?-n_trials T? ?-seed S?
+#                           ?-direction_jitter J? ?-gname name?
+#                           ?-record_dots BOOL?
+#   Run T trials and accumulate them into one nested dg with T rows.
+#   Schema: see top-of-file docs. With record_dots off (default), a
+#   1000-trial ensemble is light enough to keep entirely in memory and
+#   pass to plotting / dl_means / dl_stds for figure-1 panels.
+#
+#   Per-trial seed: if -seed S is provided, trial i uses seed S+i.
+#   Otherwise the C-side RNG state carries across trials (still valid,
+#   just non-reproducible).
+proc mp_sim::ensemble {timeline args} {
+    array set opts {-n_dots 1000 -n_trials 100 -seed {} \
+                    -direction_jitter 0.0 -gname {} -record_dots 0}
+    array set opts $args
+
+    mp_sim::validate_timeline $timeline
+    set T $opts(-n_trials)
+    if {$T < 1} { error "mp_sim::ensemble: n_trials must be >= 1" }
+
+    # Per-row column accumulators. Each element is a list (nested) or
+    # scalar collected across trials.
+    set rows_seed         [list]
+    set rows_coh_recorded     [list]
+    set rows_dir_mean_coh     [list]
+    set rows_dir_circ_var_coh [list]
+    set rows_dir_mean_inc     [list]
+    set rows_dx_mean          [list]
+    set rows_dy_mean          [list]
+    set rows_speed_mean       [list]
+    set rows_alive_count      [list]
+    set rows_dot_x  [list]; set rows_dot_y  [list]
+    set rows_dot_th [list]; set rows_dot_cf [list]
+
+    for {set i 0} {$i < $T} {incr i} {
+        set seed [expr {$opts(-seed) eq "" ? "" : $opts(-seed) + $i}]
+        set data [mp_sim::_run_trial_compute $timeline $opts(-n_dots) \
+                      $seed $opts(-direction_jitter) $opts(-record_dots)]
+        lappend rows_seed [expr {$seed eq "" ? -1 : $seed}]
+        foreach col {coh_recorded dir_mean_coh dir_circ_var_coh dir_mean_inc \
+                     dx_mean dy_mean speed_mean alive_count} {
+            lappend rows_$col [dict get $data $col]
+        }
+        if {$opts(-record_dots)} {
+            lappend rows_dot_x  [dict get $data dot_x]
+            lappend rows_dot_y  [dict get $data dot_y]
+            lappend rows_dot_th [dict get $data dot_theta]
+            lappend rows_dot_cf [dict get $data dot_coherent]
+        }
+    }
+
+    set gname $opts(-gname)
+    if {$gname eq ""} { set gname [dg_tempname] }
+    catch {dg_delete $gname}
+    set g [dg_create $gname]
+
+    # Per-trial scalars.
+    dl_set $g:trial_id [dl_ilist {*}[lseq 0 [expr {$T - 1}]]]
+    dl_set $g:seed     [dl_ilist {*}$rows_seed]
+    dl_set $g:n_dots   [dl_repeat [dl_ilist $opts(-n_dots)] $T]
+
+    # Nested per-trial frame timecourses. Build inner flist for each
+    # trial's frame list, then wrap T of them into an outer llist.
+    foreach col {coh_recorded dir_mean_coh dir_circ_var_coh dir_mean_inc \
+                 dx_mean dy_mean speed_mean} {
+        set inner [list]
+        foreach trial_frames [set rows_$col] {
+            lappend inner [dl_flist {*}$trial_frames]
+        }
+        dl_set $g:$col [dl_llist {*}$inner]
+    }
+    set inner [list]
+    foreach trial_frames $rows_alive_count {
+        lappend inner [dl_ilist {*}$trial_frames]
+    }
+    dl_set $g:alive_count [dl_llist {*}$inner]
+
+    if {$opts(-record_dots)} {
+        foreach {col srcvar type} {
+            dot_x        rows_dot_x  flist
+            dot_y        rows_dot_y  flist
+            dot_theta    rows_dot_th flist
+            dot_coherent rows_dot_cf ilist
+        } {
+            set outer [list]
+            foreach trial_frames [set $srcvar] {
+                set frames [list]
+                foreach row $trial_frames {
+                    if {$type eq "ilist"} {
+                        lappend frames [dl_ilist {*}$row]
+                    } else {
+                        lappend frames [dl_flist {*}$row]
+                    }
+                }
+                lappend outer [dl_llist {*}$frames]
+            }
+            dl_set $g:$col [dl_llist {*}$outer]
+        }
+    }
+
+    # Group-level / shared columns.
+    foreach col {t mask_offset_x mask_offset_y direction coherence speed lifetime_s} {
+        dl_set $g:${col}_design $timeline:$col
+    }
+    foreach col {patch_size_dva duration base_coh tile_times n_frames dt} {
+        if {[dl_exists $timeline:$col]} {
+            dl_set $g:$col $timeline:$col
+        }
+    }
+    dl_set $g:n_trials [dl_ilist $T]
+    return $g
+}
+
+# ============================================================
+# Sweep: parameter-grid runner
+# ============================================================
+
+# mp_sim::_spec_set spec path value
+#   Set a value in a spec dict using a dotted path.
+#   Example: spec_set $spec endpoints.target.speed 12.0
+#   Returns the modified spec dict (Tcl dicts are value-typed; the
+#   caller assigns the result).
+proc mp_sim::_spec_set {spec path value} {
+    set keys [split $path .]
+    dict set spec {*}$keys $value
+    return $spec
+}
+
+# mp_sim::_grid_cells vary_dict
+#   Cartesian product over a dict of {key -> value-list}. Returns a
+#   Tcl list of dicts, one per cell, each with one value per key.
+proc mp_sim::_grid_cells {vary_dict} {
+    set keys [dict keys $vary_dict]
+    if {[llength $keys] == 0} { return [list [dict create]] }
+    set k    [lindex $keys 0]
+    set rest_dict [dict remove $vary_dict $k]
+    set rest_combos [mp_sim::_grid_cells $rest_dict]
+    set out [list]
+    foreach v [dict get $vary_dict $k] {
+        foreach combo $rest_combos {
+            dict set combo $k $v
+            lappend out $combo
+        }
+    }
+    return $out
+}
+
+# mp_sim::_summarize_ensemble ens_dg
+#   Extract per-frame mean and std across trials from an ensemble dg.
+#   Returns a Tcl dict mapping {col -> {mean_dl_name std_dl_name}} for
+#   each summary column (coh_recorded, dir_mean_coh, ...). The dl names
+#   are dl_local-scoped to the caller, so the caller must persist
+#   them via dl_set to a long-lived dg before the proc returns.
+proc mp_sim::_summarize_ensemble {ens_dg} {
+    set out [dict create]
+    foreach col {coh_recorded dir_mean_coh dir_circ_var_coh dir_mean_inc \
+                 dx_mean dy_mean speed_mean} {
+        # Each ens_dg:$col is a row-of-flists. dl_transpose makes it
+        # frame-of-rows, then dl_means / dl_stds reduce over trials.
+        dl_local m [dl_means [dl_transpose $ens_dg:$col]]
+        dl_local s [dl_stds  [dl_transpose $ens_dg:$col]]
+        dict set out $col [list $m $s]
+    }
+    return $out
+}
+
+# mp_sim::sweep base_spec ?-vary <dict>? ?-n_dots N? ?-n_trials T?
+#                         ?-seed S? ?-direction_jitter J? ?-gname name?
+#
+#   Run an ensemble per cell in a parameter grid. Returns a grid dg
+#   with one row per cell.
+#
+#   The -vary dict has keys that are dotted paths into the spec dict
+#   ("envelope.sigma_ms", "endpoints.target.speed", etc.) or special
+#   "runtime.X" keys ("runtime.n_dots", "runtime.direction_jitter")
+#   that override the runtime args. Values are lists of points to
+#   sweep through.
+#
+#   Output schema:
+#     Per-cell scalars (one row each):
+#       cell_id        ilist
+#       <vary_path_1>  flist or ilist     -- one column per swept path
+#       <vary_path_2>  ...
+#       n_dots, n_trials                 -- effective values for the cell
+#     Per-cell per-frame nested:
+#       <stat>_mean, <stat>_std          -- mean/std across trials
+#                                            for each of the 7 summary
+#                                            stats; each entry is a
+#                                            flist of n_frames floats
+#     Group-level (single-element):
+#       t_design, coherence_design, ... -- design columns from the
+#                                            BASE spec; if the sweep
+#                                            varies envelope or
+#                                            trajectory params, these
+#                                            differ per row, but
+#                                            base_t etc are kept for
+#                                            reference. Per-cell design
+#                                            columns are NOT stored
+#                                            here -- recompile the spec
+#                                            for any cell to retrieve
+#                                            them if needed.
+proc mp_sim::sweep {base_spec args} {
+    array set opts {-vary {} -n_dots 1000 -n_trials 100 -seed {} \
+                    -direction_jitter 0.0 -gname {}}
+    array set opts $args
+
+    set vary $opts(-vary)
+    set cells [mp_sim::_grid_cells $vary]
+    set n_cells [llength $cells]
+    if {$n_cells < 1} {
+        error "mp_sim::sweep: vary dict produced 0 cells"
+    }
+
+    # Capture the path order from the vary dict so the output columns
+    # appear in a stable order matching the user's input.
+    set paths [dict keys $vary]
+
+    # Per-cell accumulators.
+    set rows_cell_id [list]
+    set rows_n_dots  [list]
+    set rows_n_trials [list]
+    array set rows_path {}
+    foreach p $paths { set rows_path($p) [list] }
+    array set rows_mean {}
+    array set rows_std  {}
+    foreach col {coh_recorded dir_mean_coh dir_circ_var_coh dir_mean_inc \
+                 dx_mean dy_mean speed_mean} {
+        set rows_mean($col) [list]
+        set rows_std($col)  [list]
+    }
+
+    # Build the base timeline once for group-level columns.
+    set base_tl [mp_sim::compile_spec $base_spec]
+
+    set cell_id 0
+    foreach cell $cells {
+        # Resolve the cell's spec and runtime overrides.
+        set this_spec $base_spec
+        set this_n_dots $opts(-n_dots)
+        set this_jit    $opts(-direction_jitter)
+        foreach p $paths {
+            set v [dict get $cell $p]
+            if {[string match "runtime.*" $p]} {
+                set arg [string range $p [string length "runtime."] end]
+                switch -- $arg {
+                    n_dots           { set this_n_dots $v }
+                    direction_jitter { set this_jit    $v }
+                    default { error "mp_sim::sweep: unknown runtime path '$p'" }
+                }
+            } else {
+                set this_spec [mp_sim::_spec_set $this_spec $p $v]
+            }
+        }
+
+        # Compile + run ensemble for this cell. seed adjusts per cell so
+        # every cell has independent (but reproducible) RNG history.
+        set this_tl [mp_sim::compile_spec $this_spec]
+        set cell_seed [expr {$opts(-seed) eq "" ? "" : $opts(-seed) + 1000 * $cell_id}]
+        set ens [mp_sim::ensemble $this_tl -n_dots $this_n_dots \
+                     -n_trials $opts(-n_trials) -seed $cell_seed \
+                     -direction_jitter $this_jit]
+
+        # Extract per-frame mean/std into dl_local refs, then COPY them
+        # into proper named dls so the data survives ensemble cleanup.
+        # (Saving the dl_local name directly into a list would dangle.)
+        foreach col {coh_recorded dir_mean_coh dir_circ_var_coh dir_mean_inc \
+                     dx_mean dy_mean speed_mean} {
+            dl_local m [dl_means [dl_transpose $ens:$col]]
+            dl_local s [dl_stds  [dl_transpose $ens:$col]]
+            # Persist into a temp dg so we can lookup-by-name later.
+            # Names must be unique per (cell, col).
+            set tmpname  __mp_sim_sweep_tmp_${cell_id}_${col}_m
+            set tmpname2 __mp_sim_sweep_tmp_${cell_id}_${col}_s
+            dl_set $tmpname  $m
+            dl_set $tmpname2 $s
+            lappend rows_mean($col) $tmpname
+            lappend rows_std($col)  $tmpname2
+        }
+
+        lappend rows_cell_id  $cell_id
+        lappend rows_n_dots   $this_n_dots
+        lappend rows_n_trials $opts(-n_trials)
+        foreach p $paths {
+            lappend rows_path($p) [dict get $cell $p]
+        }
+
+        catch {dg_delete $ens}
+        catch {dg_delete $this_tl}
+        incr cell_id
+    }
+
+    set gname $opts(-gname)
+    if {$gname eq ""} { set gname [dg_tempname] }
+    catch {dg_delete $gname}
+    set g [dg_create $gname]
+
+    dl_set $g:cell_id  [dl_ilist {*}$rows_cell_id]
+    dl_set $g:n_dots   [dl_ilist {*}$rows_n_dots]
+    dl_set $g:n_trials [dl_ilist {*}$rows_n_trials]
+    foreach p $paths {
+        # Heuristic: ints stay ints, anything else as flist. For paths
+        # like envelope.n_pulses we want an ilist; for sigma_ms a
+        # flist. Inspect the first value.
+        set vals $rows_path($p)
+        set v0 [lindex $vals 0]
+        if {[string is integer -strict $v0]} {
+            dl_set $g:$p [dl_ilist {*}$vals]
+        } else {
+            dl_set $g:$p [dl_flist {*}$vals]
+        }
+    }
+    foreach col {coh_recorded dir_mean_coh dir_circ_var_coh dir_mean_inc \
+                 dx_mean dy_mean speed_mean} {
+        # Wrap each cell's per-frame flist into one llist column.
+        set inner_m [list]
+        foreach name $rows_mean($col) {
+            lappend inner_m $name
+        }
+        set inner_s [list]
+        foreach name $rows_std($col) {
+            lappend inner_s $name
+        }
+        dl_set $g:${col}_mean [dl_llist {*}$inner_m]
+        dl_set $g:${col}_std  [dl_llist {*}$inner_s]
+        # Free the temp persistent dls now that they're inside g.
+        foreach name $rows_mean($col) { catch {dl_delete $name} }
+        foreach name $rows_std($col)  { catch {dl_delete $name} }
+    }
+
+    # Group-level reference: copy base spec's design columns.
+    foreach col {t mask_offset_x mask_offset_y direction coherence speed lifetime_s} {
+        dl_set $g:${col}_design $base_tl:$col
+    }
+    foreach col {patch_size_dva duration base_coh tile_times n_frames dt} {
+        if {[dl_exists $base_tl:$col]} {
+            dl_set $g:${col}_base $base_tl:$col
+        }
+    }
+    dl_set $g:n_cells [dl_ilist $n_cells]
+
+    catch {dg_delete $base_tl}
+    return $g
+}
