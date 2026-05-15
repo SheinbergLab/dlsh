@@ -25,7 +25,7 @@
 #
 #   See testmp_sim.tcl for usage.
 
-package provide mp_sim 0.2
+package provide mp_sim 0.3
 package require dlsh
 
 namespace eval mp_sim {
@@ -384,16 +384,39 @@ proc mp_sim::eval_trajectory {traj ts duration} {
             dl_return [dl_llist $mox $moy]
         }
         callback {
+            # The user proc is called once per frame as {*}$cb $t and
+            # may return either {x y} (position only) or {x y vx vy}
+            # (position + velocity in patch-local units per second).
+            # When velocity is supplied it is carried through as a
+            # third/fourth llist element so compile_spec can use the
+            # exact per-frame speed/direction instead of finite-
+            # differencing the position channel. A trajectory with a
+            # velocity discontinuity (e.g. a bounce) should return the
+            # 4-tuple so the speed at the bounce frame is exact.
             set cb [dict get $traj proc]
             set xs [list]; set ys [list]
+            set vxs [list]; set vys [list]
+            set have_vel 1
             foreach t [dl_tcllist $ts] {
-                lassign [{*}$cb $t] x y
-                lappend xs $x
-                lappend ys $y
+                set r [{*}$cb $t]
+                lappend xs [lindex $r 0]
+                lappend ys [lindex $r 1]
+                if {[llength $r] >= 4} {
+                    lappend vxs [lindex $r 2]
+                    lappend vys [lindex $r 3]
+                } else {
+                    set have_vel 0
+                }
             }
             dl_local mox [dl_flist {*}$xs]
             dl_local moy [dl_flist {*}$ys]
-            dl_return [dl_llist $mox $moy]
+            if {$have_vel} {
+                dl_local mvx [dl_flist {*}$vxs]
+                dl_local mvy [dl_flist {*}$vys]
+                dl_return [dl_llist $mox $moy $mvx $mvy]
+            } else {
+                dl_return [dl_llist $mox $moy]
+            }
         }
         step_sequence {
             set positions  [dict get $traj positions]
@@ -425,6 +448,66 @@ proc mp_sim::eval_trajectory {traj ts duration} {
         }
         default { error "mp_sim::eval_trajectory: unknown kind '$kind'" }
     }
+}
+
+# mp_sim::trajectory_kinematics traj_pair ts
+#   Given the llist returned by eval_trajectory ({mox moy} or
+#   {mox moy mvx mvy}) and the time grid ts, return a 2-element llist
+#   {speed dir}: per-frame speed (patch-local units/sec) and direction
+#   (radians). When eval_trajectory supplied velocity (the 4-element
+#   form) the kinematics are exact. Otherwise speed/direction are
+#   recovered by finite-differencing the position channels.
+#
+#   Finite-difference note: a forward difference is used for the first
+#   frame and a centred difference elsewhere, giving a smooth estimate
+#   for continuous paths. Across a velocity discontinuity (e.g. a
+#   bounce) the one straddling frame's speed is an average of the pre-
+#   and post-discontinuity speeds -- callbacks that contain a bounce
+#   should return the exact 4-tuple to avoid this. dt is taken from ts.
+proc mp_sim::trajectory_kinematics {traj_pair ts} {
+    set npair [dl_length $traj_pair]
+    set n [dl_length $ts]
+    if {$npair >= 4} {
+        # Exact: velocity supplied.
+        dl_local vx $traj_pair:2
+        dl_local vy $traj_pair:3
+        dl_local speed [dl_sqrt [dl_add [dl_mult $vx $vx] [dl_mult $vy $vy]]]
+        dl_local dir   [dl_atan2 $vy $vx]
+        dl_return [dl_llist $speed $dir]
+    }
+    # Finite-difference fallback from position channels.
+    dl_local mox $traj_pair:0
+    dl_local moy $traj_pair:1
+    if {$n < 2} {
+        dl_return [dl_llist [dl_zeros $n] [dl_zeros $n]]
+    }
+    # dt grid (assume uniform; ts[1]-ts[0]).
+    set dt [expr {[dl_get $ts 1] - [dl_get $ts 0]}]
+    if {$dt <= 0.0} { set dt 1.0 }
+    # Centred difference. Build "next" and "prev" index lists explicitly
+    # (clamped at the ends) rather than relying on a shift-direction
+    # convention -- frame i uses indices min(i+1,n-1) and max(i-1,0).
+    # Where the clamp collapses the pair (the two endpoints) the step
+    # is 1 frame, elsewhere 2; we divide by the actual index gap so the
+    # estimate is correct one-sided at the ends and centred inside.
+    set idx_next [list]
+    set idx_prev [list]
+    set gap      [list]
+    for {set i 0} {$i < $n} {incr i} {
+        set inx [expr {$i + 1}] ; if {$inx > $n - 1} { set inx [expr {$n - 1}] }
+        set ipv [expr {$i - 1}] ; if {$ipv < 0}       { set ipv 0 }
+        lappend idx_next $inx
+        lappend idx_prev $ipv
+        lappend gap [expr {($inx - $ipv) * $dt}]
+    }
+    dl_local inx [dl_ilist {*}$idx_next]
+    dl_local ipv [dl_ilist {*}$idx_prev]
+    dl_local gap [dl_flist {*}$gap]
+    dl_local dx [dl_div [dl_sub [dl_choose $mox $inx] [dl_choose $mox $ipv]] $gap]
+    dl_local dy [dl_div [dl_sub [dl_choose $moy $inx] [dl_choose $moy $ipv]] $gap]
+    dl_local speed [dl_sqrt [dl_add [dl_mult $dx $dx] [dl_mult $dy $dy]]]
+    dl_local dir   [dl_atan2 $dy $dx]
+    dl_return [dl_llist $speed $dir]
 }
 
 # ============================================================
@@ -618,19 +701,68 @@ proc mp_sim::compile_spec {spec args} {
     }
     dl_local one_minus_frac [dl_sub 1.0 $frac]
 
+    # Trajectory -> mask_offset(t). eval_trajectory returns a 2-element
+    # llist {mox moy} or a 4-element {mox moy mvx mvy} of per-frame
+    # offsets (and optionally velocities). Evaluated BEFORE the tween
+    # so the trajectory's own per-frame speed/direction can drive the
+    # coherent ("target") endpoint -- essential for non-constant-speed
+    # paths such as a falling ball, where a fixed endpoint speed would
+    # mismatch the rendered translation.
+    dl_local _traj_pair [mp_sim::eval_trajectory $trajectory $ts $duration]
+    dl_local mox $_traj_pair:0
+    dl_local moy $_traj_pair:1
+    dl_local _kin [mp_sim::trajectory_kinematics $_traj_pair $ts]
+    dl_local traj_speed $_kin:0
+    dl_local traj_dir   $_kin:1
+
+    # Whether the trajectory carries meaningful per-frame motion. A
+    # 'static' trajectory has ~zero speed everywhere; in that case we
+    # fall back to the endpoint speed/direction (preserves the original
+    # constant-patch behaviour and every existing spec). A trajectory
+    # with motion supplies its own coherent-state speed and direction.
+    #
+    # step_sequence is explicitly excluded: it is piecewise-constant
+    # (the patch holds position within a tile and jumps between tiles),
+    # so finite-differencing would produce spurious one-frame speed
+    # spikes at the jumps. RF-mapping specs built on step_sequence must
+    # keep the endpoint-scalar speed/direction behaviour, including the
+    # per-tile direction overlay applied by compile_mapping_spec.
+    set traj_kind [dict get $trajectory kind]
+    if {$traj_kind eq "step_sequence"} {
+        set traj_has_motion 0
+    } else {
+        set traj_has_motion [expr {[dl_max $traj_speed] > 1e-9}]
+    }
+
     # Linear tween of (speed, lifetime, direction) between surround and
-    # target, gated by frac.
-    dl_local speed [dl_add [dl_mult $frac           [dict get $tgt speed]] \
+    # the coherent "target" state, gated by frac. The coherent target
+    # speed/direction is the trajectory's own per-frame value when the
+    # trajectory has motion, else the endpoint scalar (back-compat).
+    if {$traj_has_motion} {
+        dl_local tgt_speed $traj_speed
+    } else {
+        dl_local tgt_speed [dl_mult [dict get $tgt speed] [dl_ones $n_frames]]
+    }
+    dl_local speed [dl_add [dl_mult $frac           $tgt_speed] \
                             [dl_mult $one_minus_frac [dict get $sur speed]]]
     dl_local life  [dl_add [dl_mult $frac           [dict get $tgt life]] \
                             [dl_mult $one_minus_frac [dict get $sur life]]]
-    set tdir [dict get $tgt dir]
-    set sdir [dict get $sur dir]
-    if {abs($tdir - $sdir) < 1e-12} {
-        dl_local dir [dl_mult $tdir [dl_ones $n_frames]]
+
+    # Direction. With a moving trajectory the coherent-state direction
+    # is the trajectory tangent; the surround direction still applies
+    # in the trough via the tween. Without trajectory motion we keep
+    # the original endpoint-scalar tween (back-compat).
+    if {$traj_has_motion} {
+        dl_local dir $traj_dir
     } else {
-        dl_local dir [dl_add [dl_mult $frac           $tdir] \
-                              [dl_mult $one_minus_frac $sdir]]
+        set tdir [dict get $tgt dir]
+        set sdir [dict get $sur dir]
+        if {abs($tdir - $sdir) < 1e-12} {
+            dl_local dir [dl_mult $tdir [dl_ones $n_frames]]
+        } else {
+            dl_local dir [dl_add [dl_mult $frac           $tdir] \
+                                  [dl_mult $one_minus_frac $sdir]]
+        }
     }
 
     # Bounce overrides direction. Sets a clean step function based on
@@ -672,22 +804,22 @@ proc mp_sim::compile_spec {spec args} {
         }
 
         # Build step direction: pre_dir for t < bounce_t, post_dir for
-        # t >= bounce_t. Vectorized via mask.
+        # t >= bounce_t. Vectorized via mask. This overrides the
+        # trajectory-tangent direction computed above -- the bounce
+        # block is the authority on the direction discontinuity. Note
+        # the mask_offset (position) path is NOT altered here; a
+        # callback trajectory that contains a real bounce supplies the
+        # bent position path itself, and pre_dir/post_dir must be kept
+        # consistent with it by the caller.
         dl_local mask [dl_gte $ts $bounce_t]
         dl_local dir [dl_add [dl_mult [dl_sub 1.0 $mask] $pre_dir] \
                               [dl_mult $mask $post_dir]]
     }
 
-    # Trajectory -> mask_offset(t). eval_trajectory returns a 2-element
-    # llist {mox moy} of per-frame offsets.
-    dl_local _traj_pair [mp_sim::eval_trajectory $trajectory $ts $duration]
-    dl_local mox $_traj_pair:0
-    dl_local moy $_traj_pair:1
-
     # Build the dg.
     set gname $opts(-gname)
     if {$gname eq ""} { set gname [dg_tempname] }
-    catch {dg_delete $gname}
+    if {[dg_exists $gname]} { dg_delete $gname }
     set g [dg_create $gname]
 
     dl_set $g:t              $ts
