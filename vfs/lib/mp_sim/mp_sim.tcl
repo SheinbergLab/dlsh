@@ -803,17 +803,40 @@ proc mp_sim::compile_spec {spec args} {
             default { error "mp_sim::compile_spec: unknown bounce phase '$b_phase'" }
         }
 
-        # Build step direction: pre_dir for t < bounce_t, post_dir for
-        # t >= bounce_t. Vectorized via mask. This overrides the
-        # trajectory-tangent direction computed above -- the bounce
-        # block is the authority on the direction discontinuity. Note
-        # the mask_offset (position) path is NOT altered here; a
-        # callback trajectory that contains a real bounce supplies the
-        # bent position path itself, and pre_dir/post_dir must be kept
-        # consistent with it by the caller.
-        dl_local mask [dl_gte $ts $bounce_t]
-        dl_local dir [dl_add [dl_mult [dl_sub 1.0 $mask] $pre_dir] \
-                              [dl_mult $mask $post_dir]]
+        # Direction handling depends on whether the trajectory carries
+        # its own motion:
+        #
+        #   traj_has_motion == 0 (static trajectory):
+        #       The trajectory has no velocity of its own, so the
+        #       bounce block MUST manufacture the direction step --
+        #       pre_dir for t < bounce_t, post_dir for t >= bounce_t.
+        #       This is the original use case the bounce block was
+        #       written for (stationary patches that "change direction"
+        #       at an instant).
+        #
+        #   traj_has_motion == 1 (moving trajectory):
+        #       The per-frame velocity returned by the callback already
+        #       encodes everything we want: pre-bounce tangent, the
+        #       discontinuity at bounce_t (the callback's vx/vy switch
+        #       branches at t >= tb so the tangent jumps from pre_dir
+        #       to post_dir in one frame), AND the continuous bending
+        #       caused by gravity/curvature after bounce. Overwriting
+        #       with a flat step here would discard the natural bending
+        #       and create a visible drift between the internal dot
+        #       motion and the patch-centre translation during the
+        #       post-bounce plateau (~10 deg over 200ms for a 60-deg
+        #       deflection under default gravity). So we let the
+        #       trajectory tangent stand and only persist bounce_t as
+        #       metadata.
+        #
+        # The mask_offset (position) path is NOT altered here in either
+        # case; a callback trajectory that contains a real bounce
+        # supplies the bent position path itself.
+        if {!$traj_has_motion} {
+            dl_local mask [dl_gte $ts $bounce_t]
+            dl_local dir [dl_add [dl_mult [dl_sub 1.0 $mask] $pre_dir] \
+                                  [dl_mult $mask $post_dir]]
+        }
     }
 
     # Build the dg.
