@@ -44,8 +44,9 @@ typedef struct Box2D_world {
   b2WorldId worldId;
   b2Vec2 gravity;
 
-  /* store contact events after a simulation step */
+  /* store contact + sensor events after a simulation step */
   b2ContactEvents contactEvents;
+  b2SensorEvents sensorEvents;
   
   int bodyCount;
   Tcl_HashTable bodyTable;
@@ -369,7 +370,8 @@ static int Box2DStepCmd(ClientData clientData, Tcl_Interp *interp,
 
   b2World_Step(bw->worldId, elapsed, bw->subStepCount);
   bw->contactEvents = b2World_GetContactEvents(bw->worldId);
-  
+  bw->sensorEvents  = b2World_GetSensorEvents(bw->worldId);
+
   return(TCL_OK);
 }
 
@@ -445,7 +447,7 @@ static int Box2DGetContactEndEventsCmd(ClientData clientData, Tcl_Interp *interp
     Tcl_AppendResult(interp, "usage: ", argv[0], " world", NULL);
     return TCL_ERROR;
   }
-  
+
   if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
 
   // store lists of begin and end touches
@@ -455,9 +457,9 @@ static int Box2DGetContactEndEventsCmd(ClientData clientData, Tcl_Interp *interp
   for (int i = 0; i < bw->contactEvents.endCount; ++i)
     {
       b2ContactEndTouchEvent* endEvent = bw->contactEvents.endEvents + i;
-      char *bodyName1 = 
+      char *bodyName1 =
   ((BOX2D_USERDATA *) b2Body_GetUserData(b2Shape_GetBody(endEvent->shapeIdA)))->name;
-      char *bodyName2 = 
+      char *bodyName2 =
   ((BOX2D_USERDATA *) b2Body_GetUserData(b2Shape_GetBody(endEvent->shapeIdB)))->name;
 
       Tcl_Obj *bodies = Tcl_NewObj();
@@ -466,6 +468,100 @@ static int Box2DGetContactEndEventsCmd(ClientData clientData, Tcl_Interp *interp
       Tcl_ListObjAppendElement(interp, events, bodies);
     }
 
+  Tcl_SetObjResult(interp, events);
+  return(TCL_OK);
+}
+
+/*
+ * Sensor events. Mirror of the contact-event commands above, reading
+ * from b2World_GetSensorEvents (captured at each box2d::step). Each
+ * returned event is {sensor_body_name visitor_body_name}.
+ */
+
+static int Box2DGetSensorBeginEventCountCmd(ClientData clientData, Tcl_Interp *interp,
+            int argc, char *argv[])
+{
+  BOX2D_WORLD *bw;
+
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " world", NULL);
+    return TCL_ERROR;
+  }
+
+  if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(bw->sensorEvents.beginCount));
+  return(TCL_OK);
+}
+
+static int Box2DGetSensorEndEventCountCmd(ClientData clientData, Tcl_Interp *interp,
+            int argc, char *argv[])
+{
+  BOX2D_WORLD *bw;
+
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " world", NULL);
+    return TCL_ERROR;
+  }
+
+  if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(bw->sensorEvents.endCount));
+  return(TCL_OK);
+}
+
+static int Box2DGetSensorBeginEventsCmd(ClientData clientData, Tcl_Interp *interp,
+            int argc, char *argv[])
+{
+  BOX2D_WORLD *bw;
+
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " world", NULL);
+    return TCL_ERROR;
+  }
+
+  if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
+
+  Tcl_Obj *events = Tcl_NewObj();
+  for (int i = 0; i < bw->sensorEvents.beginCount; ++i)
+    {
+      b2SensorBeginTouchEvent* ev = bw->sensorEvents.beginEvents + i;
+      char *sensorName =
+  ((BOX2D_USERDATA *) b2Body_GetUserData(b2Shape_GetBody(ev->sensorShapeId)))->name;
+      char *visitorName =
+  ((BOX2D_USERDATA *) b2Body_GetUserData(b2Shape_GetBody(ev->visitorShapeId)))->name;
+      Tcl_Obj *pair = Tcl_NewObj();
+      Tcl_ListObjAppendElement(interp, pair, Tcl_NewStringObj(sensorName, -1));
+      Tcl_ListObjAppendElement(interp, pair, Tcl_NewStringObj(visitorName, -1));
+      Tcl_ListObjAppendElement(interp, events, pair);
+    }
+  Tcl_SetObjResult(interp, events);
+  return(TCL_OK);
+}
+
+static int Box2DGetSensorEndEventsCmd(ClientData clientData, Tcl_Interp *interp,
+            int argc, char *argv[])
+{
+  BOX2D_WORLD *bw;
+
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " world", NULL);
+    return TCL_ERROR;
+  }
+
+  if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
+
+  Tcl_Obj *events = Tcl_NewObj();
+  for (int i = 0; i < bw->sensorEvents.endCount; ++i)
+    {
+      b2SensorEndTouchEvent* ev = bw->sensorEvents.endEvents + i;
+      char *sensorName =
+  ((BOX2D_USERDATA *) b2Body_GetUserData(b2Shape_GetBody(ev->sensorShapeId)))->name;
+      char *visitorName =
+  ((BOX2D_USERDATA *) b2Body_GetUserData(b2Shape_GetBody(ev->visitorShapeId)))->name;
+      Tcl_Obj *pair = Tcl_NewObj();
+      Tcl_ListObjAppendElement(interp, pair, Tcl_NewStringObj(sensorName, -1));
+      Tcl_ListObjAppendElement(interp, pair, Tcl_NewStringObj(visitorName, -1));
+      Tcl_ListObjAppendElement(interp, events, pair);
+    }
   Tcl_SetObjResult(interp, events);
   return(TCL_OK);
 }
@@ -487,10 +583,11 @@ static int Box2DCreateBoxCmd(ClientData clientData, Tcl_Interp *interp,
   int bodyType;
   int enableContact = true;
   int enableHits = false;
-  
+  int isSensor = 0;
+
   if (argc < 9) {
     Tcl_AppendResult(interp, "usage: ", argv[0],
-		     " world name type x y w h angle", NULL);
+		     " world name type x y w h angle ?isSensor?", NULL);
     return TCL_ERROR;
   }
 
@@ -502,8 +599,11 @@ static int Box2DCreateBoxCmd(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDouble(interp, argv[6], &width) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[7], &height) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[8], &angle) != TCL_OK) return TCL_ERROR;
+  if (argc >= 10) {
+    if (Tcl_GetInt(interp, argv[9], &isSensor) != TCL_OK) return TCL_ERROR;
+  }
 
-  
+
   userdata = (BOX2D_USERDATA *) calloc(1, sizeof(BOX2D_USERDATA));
   userdata->world = bw;
 
@@ -513,7 +613,7 @@ static int Box2DCreateBoxCmd(ClientData clientData, Tcl_Interp *interp,
   bodyDef.rotation = b2MakeRot(angle);
   bodyDef.angularDamping = .05;
   bodyDef.linearDamping = .05;
-  
+
   b2BodyId bodyId = b2CreateBody(bw->worldId, &bodyDef);
   b2Body_SetUserData (bodyId, userdata);
 
@@ -524,8 +624,12 @@ static int Box2DCreateBoxCmd(ClientData clientData, Tcl_Interp *interp,
 
   shapeDef.enableContactEvents = enableContact;
   shapeDef.enableHitEvents = enableHits;
-    
-  b2CreatePolygonShape(bodyId, &shapeDef, &box);  
+  if (isSensor) {
+    shapeDef.isSensor = true;
+    shapeDef.enableSensorEvents = true;
+  }
+
+  b2CreatePolygonShape(bodyId, &shapeDef, &box);
 
   if (!name || !strlen(name)) {
     snprintf(userdata->name, sizeof(userdata->name),
@@ -558,29 +662,33 @@ static int Box2DCreateCircleCmd(ClientData clientData, Tcl_Interp *interp,
   int bodyType;
   int enableContact = true;
   int enableHits = false;
-  
+  int isSensor = 0;
+
   if (argc < 7) {
     Tcl_AppendResult(interp, "usage: ", argv[0],
-		     " world name type x y r", NULL);
+		     " world name type x y r ?isSensor?", NULL);
     return TCL_ERROR;
   }
-  
+
   if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
   name = argv[2];
   if (Tcl_GetInt(interp, argv[3], &bodyType) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[4], &x) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[5], &y) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetDouble(interp, argv[6], &r) != TCL_OK) return TCL_ERROR;
+  if (argc >= 8) {
+    if (Tcl_GetInt(interp, argv[7], &isSensor) != TCL_OK) return TCL_ERROR;
+  }
 
   userdata = (BOX2D_USERDATA *) calloc(1, sizeof(BOX2D_USERDATA));
   userdata->world = bw;
-  
+
   b2BodyDef bodyDef = b2DefaultBodyDef();
   bodyDef.type = (b2BodyType) bodyType;
   bodyDef.position = (b2Vec2){x, y};
   bodyDef.angularDamping = .05;
   bodyDef.linearDamping = .05;
-  
+
   b2BodyId bodyId = b2CreateBody(bw->worldId, &bodyDef);
   b2Body_SetUserData (bodyId, userdata);
 
@@ -588,14 +696,18 @@ static int Box2DCreateCircleCmd(ClientData clientData, Tcl_Interp *interp,
   b2Circle circle;
   circle.center = (b2Vec2){0,0};
   circle.radius = r;
-  
+
   b2ShapeDef shapeDef = b2DefaultShapeDef();
   shapeDef.density = 1.0f;
 
   shapeDef.enableContactEvents = enableContact;
   shapeDef.enableHitEvents = enableHits;
-  
-  b2CreateCircleShape(bodyId, &shapeDef, &circle);  
+  if (isSensor) {
+    shapeDef.isSensor = true;
+    shapeDef.enableSensorEvents = true;
+  }
+
+  b2CreateCircleShape(bodyId, &shapeDef, &circle);
 
   if (!name || !strlen(name)) {
     snprintf(userdata->name, sizeof(userdata->name), "body%d", bw->bodyCount++); 
@@ -754,6 +866,31 @@ static int Box2DSetRestitutionCmd(ClientData clientData, Tcl_Interp *interp,
   int nshapes = b2Body_GetShapes(body, shapes, MAX_SHAPES_PER_BODY);
   for (int i = 0; i < nshapes; i++) {
     b2Shape_SetRestitution(shapes[i], restitution);
+  }
+  return(TCL_OK);
+}
+
+static int Box2DSetFrictionCmd(ClientData clientData, Tcl_Interp *interp,
+			       int objc, Tcl_Obj * const objv[])
+{
+  BOX2D_WORLD *bw;
+  b2BodyId body;
+  b2ShapeId shapes[MAX_SHAPES_PER_BODY];
+  double friction;
+
+  if (objc < 4) {
+    Tcl_AppendResult(interp, "usage: ", Tcl_GetString(objv[0]),
+		     " world body friction", NULL);
+    return TCL_ERROR;
+  }
+
+  if (find_Box2D(interp, Tcl_GetString(objv[1]), &bw) != TCL_OK) return TCL_ERROR;
+  if (find_body(bw, Tcl_GetString(objv[2]), &body) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDoubleFromObj(interp, objv[3], &friction) != TCL_OK) return TCL_ERROR;
+
+  int nshapes = b2Body_GetShapes(body, shapes, MAX_SHAPES_PER_BODY);
+  for (int i = 0; i < nshapes; i++) {
+    b2Shape_SetFriction(shapes[i], friction);
   }
   return(TCL_OK);
 }
@@ -1102,10 +1239,13 @@ int Tclbox_Init(Tcl_Interp *interp)
 		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
 
   /* Body and Shape Getters/Setters */
-  Tcl_CreateObjCommand(interp, "box2d::setRestitution", 
+  Tcl_CreateObjCommand(interp, "box2d::setRestitution",
 		       (Tcl_ObjCmdProc *) Box2DSetRestitutionCmd,
 		       (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
-  
+  Tcl_CreateObjCommand(interp, "box2d::setFriction",
+		       (Tcl_ObjCmdProc *) Box2DSetFrictionCmd,
+		       (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
+
   /* Revolute Joints */
   Tcl_CreateObjCommand(interp, "box2d::revoluteJointCreate", 
 		       (Tcl_ObjCmdProc *) Box2DRevoluteJointCreateCmd, 
@@ -1166,8 +1306,21 @@ int Tclbox_Init(Tcl_Interp *interp)
   Tcl_CreateCommand(interp, "box2d::getContactEndEventCount", 
         (Tcl_CmdProc *) Box2DGetContactEndEventCountCmd, 
         (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "box2d::getContactEndEvents", 
-        (Tcl_CmdProc *) Box2DGetContactEndEventsCmd, 
+  Tcl_CreateCommand(interp, "box2d::getContactEndEvents",
+        (Tcl_CmdProc *) Box2DGetContactEndEventsCmd,
+        (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
+
+  Tcl_CreateCommand(interp, "box2d::getSensorBeginEventCount",
+        (Tcl_CmdProc *) Box2DGetSensorBeginEventCountCmd,
+        (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "box2d::getSensorBeginEvents",
+        (Tcl_CmdProc *) Box2DGetSensorBeginEventsCmd,
+        (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "box2d::getSensorEndEventCount",
+        (Tcl_CmdProc *) Box2DGetSensorEndEventCountCmd,
+        (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "box2d::getSensorEndEvents",
+        (Tcl_CmdProc *) Box2DGetSensorEndEventsCmd,
         (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
 
   return TCL_OK;
