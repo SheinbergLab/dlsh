@@ -840,6 +840,54 @@ static int Box2DSetLinearVelocityCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+/*
+ * Force / impulse application. Both apply to the body's center of mass
+ * (no torque). Force is sustained -- typically called each step while
+ * inside a "wind zone". Impulse is one-shot -- typically applied on a
+ * sensor-begin event for an instantaneous kick.
+ */
+static int Box2DApplyForceCmd(ClientData clientData, Tcl_Interp *interp,
+                              int argc, char *argv[])
+{
+  BOX2D_WORLD *bw;
+  b2BodyId body;
+  double fx, fy;
+
+  if (argc != 5) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " world body fx fy", NULL);
+    return TCL_ERROR;
+  }
+
+  if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
+  if (find_body(bw, argv[2], &body) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDouble(interp, argv[3], &fx) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDouble(interp, argv[4], &fy) != TCL_OK) return TCL_ERROR;
+
+  b2Body_ApplyForceToCenter(body, (b2Vec2){fx, fy}, true);
+  return TCL_OK;
+}
+
+static int Box2DApplyLinearImpulseCmd(ClientData clientData, Tcl_Interp *interp,
+                                      int argc, char *argv[])
+{
+  BOX2D_WORLD *bw;
+  b2BodyId body;
+  double ix, iy;
+
+  if (argc != 5) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " world body ix iy", NULL);
+    return TCL_ERROR;
+  }
+
+  if (find_Box2D(interp, argv[1], &bw) != TCL_OK) return TCL_ERROR;
+  if (find_body(bw, argv[2], &body) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDouble(interp, argv[3], &ix) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDouble(interp, argv[4], &iy) != TCL_OK) return TCL_ERROR;
+
+  b2Body_ApplyLinearImpulseToCenter(body, (b2Vec2){ix, iy}, true);
+  return TCL_OK;
+}
+
 /***********************************************************************/
 /**********************      Shape Settings       **********************/
 /***********************************************************************/
@@ -1289,11 +1337,17 @@ int Tclbox_Init(Tcl_Interp *interp)
   Tcl_CreateCommand(interp, "box2d::setTransform", 
 		    (Tcl_CmdProc *) Box2DSetTransformCmd, 
 		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "box2d::setLinearVelocity", 
-		    (Tcl_CmdProc *) Box2DSetLinearVelocityCmd, 
+  Tcl_CreateCommand(interp, "box2d::setLinearVelocity",
+		    (Tcl_CmdProc *) Box2DSetLinearVelocityCmd,
+		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "box2d::applyForce",
+		    (Tcl_CmdProc *) Box2DApplyForceCmd,
+		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "box2d::applyLinearImpulse",
+		    (Tcl_CmdProc *) Box2DApplyLinearImpulseCmd,
 		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
 
-  Tcl_CreateCommand(interp, "box2d::step", 
+  Tcl_CreateCommand(interp, "box2d::step",
 		    (Tcl_CmdProc *) Box2DStepCmd, 
 		    (ClientData) b2info, (Tcl_CmdDeleteProc *) NULL);
 
