@@ -8399,9 +8399,12 @@ DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false)
     return NULL;
   }
 
-  /* Cannot operate on string data */
-  if (DYN_LIST_DATATYPE(if_true) == DF_STRING ||
-      DYN_LIST_DATATYPE(if_false) == DF_STRING) {
+  /* String data can't be promoted to numeric — refuse only the
+   * mixed-type case (string + numeric). Same-type DF_STRING vs
+   * DF_STRING works via the direct-copy path below, which uses
+   * dynListCopyElement (already handles DF_STRING). */
+  if ((DYN_LIST_DATATYPE(if_true)  == DF_STRING) !=
+      (DYN_LIST_DATATYPE(if_false) == DF_STRING)) {
     return NULL;
   }
 
