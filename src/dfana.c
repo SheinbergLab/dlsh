@@ -730,6 +730,72 @@ DYN_LIST *dynListRestructureList(DYN_LIST *dl1, DYN_LIST *dl2,
   return retlist;
 }
 
+/*
+ * Zip N same-shape lists into a structure of N-tuples at the leaves.
+ *
+ *   dl_zip [a b c] [d e f]            -> [[a d] [b e] [c f]]
+ *   dl_zip [[1 2] [3 4]] [[5 6] [7 8]] -> [[[1 5] [2 6]] [[3 7] [4 8]]]
+ *
+ * All inputs must have identical shape and identical leaf datatype.
+ * Returns NULL on shape or type mismatch.
+ */
+DYN_LIST *dynListZipLists(DYN_LIST **dls, int n_inputs)
+{
+  int i, j, n;
+  DYN_LIST *retlist, *zipped, *tuple;
+  int leaf_type, all_lists;
+
+  if (n_inputs < 1 || !dls[0]) return NULL;
+  n = DYN_LIST_N(dls[0]);
+  all_lists = (DYN_LIST_DATATYPE(dls[0]) == DF_LIST);
+  for (i = 1; i < n_inputs; i++) {
+    if (!dls[i]) return NULL;
+    if (DYN_LIST_N(dls[i]) != n) return NULL;
+    if ((DYN_LIST_DATATYPE(dls[i]) == DF_LIST) != all_lists) return NULL;
+  }
+
+  retlist = dfuCreateDynList(DF_LIST, n ? n : 1);
+  if (!retlist) return NULL;
+
+  if (all_lists) {
+    /* Recurse on corresponding sublists */
+    DYN_LIST **subs = (DYN_LIST **) calloc(n_inputs, sizeof(DYN_LIST *));
+    if (!subs) { dfuFreeDynList(retlist); return NULL; }
+    for (i = 0; i < n; i++) {
+      for (j = 0; j < n_inputs; j++) {
+        subs[j] = ((DYN_LIST **) DYN_LIST_VALS(dls[j]))[i];
+      }
+      zipped = dynListZipLists(subs, n_inputs);
+      if (!zipped) {
+        free(subs);
+        dfuFreeDynList(retlist);
+        return NULL;
+      }
+      dfuMoveDynListList(retlist, zipped);
+    }
+    free(subs);
+  } else {
+    /* Leaf case: all inputs are flat; require identical leaf type */
+    leaf_type = DYN_LIST_DATATYPE(dls[0]);
+    for (i = 1; i < n_inputs; i++) {
+      if (DYN_LIST_DATATYPE(dls[i]) != leaf_type) {
+        dfuFreeDynList(retlist);
+        return NULL;
+      }
+    }
+    for (i = 0; i < n; i++) {
+      tuple = dfuCreateDynList(leaf_type, n_inputs);
+      if (!tuple) { dfuFreeDynList(retlist); return NULL; }
+      for (j = 0; j < n_inputs; j++) {
+        dynListCopyElement(dls[j], i, tuple);
+      }
+      dfuMoveDynListList(retlist, tuple);
+    }
+  }
+
+  return retlist;
+}
+
 DYN_LIST *dynListReshapeList(DYN_LIST *dl, int nrows, int ncols)
 {
   int i;

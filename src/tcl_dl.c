@@ -222,6 +222,7 @@ static int tclArithDynList            (ClientData, Tcl_Interp *, int, char **);
 static int tclListFromList            (ClientData, Tcl_Interp *, int, char **);
 static int tclReshapeList             (ClientData, Tcl_Interp *, int, char **);
 static int tclRestructureList         (ClientData, Tcl_Interp *, int, char **);
+static int tclZipDynList              (ClientData, Tcl_Interp *, int, char **);
 static int tclPermuteDynList          (ClientData, Tcl_Interp *, int, char **);
 static int tclRepList                 (ClientData, Tcl_Interp *, int, char **);
 static int tclCountLists              (ClientData, Tcl_Interp *, int, char **);
@@ -576,6 +577,8 @@ static TCL_COMMANDS DLcommands[] = {
       "change shape a list" },
   { "dl_restructure",      tclRestructureList,    NULL,
       "restructure a list to match another" },
+  { "dl_zip",              tclZipDynList,         NULL,
+      "zip N same-shape lists into N-tuples at the leaves" },
   { "dl_collapse",         tclListFromList,       (void *) DL_COLLAPSE,
       "collapse a list" },
   { "dl_pack",             tclListFromList,       (void *) DL_PACK,
@@ -7114,8 +7117,62 @@ static int tclRestructureList (ClientData data, Tcl_Interp *interp,
   if (tclFindDynList(interp, argv[2], &dl2) != TCL_OK) return TCL_ERROR;
   newlist = dynListRestructureList(dl1, dl2, 1, &start, NULL);
   if (!newlist) {
-    Tcl_AppendResult(interp, argv[0], 
+    Tcl_AppendResult(interp, argv[0],
 		     ": error restructuring list", (char *) NULL);
+    return TCL_ERROR;
+  }
+  return(tclPutList(interp, newlist));
+}
+
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    tclZipDynList
+ *
+ * ARGS
+ *    Tcl Args
+ *
+ * TCL FUNCTION
+ *    dl_zip
+ *
+ * DESCRIPTION
+ *    Zip N same-shape lists into N-tuples at the leaves.
+ *    All inputs must have identical shape and identical leaf datatype.
+ *
+ *****************************************************************************/
+
+static int tclZipDynList (ClientData data, Tcl_Interp *interp,
+			  int argc, char *argv[])
+{
+  DYN_LIST **dls, *newlist;
+  int i, n_inputs;
+
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0],
+		     " dynlist [dynlist ...]", (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  n_inputs = argc - 1;
+  dls = (DYN_LIST **) calloc(n_inputs, sizeof(DYN_LIST *));
+  if (!dls) {
+    Tcl_AppendResult(interp, argv[0], ": out of memory", (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  for (i = 0; i < n_inputs; i++) {
+    if (tclFindDynList(interp, argv[i+1], &dls[i]) != TCL_OK) {
+      free(dls);
+      return TCL_ERROR;
+    }
+  }
+
+  newlist = dynListZipLists(dls, n_inputs);
+  free(dls);
+
+  if (!newlist) {
+    Tcl_AppendResult(interp, argv[0],
+		     ": shape or leaf-type mismatch", (char *) NULL);
     return TCL_ERROR;
   }
   return(tclPutList(interp, newlist));

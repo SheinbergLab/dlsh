@@ -202,6 +202,7 @@ DYN_LIST *dynListLLength(DYN_LIST *dl);
 
 DYN_LIST *dynListReshapeList(DYN_LIST *dl, int nrows, int ncols);
 DYN_LIST *dynListRestructureList(DYN_LIST *, DYN_LIST *, int, int *, int *);
+DYN_LIST *dynListZipLists(DYN_LIST **dls, int n_inputs);
 DYN_LIST *dynListSpliceLists(DYN_LIST *dl, DYN_LIST *dl2, int pos);
 DYN_LIST *dynListListLengths(DYN_LIST *dl);
 DYN_LIST *dynListCollapseList(DYN_LIST *dl);
