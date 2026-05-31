@@ -2411,78 +2411,9 @@ static int tclDynListFromString(ClientData cdata, Tcl_Interp * interp,
  *
  *****************************************************************************/
 
-/* ===========================================================================
- * Uncompress input to output then close both files.
- */
-static void gz_uncompress(gzFile in, FILE *out)
-{
-    char buf[2048];
-    int len;
-
-    for (;;) {
-        len = gzread(in, buf, sizeof(buf));
-        if (len < 0) return;
-        if (len == 0) break;
-
-        if ((int)fwrite(buf, 1, (unsigned)len, out) != len) {
-	  return;
-	}
-    }
-    if (fclose(out)) return;
-    if (gzclose(in) != Z_OK) return;
-}
-
-static FILE *uncompress_file(char *filename, char *tempname)
-{
-  FILE *fp;
-  gzFile in;
-  int fd;
-#ifdef WIN32
-  static char *tmpdir = "c:/windows/temp";
-  char *fname;
-#else
-  char fname[] = "/tmp/dgXXXXXX";
-#endif
-
-  if (!filename) return NULL;
-
-  if (!(in = gzopen(filename, "rb"))) {
-    sprintf(tempname, "file %s not found", filename);
-    return 0;
-  }
-
-#ifdef WIN32
-  fname = tempnam(tmpdir, "dg");
-#else
-  fd = mkstemp(fname);
-  if (fd == -1) {
-    strcpy(tempname, "error creating temp file for decompression");
-    return 0;
-  }
-  close(fd);
-#endif
-
-  if (!(fp = fopen(fname,"wb"))) {
-    strcpy(tempname, "error opening temp file for decompression");
-    return 0;
-  }
-  
-  gz_uncompress(in, fp);
-
-  /* DONE in gz_uncompress!  fclose(fp); */
-
-  fp = fopen(fname, "rb");
-  if (tempname) strcpy(tempname, fname);
-
-#ifdef WIN32
-  free(fname);
-#else
-  unlink(fname);  /* Remove the temporary file when done */
-#endif
-
-  return(fp);
-}  
-
+/* gzip (.dgz) reads are now decompressed fully in memory by
+ * dguGzipFileToStruct() (dynio.c) -- no temp file.  The old
+ * gz_uncompress()/uncompress_file() temp-file helpers have been retired. */
 
 static int tclReadDynGroup (ClientData data, Tcl_Interp *interp,
 			    int argc, char *argv[])
@@ -2544,27 +2475,32 @@ static int tclReadDynGroup (ClientData data, Tcl_Interp *interp,
     }
   }
 
-  else if ((fp = uncompress_file(argv[1], tempname)) == NULL) {
-    char fullname[128];
-    sprintf(fullname,"%s.dg", argv[1]);
-    if ((fp = uncompress_file(fullname, tempname)) == NULL) {
-      sprintf(fullname,"%s.dgz", argv[1]);
-      if ((fp = uncompress_file(fullname, tempname)) == NULL) {
-	char resultstr[256];
-	if (tempname[0] == 'f') { /* 'f'ile not found...*/
-	  snprintf(resultstr, sizeof(resultstr),
-		   "dg_read: file \"%s\" not found", argv[1]);
-	}
-	else {
-	  snprintf(resultstr, sizeof(resultstr),
-		   "dg_read: error opening tempfile");
-	}
-	Tcl_SetObjResult(interp, Tcl_NewStringObj(resultstr, -1));
-	return TCL_ERROR;
+  else {
+    /* gzip-compressed (.dgz etc.): decompress fully in memory, no temp file.
+       Try the name as given, then with .dg / .dgz appended (mirrors the old
+       uncompress_file fallback). */
+    int gstat = dguGzipFileToStruct(argv[1], dg);
+    if (gstat != DF_OK) {
+      char fullname[256];
+      snprintf(fullname, sizeof(fullname), "%s.dg", argv[1]);
+      gstat = dguGzipFileToStruct(fullname, dg);
+      if (gstat != DF_OK) {
+	snprintf(fullname, sizeof(fullname), "%s.dgz", argv[1]);
+	gstat = dguGzipFileToStruct(fullname, dg);
       }
     }
+    if (gstat != DF_OK) {
+      char resultstr[256];
+      snprintf(resultstr, sizeof(resultstr),
+	       "dg_read: file \"%s\" not found or not a dg file", argv[1]);
+      Tcl_SetObjResult(interp, Tcl_NewStringObj(resultstr, -1));
+      dfuFreeDynGroup(dg);
+      return TCL_ERROR;
+    }
+    goto process_dg;
   }
 
+  /* Only the raw uncompressed .dg branch reaches here (fp set above). */
   if (!dguFileToStruct(fp, dg)) {
     char resultstr[256];
     snprintf(resultstr, sizeof(resultstr),
@@ -8752,7 +8688,7 @@ static int tclTempName (ClientData data, Tcl_Interp *interp,
 			int argc, char *argv[])
 {
   int i, j;
-  static char *dir = "/usr/tmp";
+  static char *dir = NULL;
   static char *prf = "dl:";
   DYN_LIST *prelist = NULL;
   
@@ -8785,11 +8721,21 @@ static int tclTempName (ClientData data, Tcl_Interp *interp,
   }
 
   if (!prelist) {
-#ifndef QNX
-	  Tcl_SetResult(interp, tempnam(dir, prf), TCL_DYNAMIC);
-#else
-	  Tcl_SetResult(interp, tmpnam(NULL), TCL_VOLATILE);
-#endif	  
+    /* Return a unique scratch NAME -- no file is created.  Callers use it
+       as a base ("[dl_tempname].pdf") or as an in-memory group name, not as
+       an open file, so this must NOT create anything on disk (which is why
+       mkstemp() is the wrong tool here).  Counter-based, matching the scheme
+       used by dg_tempname (tclDgTempName), and replaces the deprecated
+       tempnam().  Temp dir: -dir if given, else $TMPDIR, else /tmp. */
+    static int counter = 0;
+    const char *tdir = dir;
+    char namebuf[512];
+    if (!tdir || !tdir[0]) {
+      tdir = getenv("TMPDIR");
+      if (!tdir || !tdir[0]) tdir = "/tmp";
+    }
+    snprintf(namebuf, sizeof(namebuf), "%s/%s%d", tdir, prf, counter++);
+    Tcl_SetResult(interp, namebuf, TCL_VOLATILE);
   }
   return TCL_OK;
 }
