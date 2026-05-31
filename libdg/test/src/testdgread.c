@@ -6,73 +6,8 @@
 #include <dynio.h>
 
 
-/* ===========================================================================
- * Uncompress input to output then close both files.
- */
-
-static void gz_uncompress(gzFile in, FILE *out)
-{
-    char buf[2048];
-    int len;
-
-    for (;;) {
-        len = gzread(in, buf, sizeof(buf));
-        if (len < 0) return;
-        if (len == 0) break;
-
-        if ((int)fwrite(buf, 1, (unsigned)len, out) != len) {
-	  return;
-	}
-    }
-    if (fclose(out)) return;
-    if (gzclose(in) != Z_OK) return;
-}
-
-static FILE *uncompress_file(char *filename, char *tempname)
-{
-  FILE *fp;
-  gzFile in;
-#ifdef WIN32
-  static char *tmpdir = "c:/windows/temp";
-  char *fname;
-#else
-  int result;
-  static char fname[9];
-#endif
-
-  if (!filename) return NULL;
-
-  if (!(in = gzopen(filename, "rb"))) {
-    sprintf(tempname, "file %s not found", filename);
-    return 0;
-  }
-
-#ifdef WIN32
-  fname = tempnam(tmpdir, "dg");
-#else
-  strncpy(fname, "dgXXXXXX", 8);
-  result = mkstemp(fname);
-#endif
-  if (!(fp = fopen(fname,"wb"))) {
-    strcpy(tempname, "error opening temp file for decompression");
-    return 0;
-  }
-
-  gz_uncompress(in, fp);
-
-  /* DONE in gz_uncompress!  fclose(fp); */
-
-  fp = fopen(fname, "rb");
-  if (tempname) strcpy(tempname, fname);
-
-
-#ifdef WIN32
-  //  free(fname); ?? Apparently not, as it crashes when compiled with mingw
-#endif
-
-  return(fp);
-}  
-
+/* gzip (.dgz) reads are decompressed fully in memory by
+ * dguGzipFileToStruct() (dynio.c) -- no temp file. */
 
 int main(int argc, char *argv[])
 {
@@ -116,25 +51,26 @@ int main(int argc, char *argv[])
     }
   }
 
-  else if ((fp = uncompress_file(argv[1], tempname)) == NULL) {
-    char fullname[128];
-    sprintf(fullname,"%s.dg", argv[1]);
-    if ((fp = uncompress_file(fullname, tempname)) == NULL) {
-      sprintf(fullname,"%s.dgz", argv[1]);
-      if ((fp = uncompress_file(fullname, tempname)) == NULL) {
-	if (tempname[0] == 'f') { /* 'f'ile not found...*/
-	  printf("dg_read: file \"%s\" not found\n", argv[1]);
-	  exit(-1);
-	}
-	else {
-	  printf("dg_read: error opening tempfile\n");
-	  exit(-1);
-	}
-	exit(-1);
+  else {
+    /* gzip-compressed (.dgz etc.): decompress fully in memory, no temp file. */
+    int gstat = dguGzipFileToStruct(argv[1], dg);
+    if (gstat != DF_OK) {
+      char fullname[128];
+      snprintf(fullname, sizeof(fullname), "%s.dg", argv[1]);
+      gstat = dguGzipFileToStruct(fullname, dg);
+      if (gstat != DF_OK) {
+	snprintf(fullname, sizeof(fullname), "%s.dgz", argv[1]);
+	gstat = dguGzipFileToStruct(fullname, dg);
       }
     }
+    if (gstat != DF_OK) {
+      printf("dg_read: file \"%s\" not found or not a dg file\n", argv[1]);
+      exit(-1);
+    }
+    goto process_dg;
   }
 
+  /* Only the raw uncompressed .dg branch reaches here (fp set above). */
   if (!dguFileToStruct(fp, dg)) {
     printf("dg_read: file %s not recognized as dg format\n", 
 	    argv[1]);

@@ -26,11 +26,22 @@ else()
   link_directories( ..  )
 endif()
 
-include_directories( ../src )
+# Use the in-tree headers (../../src/lablib) first so tests build against the
+# current sources, not a possibly-stale installed copy under /usr/local/include.
+include_directories( ../../src/lablib ../src )
 
 add_executable( testdgread src/testdgread.c )
 target_link_libraries( testdgread dg ${LIBZ} ${LIBLZ4} ${LIBXXHASH} )
 
 add_executable( dgtojson src/dgtojson.c )
 target_link_libraries( dgtojson dg ${LIBZ} ${LIBLZ4} ${LIBJANSSON} ${LIBXXHASH} )
+
+# Round-trip regression test for the in-memory gzip reader
+# (dguGzipFileToStruct): write a dg gzip-compressed, read it back in memory,
+# assert identical (incl. a ragged nested list).  Built always; runs under
+# `ctest` only, so it does not affect the normal `cmake --build` / release flow.
+add_executable( dgz_roundtrip src/dgz_roundtrip.c )
+target_link_libraries( dgz_roundtrip dg ${LIBZ} ${LIBLZ4} ${LIBXXHASH} )
+
+add_test( NAME dgz_roundtrip COMMAND dgz_roundtrip )
 
