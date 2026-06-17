@@ -10,15 +10,15 @@
 if {![info exists ::__launch_sim_test_loaded]} {
     source /usr/local/dlsh/dlsh_setup.tcl
     package require dlsh
-    set pkgs_dir [file normalize [file join [file dirname [info script]] ..]]
-    set ::auto_path [lsearch -inline -all -not -exact $::auto_path $pkgs_dir]
-    set ::auto_path [linsert $::auto_path 0 $pkgs_dir]
+    # Source the ON-DISK launch_sim directly. auto_path front-loading does NOT
+    # reliably shadow a copy already in dlsh.zip (dlsh's package scan caches the
+    # zip's `package ifneeded` first), so source the sibling file to be sure we
+    # test what we just edited, not the deployed copy.
     catch {package forget launch_sim}
     catch {namespace delete ::launch_sim}
+    source [file join [file dirname [info script]] launch_sim.tcl]
     set ::__launch_sim_test_loaded 1
 }
-
-package require launch_sim
 
 set ::nfail 0
 proc assert {cond msg} {
@@ -252,5 +252,22 @@ for {set i 0} {$i < [dl_length gaedg:land_x]} {incr i} {
     }
 }
 assert {$all_exit_occ} "require_exit_occluded => every built trial's exit is occluded"
+
+# ---- 13. any-side (<0): deterministic arc launches never side-fight ----
+puts "any-side deterministic launch..."
+# a fixed-parameter launch (incl. the degenerate dev=0 heading) must succeed
+# every time with side <0 -- regression for the old random-side rejection.
+set anyside_ok 1
+foreach hd {0 90 180 270} {
+    set pd [dict merge $p [list boundary arc launcher_jitter 0 arc_radius 5.0 \
+            arc_span_deg 360 max_sim_time 20.0 min_visible 0.05 \
+            angle_min $hd angle_max $hd speed_min 2.5 speed_max 2.5 \
+            gravity_min 0 gravity_max 0]]
+    for {set i 0} {$i < 25} {incr i} {
+        if {[catch {launch_sim::sample_trajectory $pd -1}]} { set anyside_ok 0; break }
+    }
+    if {!$anyside_ok} break
+}
+assert {$anyside_ok} "deterministic arc launches (incl. dev=0 headings) succeed with side<0"
 
 if {$::nfail == 0} { puts "\nALL PASS" } else { puts "\n$::nfail FAILURE(S)"; exit 1 }

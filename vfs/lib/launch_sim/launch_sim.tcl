@@ -31,7 +31,7 @@
 #   Conventions: angles in radians; distances in dva; time in seconds.
 #   See test_launch_sim.tcl for usage.
 
-package provide launch_sim 0.1
+package provide launch_sim 0.2
 package require dlsh
 
 namespace eval launch_sim {
@@ -93,23 +93,28 @@ proc launch_sim::shape_geometry { shape ball_area } {
 # sample_trajectory -- rejection-sample ONE valid ballistic trajectory.
 #
 #   params : a dict overriding default_params (or {} for all defaults)
-#   side   : 0=left, 1=right, or -1 to choose randomly
+#   side   : 0=left, 1=right; <0 = ANY side (no constraint). For circle/arc the
+#            realized side is derived from geometry, so <0 is accepted directly
+#            (use it for deterministic/manual launches). For floor, <0 picks a
+#            random target side.
 #
-# Constraints (same as the original launch loaders, unified):
+# Floor-mode constraints:
 #   (a) airborne >= min_visible and <= max_sim_time
 #   (b) horizontal-speed cap |vx| <= vx_cap
-#   (c) if an occluder is present, >= min_visible of pre-occlusion flight
-#   (d) lands in the inner half of the chosen goal (the half nearest the
+#   (c) lands in the inner half of the chosen goal (the half nearest the
 #       other goal), so trials split evenly left/right by construction.
 # ------------------------------------------------------------------
 proc launch_sim::sample_trajectory { {params {}} {side -1} } {
     variable pi
     set p [dict merge [default_params] $params]
-    if { $side < 0 } { set side [expr {int(rand()*2)}] }
+    # side: 0=left, 1=right, <0 = ANY (no side constraint). circle/arc derive
+    # the realized side from geometry, so they accept <0 directly; floor needs
+    # a definite target side, so pick one there.
     switch -- [dict get $p boundary] {
         circle { return [sample_trajectory_circle $p $side] }
         arc    { return [sample_trajectory_arc    $p $side] }
     }
+    if { $side < 0 } { set side [expr {int(rand()*2)}] }
     dict with p {}   ;# (floor mode) import keys as locals (launcher_x_min, ...)
 
     if { $side == 0 } {
@@ -234,14 +239,15 @@ proc launch_sim::sample_trajectory_circle { p side } {
         set land_x [expr {$launcher_x + $vx*$exit_t}]
         set land_y [expr {$launcher_y + $vy*$exit_t - 0.5*$gravity*$exit_t*$exit_t}]
         # left/right balance + a discrete `side` for the 2AFC scaffolding
-        if { $side == 0 && $land_x > $circle_cx } continue
-        if { $side == 1 && $land_x < $circle_cx } continue
+        set s [expr {$land_x < $circle_cx ? 0 : 1}]   ;# realized side (left/right)
+        if { $side == 0 && $s != 0 } continue
+        if { $side == 1 && $s != 1 } continue
 
         lappend tlist $exit_t; lappend xlist $land_x; lappend ylist $land_y
         set exit_angle [expr {atan2($land_y-$circle_cy, $land_x-$circle_cx)}]
 
         return [dict create \
-            boundary circle side $side \
+            boundary circle side $s \
             launcher_x $launcher_x launcher_y $launcher_y \
             angle_rad $rad speed $speed vx $vx vy $vy gravity $gravity \
             land_time $exit_t land_x $land_x land_y $land_y exit_angle $exit_angle \

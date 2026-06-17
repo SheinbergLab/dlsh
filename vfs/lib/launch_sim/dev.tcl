@@ -17,12 +17,11 @@
 catch { source /usr/local/dlsh/dlsh_setup.tcl }
 package require dlsh
 
-set _ls_dir [file normalize [file join [file dirname [info script]] ..]]
-set ::auto_path [lsearch -inline -all -not -exact $::auto_path $_ls_dir]
-set ::auto_path [linsert $::auto_path 0 $_ls_dir]
+# Source the ON-DISK launch_sim directly (auto_path can't reliably shadow a
+# copy already baked into dlsh.zip), so edits take effect without a repack.
 catch {package forget launch_sim}
 catch {namespace delete ::launch_sim}
-package require launch_sim
+source [file join [file dirname [info script]] launch_sim.tcl]
 
 # Draw one occlusion-board trial (side: -1 random, 0 left, 1 right).
 proc demo { {side -1} {params {}} } {
