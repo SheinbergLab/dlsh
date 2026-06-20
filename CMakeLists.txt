@@ -105,6 +105,20 @@ set(JANSSON_BUILD_DOCS OFF CACHE INTERNAL "")
 set(JANSSON_EXAMPLES OFF CACHE INTERNAL "")
 set(JANSSON_WITHOUT_TESTS ON CACHE INTERNAL "")
 
+#----- yajl (JSON parser; source only, for the yajltcl package) -----
+# We fetch the source but do NOT build yajl's own (very old) CMake project.
+# Instead pkgs/yajltcl compiles yajl's sources directly into the yajltcl
+# module so it links statically with no external libyajl.dylib dependency.
+# SOURCE_SUBDIR points at a directory with no CMakeLists.txt, so
+# FetchContent_MakeAvailable just populates the source tree.
+FetchContent_Declare(
+    yajl
+    GIT_REPOSITORY https://github.com/lloyd/yajl.git
+    GIT_TAG        2.1.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  do-not-configure
+)
+
 #----- lz4 -----
 FetchContent_Declare(
     lz4
@@ -176,7 +190,7 @@ if(TARGET png_static)
 endif()
 
 # Make remaining dependencies available
-FetchContent_MakeAvailable(nanoarrow jansson lz4 box2d msgpackc)
+FetchContent_MakeAvailable(nanoarrow jansson lz4 box2d msgpackc yajl)
 
 # Global include for lz4
 include_directories(${lz4_SOURCE_DIR}/lib)
