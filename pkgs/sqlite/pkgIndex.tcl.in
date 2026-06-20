@@ -1,0 +1,11 @@
+# -*- tcl -*-
+# Generated from pkgs/sqlite/pkgIndex.tcl.in by CMake - do not edit.
+# SQLite @SQLITE_VERSION@
+#
+if { $::tcl_platform(os) == "Windows NT" } {
+    package ifneeded sqlite3 @SQLITE_VERSION@ \
+	[list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) tcl9sqlite@SQLITE_NODOTS@[info sharedlibextension]]]
+} else {
+    package ifneeded sqlite3 @SQLITE_VERSION@ \
+	[list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libtcl9sqlite@SQLITE_VERSION@[info sharedlibextension]]]
+}
