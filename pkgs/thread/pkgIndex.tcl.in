@@ -1,0 +1,9 @@
+# Generated from pkgs/thread/pkgIndex.tcl.in by CMake - do not edit.
+# Tcl Thread @THREAD_VERSION@
+if { $::tcl_platform(os) == "Windows NT" } {
+    package ifneeded Thread @THREAD_VERSION@ \
+	[list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) tcl9thread@THREAD_NODOTS@[info sharedlibextension]]]\n[list source [file join $dir ttrace.tcl]]
+} else {
+    package ifneeded Thread @THREAD_VERSION@ \
+	[list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libtcl9thread@THREAD_VERSION@[info sharedlibextension]]]\n[list source [file join $dir ttrace.tcl]]
+}
