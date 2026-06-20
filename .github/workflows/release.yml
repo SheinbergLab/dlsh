@@ -338,6 +338,29 @@ jobs:
           cp tktable-*/*.dylib install/lib/Tktable/Darwin/arm64/
           cp tktable-*/library/tkTable.tcl install/lib/Tktable/
 
+      - name: Sign assembled TEA package dylibs
+        env:
+          APP_CERTIFICATE_BASE64: ${{ secrets.APPLE_APP_CERTIFICATE_BASE64 }}
+        run: |
+          # The CMake packages are signed by the Xcode build, but the TEA
+          # packages (tdom, Tktable) are built with configure/make and copied
+          # in unsigned. Sign them with the same Developer ID + hardened runtime
+          # + secure timestamp so dlsh.zip is fully notarization-ready (required
+          # now that consumers like stim2 bundle dlsh.zip into a notarized app).
+          if [ -z "$APP_CERTIFICATE_BASE64" ]; then
+            echo "No signing certificate; skipping (unsigned TEA dylibs)."
+            exit 0
+          fi
+          codesign --force --timestamp --options=runtime \
+            --sign "Developer ID Application" \
+            install/lib/tdom/Darwin/arm64/*.dylib \
+            install/lib/Tktable/Darwin/arm64/*.dylib
+          # Fail loudly if any did not end up Developer-ID signed.
+          for f in install/lib/tdom/Darwin/arm64/*.dylib install/lib/Tktable/Darwin/arm64/*.dylib; do
+            codesign -dvvv "$f" 2>&1 | grep -q "Authority=Developer ID Application" \
+              || { echo "FAIL: $f not Developer-ID signed"; exit 1; }
+          done
+
       - name: Upload platform artifacts
         uses: actions/upload-artifact@v4
         with:
