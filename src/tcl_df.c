@@ -836,12 +836,12 @@ static int tclEvGetObs(DATA_FILE *df, int mode,
     Tcl_DStringInit(&resultStr);
     for (i = 0 ; i < EV_LIST_N(evlist)/nparams; i++) {
       if (status == 1) {                     /* TIMES */
-	sprintf(numstr, "%ld", EV_LIST_TIME(evlist,i));
+	snprintf(numstr, sizeof(numstr), "%d", EV_LIST_TIME(evlist,i));
 	Tcl_DStringAppendElement(&resultStr, numstr);
       }
       else {                                 /* VALS  */
 	for (j = 0; j < nparams; j++) {
-	  sprintf(numstr, "%ld", EV_LIST_VAL(evlist, i*nparams+j));
+	  snprintf(numstr, sizeof(numstr), "%d", EV_LIST_VAL(evlist, i*nparams+j));
 	  Tcl_DStringAppendElement(&resultStr, numstr);
 	}
       }
@@ -874,13 +874,13 @@ static int tclEvGetObs(DATA_FILE *df, int mode,
       Tcl_DStringInit(&resultStr);
 
       if (mode == GET_EV_TIME || mode == GET_EV) {
-	sprintf(numstr, "%d", time);
+	snprintf(numstr, sizeof(numstr), "%d", time);
 	Tcl_DStringAppendElement(&resultStr, numstr);
       }
       
       if (mode == GET_EV_DATA || mode == GET_EV) {
 	for (i = 0; i < result; i++) {
-	  sprintf(numstr, "%d", evdata[i]);
+	  snprintf(numstr, sizeof(numstr), "%d", evdata[i]);
 	  Tcl_DStringAppendElement(&resultStr, numstr);
 	}
       }
@@ -924,13 +924,13 @@ static int tclEvGetObs(DATA_FILE *df, int mode,
       Tcl_DStringInit(&resultStr);
       
       if (mode == GET_EV_TIME || mode == GET_EV) {
-	sprintf(numstr, "%d", time);
+	snprintf(numstr, sizeof(numstr), "%d", time);
 	Tcl_DStringAppendElement(&resultStr, numstr);
       }
 
       if (mode == GET_EV_DATA || mode == GET_EV) {
 	for (i = 0; i < result; i++) {
-	  sprintf(numstr, "%d", evdata[i]);
+	  snprintf(numstr, sizeof(numstr), "%d", evdata[i]);
 	  Tcl_DStringAppendElement(&resultStr, numstr);
 	}
       }
@@ -961,13 +961,13 @@ static int tclEvGetObs(DATA_FILE *df, int mode,
       Tcl_DStringInit(&resultStr);
 
       if (mode == GET_EV_TIME || mode == GET_EV) {
-	sprintf(numstr, "%d", time);
+	snprintf(numstr, sizeof(numstr), "%d", time);
 	Tcl_DStringAppendElement(&resultStr, numstr);
       }
       
       if (mode == GET_EV_DATA || mode == GET_EV) {
 	for (i = 0; i < result; i++) {
-	  sprintf(numstr, "%d", evdata[i]);
+	  snprintf(numstr, sizeof(numstr), "%d", evdata[i]);
 	  Tcl_DStringAppendElement(&resultStr, numstr);
 	}
       }
@@ -1021,13 +1021,13 @@ static int tclEvGetObs(DATA_FILE *df, int mode,
       Tcl_DStringInit(&resultStr);
 
       if (mode == GET_EV_TIME || mode == GET_EV) {
-	sprintf(numstr, "%d", actualtime);
+	snprintf(numstr, sizeof(numstr), "%d", actualtime);
 	Tcl_DStringAppendElement(&resultStr, numstr);
       }
       
       if (mode == GET_EV_DATA || mode == GET_EV) {
 	for (i = 0; i < result; i++) {
-	  sprintf(numstr, "%d", evdata[i]);
+	  snprintf(numstr, sizeof(numstr), "%d", evdata[i]);
 	  Tcl_DStringAppendElement(&resultStr, numstr);
 	}
       }
@@ -1109,13 +1109,13 @@ static int tclEvGetObs(DATA_FILE *df, int mode,
       Tcl_DStringInit(&resultStr);
 
       if (mode == GET_EV_TIME || mode == GET_EV) {
-	sprintf(numstr, "%d", actualtime);
+	snprintf(numstr, sizeof(numstr), "%d", actualtime);
 	Tcl_DStringAppendElement(&resultStr, numstr);
       }
 
       if (mode == GET_EV_DATA || mode == GET_EV) {
 	for (i = 0; i < result; i++) {
-	  sprintf(numstr, "%d", evdata[i]);
+	  snprintf(numstr, sizeof(numstr), "%d", evdata[i]);
 	  Tcl_DStringAppendElement(&resultStr, numstr);
 	}
       }
