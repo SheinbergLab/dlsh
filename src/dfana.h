@@ -67,6 +67,7 @@ DYN_LIST *dynListUnsignedConvertList(DYN_LIST *dl, int type);
 int dynListConcat(DYN_LIST *dl1, DYN_LIST *dl2);
 DYN_LIST *dynListCombine(DYN_LIST *dl1, DYN_LIST *dl2);
 DYN_LIST *dynListInterleave(DYN_LIST *dl1, DYN_LIST *dl2);
+DYN_LIST *dynListInterleaveN(DYN_LIST **dls, int n_inputs);
 DYN_LIST *dynListReplace(DYN_LIST *dl, DYN_LIST *selections, DYN_LIST *r);
 DYN_LIST *dynListReplaceByIndex(DYN_LIST *dl, DYN_LIST *s, DYN_LIST *r);
 DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false);
