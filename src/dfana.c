@@ -1190,6 +1190,80 @@ DYN_LIST *dynListInterleave(DYN_LIST *dl1, DYN_LIST *dl2)
   return(newlist);
 }
 
+/*
+ * N-way interleave: flatten N lists into one flat list, taking one element from
+ * each input in turn (round-robin):
+ *
+ *   dl_interleave [a b c] [d e f] [g h i] -> [a d g  b e h  c f i]
+ *
+ * This is the flat counterpart of dynListZipLists (which nests into tuples):
+ * interleave == flatten(zip). All inputs must share a common length L, except
+ * length-1 inputs, which broadcast (repeat) -- matching the binary
+ * dynListInterleave's scalar handling and dl_zip's shape rule. At the leaves
+ * all inputs must share an identical datatype; if every input is itself a list
+ * of lists, we recurse element-wise. Mixing flat and list inputs at the same
+ * level is rejected (the binary dynListInterleave still handles the 2-arg
+ * list/flat broadcast). Returns NULL on shape or type mismatch.
+ */
+DYN_LIST *dynListInterleaveN(DYN_LIST **dls, int n_inputs)
+{
+  int i, j, L, all_lists, leaf_type;
+  DYN_LIST *retlist;
+
+  if (n_inputs < 1 || !dls[0]) return NULL;
+
+  /* common length L = longest input; every input must be L or 1 (broadcast) */
+  L = 0;
+  for (i = 0; i < n_inputs; i++) {
+    if (!dls[i]) return NULL;
+    if (DYN_LIST_N(dls[i]) > L) L = DYN_LIST_N(dls[i]);
+  }
+  for (i = 0; i < n_inputs; i++) {
+    if (DYN_LIST_N(dls[i]) != L && DYN_LIST_N(dls[i]) != 1) return NULL;
+  }
+
+  /* inputs must agree on flat-vs-list at this level (no mixing) */
+  all_lists = (DYN_LIST_DATATYPE(dls[0]) == DF_LIST);
+  for (i = 1; i < n_inputs; i++) {
+    if ((DYN_LIST_DATATYPE(dls[i]) == DF_LIST) != all_lists) return NULL;
+  }
+
+  if (all_lists) {
+    /* recurse element-wise on corresponding sublists */
+    DYN_LIST **subs = (DYN_LIST **) calloc(n_inputs, sizeof(DYN_LIST *));
+    if (!subs) return NULL;
+    retlist = dfuCreateDynList(DF_LIST, L ? L : 1);
+    if (!retlist) { free(subs); return NULL; }
+    for (i = 0; i < L; i++) {
+      DYN_LIST *sub;
+      for (j = 0; j < n_inputs; j++) {
+        DYN_LIST *dj = dls[j];
+        subs[j] = ((DYN_LIST **) DYN_LIST_VALS(dj))[DYN_LIST_N(dj) == 1 ? 0 : i];
+      }
+      sub = dynListInterleaveN(subs, n_inputs);
+      if (!sub) { free(subs); dfuFreeDynList(retlist); return NULL; }
+      dfuMoveDynListList(retlist, sub);
+    }
+    free(subs);
+    return retlist;
+  }
+
+  /* leaf case: all inputs flat, require identical datatype */
+  leaf_type = DYN_LIST_DATATYPE(dls[0]);
+  for (i = 1; i < n_inputs; i++) {
+    if (DYN_LIST_DATATYPE(dls[i]) != leaf_type) return NULL;
+  }
+  retlist = dfuCreateDynList(leaf_type, (L ? L : 1) * n_inputs);
+  if (!retlist) return NULL;
+  for (i = 0; i < L; i++) {
+    for (j = 0; j < n_inputs; j++) {
+      DYN_LIST *dj = dls[j];
+      dynListCopyElement(dj, DYN_LIST_N(dj) == 1 ? 0 : i, retlist);
+    }
+  }
+  return retlist;
+}
+
 DYN_LIST *dynListFillSparse(DYN_LIST *vals, DYN_LIST *times, DYN_LIST *range)
 {
   int i, curindex = 0, index2;
