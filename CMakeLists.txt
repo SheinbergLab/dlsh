@@ -297,10 +297,25 @@ else()
 endif()
 
 ###############################
+# Embed dl_comprehension.tcl as a C header, regenerated whenever the .tcl changes
+set(_dlcomp_tcl ${CMAKE_CURRENT_SOURCE_DIR}/src/dl_comprehension.tcl)
+set(_dlcomp_hdr ${CMAKE_CURRENT_BINARY_DIR}/dl_comprehension_tcl.h)
+add_custom_command(
+    OUTPUT ${_dlcomp_hdr}
+    COMMAND ${CMAKE_COMMAND}
+            -DINPUT=${_dlcomp_tcl} -DOUTPUT=${_dlcomp_hdr}
+            -DVAR=dl_comprehension_tcl
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTcl.cmake
+    DEPENDS ${_dlcomp_tcl} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTcl.cmake
+    COMMENT "Embedding dl_comprehension.tcl -> dl_comprehension_tcl.h"
+    VERBATIM
+)
+
 # dlsh library
 ###############################
-add_library(dlsh SHARED 
-    src/dfana.c 
+add_library(dlsh SHARED
+    ${_dlcomp_hdr}
+    src/dfana.c
     src/tcl_dlg.c 
     src/dfevt.c 
     src/dlsh_pkg.c 
@@ -341,6 +356,7 @@ set_target_properties(dlsh PROPERTIES
 # Include directories for in-tree deps
 ###############################
 target_include_directories(dlsh PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}   # generated dl_comprehension_tcl.h
     ${tcl_SOURCE_DIR}/generic
     ${tcl_SOURCE_DIR}/libtommath
     ${nanoarrow_SOURCE_DIR}/src/nanoarrow
