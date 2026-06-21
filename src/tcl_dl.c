@@ -46,6 +46,9 @@
 
 #include <utilc.h>
 
+/* generated at build time from src/dl_comprehension.tcl (see cmake/EmbedTcl.cmake) */
+#include "dl_comprehension_tcl.h"
+
 static const char *DLSH_ASSOC_DATA_KEY = "dlsh";
 
 /* to protect non thread safe dynio operations */
@@ -957,6 +960,13 @@ int Dl_Init(Tcl_Interp *interp)
 		       (ClientData) DL_SCAN_BINARY, NULL);
 
   Dm_Init(interp);		/* add the matrix functions */
+
+  /* Embedded Tcl: the dl_comprehension helpers (dl_map/dl_filter/dl_reduce/
+     dl_comp). Built into the library and evaluated here -- after every dl_*
+     command they depend on is registered -- so they are always available on
+     load without needing the VFS lib path. See cmake/EmbedTcl.cmake. */
+  if (Tcl_Eval(interp, dl_comprehension_tcl) != TCL_OK)
+    return TCL_ERROR;
 
 #if 0
   if ((startup_dir = getenv("DLSH_LIBRARY"))) {
@@ -3970,6 +3980,17 @@ static int tclLocalDynList (ClientData data, Tcl_Interp *interp,
  * lists are not set for automatic deletion until they are used as an arg
  * to a subsequent function.
  *
+ * NB on lifetime: despite the name, this does not "return" -- it renames the
+ * list, sets the interp result to that name, and installs a trace ONE FRAME UP
+ * so the list is freed when the *calling* proc's frame exits. Two consequences:
+ *   - The lifetime is lexical (caller's frame), not reference-counted: stashing
+ *     the >#< name in a global/namespace and letting the frame exit leaves a
+ *     dangling name. To keep a list longer, dl_set it to a named list or copy.
+ *   - To pass a returned list further up through your own proc, re-wrap it:
+ *         proc mk {} { return [dl_return [some_builder ...]] }
+ *   - At the top level (info level 0) no trace is installed, so a top-level
+ *     dl_return persists until dl_clean / interp teardown.
+ *
  *****************************************************************************/
 
 static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
@@ -3990,7 +4011,7 @@ static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
   if (tclFindDynList(interp, argv[1], &dl) != TCL_OK) 
     return TCL_ERROR;
 
-  sprintf(newname, ">%d<", dlinfo->returnCount++);
+  snprintf(newname, sizeof(newname), ">%d<", dlinfo->returnCount++);
 
   /* A temporary list that's in the dlTable can be renamed */
   /*   (temporary lists not in the dlTable are elements of */
@@ -4021,7 +4042,7 @@ static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
   /* If we're at the top level, don't set the trace (not a normal case) */
   {
     char tracecmd[256];
-    sprintf(tracecmd, 
+    snprintf(tracecmd, sizeof(tracecmd),
 	    "if {[info level]} {uplevel \"set %s %s; trace add variable %s {write unset} dl_deleteTrace\"}",
 	    newname, newname, newname);
     Tcl_Eval(interp, tracecmd);
@@ -4569,32 +4590,40 @@ static int tclConsDynList (ClientData data, Tcl_Interp *interp,
 
   else if (operation == DL_INTERLEAVE) {
     int i;
-    DYN_LIST *newlist1;
-    
+
     if (argc < 3) {
-      Tcl_AppendResult(interp, "usage: ", argv[0], " dynlist1 dynlist2 ...", 
+      Tcl_AppendResult(interp, "usage: ", argv[0], " dynlist1 dynlist2 ...",
 		       (char *) NULL);
       return TCL_ERROR;
     }
 
-    if (tclFindDynList(interp, argv[1], &dl1) != TCL_OK) return TCL_ERROR;
-    if (tclFindDynList(interp, argv[2], &dl2) != TCL_OK) return TCL_ERROR;
-
-    newlist = dynListInterleave(dl1, dl2);
-    for (i = 3; i < argc; i++) {
-      if (!newlist) goto finished;
-      if (tclFindDynList(interp, argv[i], &dl1) != TCL_OK) {
-	dfuFreeDynList(newlist);
+    /* 2 lists -> the binary primitive (preserves its list/flat broadcast);
+       N>2 -> a single true N-way round-robin pass (dynListInterleaveN). The
+       old pairwise fold could not interleave 3+ equal-length lists. */
+    if (argc == 3) {
+      if (tclFindDynList(interp, argv[1], &dl1) != TCL_OK) return TCL_ERROR;
+      if (tclFindDynList(interp, argv[2], &dl2) != TCL_OK) return TCL_ERROR;
+      newlist = dynListInterleave(dl1, dl2);
+    }
+    else {
+      int n_inputs = argc - 1;
+      DYN_LIST **dls = (DYN_LIST **) calloc(n_inputs, sizeof(DYN_LIST *));
+      if (!dls) {
+	Tcl_AppendResult(interp, argv[0], ": out of memory", (char *) NULL);
 	return TCL_ERROR;
       }
-      newlist1 = dynListInterleave(newlist, dl1);
-      dfuFreeDynList(newlist);
-      newlist = newlist1;
+      for (i = 0; i < n_inputs; i++) {
+	if (tclFindDynList(interp, argv[i+1], &dls[i]) != TCL_OK) {
+	  free(dls);
+	  return TCL_ERROR;
+	}
+      }
+      newlist = dynListInterleaveN(dls, n_inputs);
+      free(dls);
     }
-    
-  finished:
+
     if (!newlist) {
-      Tcl_AppendResult(interp, argv[0], 
+      Tcl_AppendResult(interp, argv[0],
 		       ": error interleaving lists", (char *) NULL);
       return TCL_ERROR;
     }
@@ -9932,108 +9961,84 @@ static int tclDoTimes(ClientData data, Tcl_Interp * interp, int objc,
 *    body - tcl code to execute
 \***************************************************************/
 
-static int forEachLong(Tcl_Interp * interp, Tcl_Obj * obj, DYN_LIST * dl,
-		       Tcl_Obj * body);
-static int forEachShort(Tcl_Interp * interp, Tcl_Obj * obj, DYN_LIST * dl,
-			Tcl_Obj * body);
-static int forEachFloat(Tcl_Interp * interp, Tcl_Obj * obj, DYN_LIST * dl,
-			Tcl_Obj * body);
-static int forEachString(Tcl_Interp * interp, Tcl_Obj * obj, DYN_LIST * dl,
-			 Tcl_Obj * body);
-
 static int tclForEach(ClientData data, Tcl_Interp * interp, int objc,
 		      Tcl_Obj * const objv[])
 {
-  int i;
-  Tcl_Obj * o;
-  DYN_LIST * dl;
-  
+  int i, n, dt, rc = TCL_OK;
+  DYN_LIST *dl;
+  Tcl_Obj *varName, *body;
+
   if (objc != 4) {
-    Tcl_WrongNumArgs(interp, 1, objv, "var vals body");
+    Tcl_WrongNumArgs(interp, 1, objv, "var list body");
     return TCL_ERROR;
   }
-  if ((o = Tcl_ObjSetVar2(interp, objv[1], NULL, Tcl_NewObj(),
-			  TCL_LEAVE_ERR_MSG)) == NULL)
+  varName = objv[1];
+  body    = objv[3];
+
+  if (tclFindDynList(interp, Tcl_GetString(objv[2]), &dl) != TCL_OK)
     return TCL_ERROR;
-  if (tclFindDynList(interp, Tcl_GetStringFromObj(objv[2], NULL), &dl)
-      != TCL_OK) {
-    Tcl_UnsetVar2(interp, Tcl_GetStringFromObj(objv[1], NULL),
-		  NULL, TCL_LEAVE_ERR_MSG);
+
+  dt = DYN_LIST_DATATYPE(dl);
+  n  = DYN_LIST_N(dl);
+
+  if (dt != DF_LONG && dt != DF_SHORT && dt != DF_FLOAT &&
+      dt != DF_CHAR && dt != DF_STRING && dt != DF_LIST) {
+    Tcl_AppendResult(interp, "dl_foreach: unsupported list datatype", NULL);
     return TCL_ERROR;
   }
-  switch(DYN_LIST_DATATYPE(dl)) {
-  case DF_LONG:
-    i = forEachLong(interp, o, dl, objv[3]); break;
-  case DF_SHORT:
-    i = forEachShort(interp, o, dl, objv[3]); break;
-  case DF_FLOAT:
-    i = forEachFloat(interp, o, dl, objv[3]); break;
-  case DF_STRING:
-    i = forEachString(interp, o, dl, objv[3]); break;
+
+  for (i = 0; i < n; i++) {
+    Tcl_Obj *val = NULL;
+    char tmpname[128];		/* DF_LIST: name of the per-element temp list */
+    tmpname[0] = 0;
+
+    /* Build the loop value as a FRESH Tcl_Obj each iteration (refcount 0).
+       The old code mutated one shared object in place, which panics modern
+       Tcl ("...called with shared object"). For DF_LIST we hand the body a
+       real, referenceable dynlist: copy the sublist, register it via
+       tclPutList, and bind the loop var to its temp name. */
+    switch (dt) {
+    case DF_LONG:
+      val = Tcl_NewWideIntObj(((int *) DYN_LIST_VALS(dl))[i]); break;
+    case DF_SHORT:
+      val = Tcl_NewIntObj(((short *) DYN_LIST_VALS(dl))[i]); break;
+    case DF_CHAR:
+      val = Tcl_NewIntObj(((unsigned char *) DYN_LIST_VALS(dl))[i]); break;
+    case DF_FLOAT:
+      val = Tcl_NewDoubleObj(((float *) DYN_LIST_VALS(dl))[i]); break;
+    case DF_STRING:
+      val = Tcl_NewStringObj(((char **) DYN_LIST_VALS(dl))[i], -1); break;
+    case DF_LIST: {
+      DYN_LIST *copy = dfuCopyDynList(((DYN_LIST **) DYN_LIST_VALS(dl))[i]);
+      if (!copy || tclPutList(interp, copy) != TCL_OK) {
+	if (copy) dfuFreeDynList(copy);
+	return TCL_ERROR;
+      }
+      strncpy(tmpname, Tcl_GetStringResult(interp), sizeof(tmpname)-1);
+      tmpname[sizeof(tmpname)-1] = 0;
+      val = Tcl_NewStringObj(tmpname, -1);
+      break;
+    }
+    }
+
+    if (!Tcl_ObjSetVar2(interp, varName, NULL, val, TCL_LEAVE_ERR_MSG)) {
+      if (tmpname[0]) Tcl_UnsetVar2(interp, tmpname, NULL, 0);
+      return TCL_ERROR;
+    }
+
+    rc = Tcl_EvalObjEx(interp, body, 0);
+
+    /* free the per-element temp list now that the body has run */
+    if (tmpname[0]) Tcl_UnsetVar2(interp, tmpname, NULL, 0);
+
+    if (rc == TCL_CONTINUE) { rc = TCL_OK; continue; }
+    if (rc == TCL_BREAK)    { rc = TCL_OK; break; }
+    if (rc != TCL_OK)       break;	/* TCL_ERROR / TCL_RETURN propagate */
   }
-  Tcl_UnsetVar2(interp, Tcl_GetStringFromObj(objv[1], NULL),
-		NULL, TCL_LEAVE_ERR_MSG);
-  return i;
-}
 
-
-/*
- * Procedures for handling different data types within above procedure.
- */
-
-static int forEachLong(Tcl_Interp * interp, Tcl_Obj * obj, DYN_LIST * dl,
-		       Tcl_Obj * body)
-{
-  int i;
-  int *vals = (int *) DYN_LIST_VALS(dl);
-  
-  for (i = 0; i < DYN_LIST_N(dl); i++) {
-    Tcl_SetLongObj(obj, vals[i]);
-    if (Tcl_EvalObj(interp, body) != TCL_OK) return TCL_ERROR;
-  }
-  return TCL_OK;
-}
-
-
-static int forEachShort(Tcl_Interp * interp, Tcl_Obj * obj, DYN_LIST * dl,
-			Tcl_Obj * body)
-{
-  int i;
-  short *vals = (short *) DYN_LIST_VALS(dl);
-  
-  for (i = 0; i < DYN_LIST_N(dl); i++) {
-    Tcl_SetIntObj(obj, vals[i]);
-    if (Tcl_EvalObj(interp, body) != TCL_OK) return TCL_ERROR;
-  }
-  return TCL_OK;
-}
-
-
-static int forEachFloat(Tcl_Interp * interp, Tcl_Obj * obj, DYN_LIST * dl,
-			Tcl_Obj * body)
-{
-  int i;
-  float *vals = (float *) DYN_LIST_VALS(dl);
-  
-  for (i = 0; i < DYN_LIST_N(dl); i++) {
-    Tcl_SetDoubleObj(obj, vals[i]);
-    if (Tcl_EvalObj(interp, body) != TCL_OK) return TCL_ERROR;
-  }
-  return TCL_OK;
-}
-
-
-static int forEachString(Tcl_Interp * interp, Tcl_Obj * obj, DYN_LIST * dl,
-			 Tcl_Obj * body)
-{
-  int i;
-  char **vals = (char **) DYN_LIST_VALS(dl);
-  
-  for (i = 0; i < DYN_LIST_N(dl); i++) {
-    Tcl_SetStringObj(obj, vals[i], -1);
-    if (Tcl_EvalObj(interp, body) != TCL_OK) return TCL_ERROR;
-  }
-  return TCL_OK;
+  /* drop the loop variable (and, for DF_LIST, any dangling temp-list name) */
+  Tcl_UnsetVar2(interp, Tcl_GetString(varName), NULL, 0);
+  return rc;
 }
 
 /* Date functions (replacing IMSL equivalents) */
