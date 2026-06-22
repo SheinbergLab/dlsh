@@ -431,6 +431,60 @@ elseif(APPLE)
 endif()
 
 ###############################
+# Optional: standalone `dlsh` interpreter (dev/testing).
+# OFF by default so the release CI library build is untouched. Build with:
+#   cmake -B build -D DLSH_BUILD_INTERP=ON [-D DLSH_TCL_ROOT=/usr/local]
+#   cmake --build build --target dlsh_interp
+###############################
+option(DLSH_BUILD_INTERP "Build the standalone dlsh interpreter (dev/testing)" OFF)
+if(DLSH_BUILD_INTERP)
+    # A real interpreter links the FULL Tcl directly. The directory-wide
+    # -DUSE_TCL_STUBS is for the extension; we undefine it for this target below
+    # so tcl.h uses direct entry points, not the stub-call bootstrap shim.
+    set(DLSH_TCL_ROOT "/usr/local" CACHE PATH "Prefix containing full Tcl 9 (lib/, include/)")
+    find_library(DLSH_TCL_LIB NAMES tcl9.0 tcl9 tcl
+                 PATHS "${DLSH_TCL_ROOT}/lib" NO_DEFAULT_PATH)
+    if(NOT DLSH_TCL_LIB)
+        message(FATAL_ERROR
+            "DLSH_BUILD_INTERP: full Tcl library not found under ${DLSH_TCL_ROOT}/lib "
+            "(set -D DLSH_TCL_ROOT=<prefix>)")
+    endif()
+
+    set(DLSH_LINENOISE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/linenoise)
+    set(DLSH_INTERP_SOURCES src/dlsh_main.c)
+    set(_dlsh_have_linenoise OFF)
+    if(EXISTS ${DLSH_LINENOISE_DIR}/linenoise.c)
+        list(APPEND DLSH_INTERP_SOURCES ${DLSH_LINENOISE_DIR}/linenoise.c)
+        set(_dlsh_have_linenoise ON)
+    endif()
+
+    add_executable(dlsh_interp ${DLSH_INTERP_SOURCES})
+    set_target_properties(dlsh_interp PROPERTIES OUTPUT_NAME dlsh)
+    # Undefine the inherited -DUSE_TCL_STUBS for this target only (appended after
+    # the directory -D on the compile line, so it wins) -> direct Tcl linkage.
+    target_compile_options(dlsh_interp PRIVATE -UUSE_TCL_STUBS)
+    target_include_directories(dlsh_interp PRIVATE
+        ${tcl_SOURCE_DIR}/generic
+        ${tcl_SOURCE_DIR}/libtommath
+        ${DLSH_LINENOISE_DIR})
+    if(WIN32)
+        target_include_directories(dlsh_interp PRIVATE ${tcl_SOURCE_DIR}/win)
+    else()
+        target_include_directories(dlsh_interp PRIVATE ${tcl_SOURCE_DIR}/unix)
+    endif()
+    if(_dlsh_have_linenoise)
+        target_compile_definitions(dlsh_interp PRIVATE DLSH_HAVE_LINENOISE=1)
+    endif()
+    # Link the dlsh shared lib (commands + embedded prelude) + full Tcl.
+    target_link_libraries(dlsh_interp PRIVATE dlsh ${DLSH_TCL_LIB})
+    # Find libdlsh in the build tree when run in-place during dev; export the
+    # interpreter's symbols so the libdlsh dylib resolves Tcl at runtime.
+    set_target_properties(dlsh_interp PROPERTIES
+        ENABLE_EXPORTS ON
+        BUILD_RPATH "${CMAKE_BINARY_DIR}")
+endif()
+
+###############################
 # Subdirectories and Installation
 ###############################
 add_subdirectory(pkgs)
