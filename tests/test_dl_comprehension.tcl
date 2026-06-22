@@ -63,5 +63,13 @@ check "result usable in caller" [dl_tcllist $r] {10 20 30}
 proc _mk {} { return [dl_return [dl_map x [dl_ilist 1 2 3] {expr {$x*10}}]] }
 check "re-returned through proc" [dl_tcllist [_mk]] {10 20 30}
 
+# best practice: bind a retained result with dl_local -- lifetime tied to the
+# variable, so the list is usable while bound and freed when it is unset.
+dl_local kept [dl_filter x [dl_fromto 0 10] {expr {$x > 5}}]
+check "dl_local result usable" [dl_tcllist $kept] {6 7 8 9}
+set keptname $kept
+unset kept
+check "dl_local freed on unset" [dl_exists $keptname] 0
+
 if {$::fail} { puts "=== $::fail FAILURE(S) ==="; exit 1 }
 puts "=== ALL PASS ==="

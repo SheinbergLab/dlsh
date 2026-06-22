@@ -13,12 +13,27 @@
 #       ternary [x if x>4 else -1 ...]       -> dl_where [dl_gt $xs 4] $xs -1
 #       reduce  sum/mean/max per row         -> dl_sums / dl_means / dl_maxs
 #
-#   All builders return the new list via dl_return, so the result lives in the
-#   CALLER's frame (until that proc returns) -- the standard dlsh contract. To
-#   pass a built list further UP through a proc of your own, re-protect it:
-#       proc mk {} { return [dl_return [dl_map x $xs {expr {$x*2}}]] }
+#   All builders return a dynlist via dl_return (a ">N<" return-list), so the
+#   result lives in the CALLER's frame -- the standard dlsh contract. How you
+#   take the result matters:
 #
-#   Built on: dl_foreach, dl_select, dl_create, dl_ilist, dl_return.
+#     * Consumed immediately -- no binding needed:
+#           dl_tcllist [dl_filter x $xs {expr {$x > 5}}]
+#
+#     * Kept in a variable for later use -- bind with dl_local, NOT plain set.
+#       dl_local ties the list's lifetime to YOUR variable (freed on unset, on
+#       reassignment, at proc exit -- and correctly at the top level too), and
+#       it just renames the return-list, so there's no data copy:
+#           dl_local big [dl_filter x $xs {expr {$x > 5}}]
+#           dl_local mus [dl_map r $big {dl_mean $r}]
+#       (Plain `set v [dl_filter ...]` leaves the list owned by a hidden
+#        return-list guard: it survives in-scope, but `unset v` won't free it,
+#        and at the top level it is never reclaimed.)
+#
+#     * Returned UP through a proc of your own -- re-protect with dl_return:
+#           proc mk {} { return [dl_return [dl_map x $xs {expr {$x*2}}]] }
+#
+#   Built on: dl_foreach, dl_select, dl_create, dl_ilist, dl_return, dl_local.
 
 namespace eval ::dl {}
 
