@@ -151,8 +151,57 @@ static int Dlsh_Repl(int argc, char **argv)
 }
 #endif /* DLSH_HAVE_LINENOISE */
 
+/*
+ * One-shot evaluation: `dlsh -e <script> [args...]`. Evaluates <script>, prints
+ * a non-empty result to stdout, and exits 0 on success / 1 on error (full
+ * errorInfo to stderr) -- the scriptable/CI/agent entry point. Trailing args
+ * are exposed as argv/argc/argv0 just as a script file would see them.
+ */
+static int Dlsh_EvalOnce(int argc, char **argv, const char *script)
+{
+    Tcl_Interp *interp;
+    Tcl_Obj *av;
+    int i, code, rc;
+
+    Tcl_FindExecutable(argv[0]);
+    interp = Tcl_CreateInterp();
+    if (Dlsh_AppInit(interp) != TCL_OK) {
+        fprintf(stderr, "dlsh: initialization failed: %s\n",
+                Tcl_GetStringResult(interp));
+        Tcl_DeleteInterp(interp);
+        return 1;
+    }
+
+    av = Tcl_NewListObj(0, NULL);
+    for (i = 3; i < argc; i++) {
+        Tcl_ListObjAppendElement(interp, av, Tcl_NewStringObj(argv[i], -1));
+    }
+    Tcl_SetVar2Ex(interp, "argv", NULL, av, TCL_GLOBAL_ONLY);
+    Tcl_SetVar2Ex(interp, "argc", NULL, Tcl_NewIntObj(argc - 3), TCL_GLOBAL_ONLY);
+    Tcl_SetVar(interp, "argv0", argv[0], TCL_GLOBAL_ONLY);
+
+    code = Tcl_EvalEx(interp, script, -1, TCL_EVAL_GLOBAL);
+    if (code == TCL_OK) {
+        const char *res = Tcl_GetStringResult(interp);
+        if (res && *res) printf("%s\n", res);
+        rc = 0;
+    } else {
+        const char *ei = Tcl_GetVar(interp, "errorInfo", TCL_GLOBAL_ONLY);
+        const char *res = Tcl_GetStringResult(interp);
+        fprintf(stderr, "%s\n", (ei && *ei) ? ei : (res ? res : "error"));
+        rc = 1;
+    }
+    Tcl_DeleteInterp(interp);
+    return rc;
+}
+
 int main(int argc, char **argv)
 {
+    /* `dlsh -e <script> [args...]`: evaluate and exit (scriptable/CI use). */
+    if (argc >= 3 && (strcmp(argv[1], "-e") == 0 || strcmp(argv[1], "--eval") == 0)) {
+        return Dlsh_EvalOnce(argc, argv, argv[2]);
+    }
+
 #if defined(DLSH_HAVE_LINENOISE)
     /* Custom REPL only for an interactive terminal with no script argument;
        everything else (script file, piped stdin) goes to stock Tcl_Main. */

@@ -482,6 +482,27 @@ if(DLSH_BUILD_INTERP)
     set_target_properties(dlsh_interp PROPERTIES
         ENABLE_EXPORTS ON
         BUILD_RPATH "${CMAKE_BINARY_DIR}")
+
+    # Run the self-contained dlsh/Tcl-layer test suite THROUGH the freshly built
+    # binary: cmake --build build --target dlsh_interp && ctest --test-dir build
+    # Only the tests that need nothing beyond dlsh itself are listed here; the
+    # other tests/test_leak_*.tcl harnesses require tpool/planko/box2d + external
+    # paths and are not standalone-dlsh unit tests.
+    # Each test exits non-zero on failure; FAIL_REGULAR_EXPRESSION is a backstop.
+    enable_testing()
+    set(DLSH_INTERP_TESTS
+        test_dl_foreach
+        test_dl_comprehension
+        test_leak_dl_foreach)
+    foreach(_name ${DLSH_INTERP_TESTS})
+        set(_t ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_name}.tcl)
+        if(EXISTS ${_t})
+            add_test(NAME ${_name} COMMAND dlsh_interp ${_t})
+            set_tests_properties(${_name} PROPERTIES
+                TIMEOUT 120
+                FAIL_REGULAR_EXPRESSION "FAIL;FAILURE;LEAK SUSPECTED")
+        endif()
+    endforeach()
 endif()
 
 ###############################
