@@ -230,6 +230,56 @@ static int Dlsh_EvalOnce(int argc, char **argv, const char *script)
     return rc;
 }
 
+#if defined(DLSH_WITH_TK)
+/*
+ * `dlsh --gui [args]`: bring up the bundled GUI (dlshell: a Tk console with
+ * cgraph/gbuf visualization). The script is NOT compiled in -- it is sourced
+ * from the dlsh.zip the bootstrap already mounted (//zipfs:/dlsh/lib/dlsh/bin),
+ * so it tracks the same source of truth as everything else and updates with the
+ * zip. Then hand off to the Tk event loop. Requires a discoverable dlsh.zip.
+ */
+static int Dlsh_Gui(int argc, char **argv)
+{
+    Tcl_Interp *interp;
+    Tcl_Obj *av;
+    int i;
+
+    Tcl_FindExecutable(argv[0]);
+    interp = Tcl_CreateInterp();
+    if (Dlsh_AppInit(interp) != TCL_OK) {
+        fprintf(stderr, "dlsh --gui: init failed: %s\n", Tcl_GetStringResult(interp));
+        Tcl_DeleteInterp(interp);
+        return 1;
+    }
+    Tcl_SetVar(interp, "tcl_interactive", "1", TCL_GLOBAL_ONLY);
+    /* Args after --gui are exposed as argv/argc, as a wish script would see. */
+    av = Tcl_NewListObj(0, NULL);
+    for (i = 2; i < argc; i++) {
+        Tcl_ListObjAppendElement(interp, av, Tcl_NewStringObj(argv[i], -1));
+    }
+    Tcl_SetVar2Ex(interp, "argv", NULL, av, TCL_GLOBAL_ONLY);
+    Tcl_SetVar2Ex(interp, "argc", NULL, Tcl_NewIntObj(argc - 2), TCL_GLOBAL_ONLY);
+    Tcl_SetVar(interp, "argv0", argv[0], TCL_GLOBAL_ONLY);
+
+    static const char *gui_launch =
+        "package require Tk\n"
+        "set g [file join [zipfs root] dlsh lib dlsh bin dlshell.tcl]\n"
+        "if {![file exists $g]} {\n"
+        "  error \"dlsh --gui: GUI script not found ($g); need a dlsh.zip with lib/dlsh/bin/dlshell.tcl\"\n"
+        "}\n"
+        "source $g\n";
+    if (Tcl_Eval(interp, gui_launch) != TCL_OK) {
+        const char *ei = Tcl_GetVar(interp, "errorInfo", TCL_GLOBAL_ONLY);
+        fprintf(stderr, "%s\n", ei ? ei : Tcl_GetStringResult(interp));
+        Tcl_DeleteInterp(interp);
+        return 1;
+    }
+    Tk_MainLoop();                 /* runs until the last window closes */
+    Tcl_DeleteInterp(interp);
+    return 0;
+}
+#endif /* DLSH_WITH_TK */
+
 int main(int argc, char **argv)
 {
     /* Tcl 9 single-file deployment: if a Tcl script-library zip is appended to
@@ -239,14 +289,21 @@ int main(int argc, char **argv)
        is embedded in the dylib), so it is always safe to call. */
     TclZipfs_AppHook(&argc, &argv);
 
-    /* If not a single-file build, find a sidecar dlsh.zip and point Tcl/Tk at
-       the script libraries it carries -- before any interp is created. */
+    /* If not a single-file build, find the sidecar dlsh-runtime.zip and point
+       Tcl/Tk at the script libraries it carries -- before any interp exists. */
     Dlsh_BootstrapRuntime();
 
     /* `dlsh -e <script> [args...]`: evaluate and exit (scriptable/CI use). */
     if (argc >= 3 && (strcmp(argv[1], "-e") == 0 || strcmp(argv[1], "--eval") == 0)) {
         return Dlsh_EvalOnce(argc, argv, argv[2]);
     }
+
+#if defined(DLSH_WITH_TK)
+    /* `dlsh --gui [args]`: launch the bundled Tk GUI from the zip. */
+    if (argc >= 2 && strcmp(argv[1], "--gui") == 0) {
+        return Dlsh_Gui(argc, argv);
+    }
+#endif
 
     /* Everything else -- script file, piped stdin, interactive prompt -- is
        stock Tcl_Main: tclsh-identical, event-loop-driven, and Tk-ready. */
