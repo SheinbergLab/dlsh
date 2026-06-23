@@ -9,10 +9,12 @@
 #       __LINKEDIT breaks macOS code signing -- fine for Linux / dev / CI
 #       artifacts, not for notarized distribution.
 #
-#   MODE=sidecar (signable): build dlsh.zip with lib/tcl9.0/ [+ lib/tk9.0/]
-#       next to the executable. The binary has no trailing data, so it signs
-#       cleanly; Dlsh_BootstrapRuntime() mounts the sidecar and points
-#       TCL_LIBRARY/TK_LIBRARY into it.
+#   MODE=sidecar (signable): build dlsh-runtime.zip with lib/tcl9.0/ [+
+#       lib/tk9.0/] next to the executable. The binary has no trailing data, so
+#       it signs cleanly; Dlsh_BootstrapRuntime() mounts the sidecar and points
+#       TCL_LIBRARY/TK_LIBRARY into it. NB: the runtime zip is intentionally NOT
+#       named dlsh.zip -- that name (and //zipfs:/dlsh) belongs to the dlsh
+#       PACKAGE loaded via `package require dlsh`; the runtime stays separate.
 #
 # We build the archive from sources rather than Tk's own make-generated zip,
 # which (when Tk is configured against a from-source Tcl) wrongly packages
@@ -77,7 +79,7 @@ elseif(MODE STREQUAL "sidecar")
     file(COPY "${TK_LIBDIR}/" DESTINATION "${STAGE}/lib/tk9.0")
   endif()
   get_filename_component(_exedir "${EXE}" DIRECTORY)
-  set(_zip "${_exedir}/dlsh.zip")
+  set(_zip "${_exedir}/dlsh-runtime.zip")
   _make_zip("${_zip}" lib)
   message(STATUS "dlsh: wrote sidecar runtime ${_zip} (lib/tcl9.0 [+ lib/tk9.0])")
 

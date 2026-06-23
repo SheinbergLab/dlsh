@@ -1,23 +1,28 @@
 /*
  * dlsh_main.c
- *   Entry point for the standalone `dlsh` interpreter -- a tclsh that has the
- *   dlsh C packages compiled/linked in. Two modes:
+ *   Entry point for the standalone `dlsh` interpreter: a self-contained Tcl
+ *   (+ Tk) runtime that pulls the dlsh PACKAGE from dlsh.zip at startup, the
+ *   same way dserv and stim2 do. Two layers, deliberately separate:
  *
+ *     - The Tcl/Tk RUNTIME (init.tcl/tk.tcl) is baked into this binary -- it is
+ *       what makes dlsh a standalone interpreter, independent of dlsh.zip's
+ *       contents. (Appended at //zipfs:/app in single-file builds, or mounted
+ *       from a sidecar dlsh-runtime.zip in signable builds.)
+ *     - The dlsh PACKAGE (libdlsh + plot/stats/... helpers) is NOT linked in;
+ *       the bootstrap mounts dlsh.zip and does `package require dlsh`, so dlsh
+ *       loads the EXACT same artifact dserv/stim2 load. dlsh.zip stays the one
+ *       source of truth and can be updated without rebuilding this binary.
+ *
+ *   Run modes:
  *     - `dlsh -e <script>`: one-shot evaluation for scripting/CI/agents.
- *     - everything else: delegate to stock Tcl_Main, so behavior is
- *       byte-for-byte tclsh-compatible (script file, piped stdin, and the
- *       interactive prompt -- including event-loop pumping, which keeps a
- *       future Tk's windows live at the prompt with no extra plumbing).
+ *     - everything else: stock Tcl_Main (tclsh-compatible script file, piped
+ *       stdin, and an event-loop-driven interactive prompt that keeps Tk live).
  *
- *   The interactive prompt is plain tclsh: no arrow-key line editing. That is
- *   a deliberate simplicity tradeoff -- interactive use is light here (the
- *   primary interfaces are web front-ends), and leaning on Tcl_Main keeps the
- *   loop event-driven for Tk. (rc-file sourcing, result echoing, and
- *   multi-line input all come from Tcl_Main for free.)
+ *   The interactive prompt is plain tclsh (no line editing) -- a deliberate
+ *   simplicity tradeoff, since interactive use is light here.
  *
- *   The dlsh packages are registered statically so their commands AND
- *   `package require dlsh` work without a separate libdlsh load step -- the
- *   same scripts then run identically here, in stim2, and in dserv.
+ *   With no discoverable dlsh.zip you get bare Tcl/Tk (no dl_* commands); that
+ *   is an accepted tradeoff for keeping a single source of truth.
  */
 
 #include <stdio.h>
@@ -29,29 +34,25 @@
 #include <tk.h>
 #endif
 
-/* libdlsh's package init: runs all sub-inits (Dl_Init/Df_Init/Dlg_Init/
-   Cgbase_Init/DlNoise_Init), evaluates the embedded dl_comprehension prelude,
-   and Tcl_PkgProvide("dlsh", ...). */
-extern int Dlsh_Init(Tcl_Interp *interp);
-extern int Dlsh_SafeInit(Tcl_Interp *interp);
-
 /*
- * Mount the dlsh.zip VFS if we can find it, and add its lib/ to auto_path -- so
- * the standalone `dlsh` is self-sufficient (the pure-Tcl library + sub-packages
- * are available without sourcing dlsh_setup.tcl). This is the app's deployment
- * policy, kept OUT of libdlsh's Dlsh_Init. It is graceful: if no zip is found,
- * the C commands + embedded comprehension prelude still work.
+ * Find dlsh.zip, mount it, put its lib/ on auto_path, then `package require
+ * dlsh` -- the SAME load path dserv and stim2 use, so all three load the one
+ * libdlsh + Tcl helpers out of the shared zip (one source of truth, updatable
+ * without rebuilding any of the binaries). This is the app's deployment policy,
+ * deliberately kept out of the C runtime: with no zip you get bare Tcl/Tk.
  *
  * Discovery order: $DLSH_ZIP -> $DLSH_LIBRARY/dlsh.zip -> next to / near the
- * executable (incl. ../Resources for a future .app bundle) -> /usr/local.
- * dlsh is already Tcl_PkgProvide'd above, so the zip's own dlsh pkgIndex never
- * triggers a second load.
+ * executable (incl. ../Resources for a .app bundle) -> /usr/local/dlsh, the
+ * canonical install location shared with dserv/stim2.
  *
- * We then drop /usr/local/lib from auto_path: Tcl's init adds it (it is the
- * configured prefix's lib dir), but it holds older copies of our packages that
- * would shadow the ones in dlsh.zip. dlsh now ships its libraries via the zip,
- * so the system lib dir is off by default. A user who wants it back can re-add
- * it explicitly (e.g. from a future ~/.dlshrc).
+ * We mount at //zipfs:/dlsh (NOT the runtime's //zipfs:/app or
+ * //zipfs:/dlsh_runtime), so the package and the baked-in Tcl/Tk runtime never
+ * collide. The `package require dlsh` is best-effort (catch): a missing or
+ * partial zip must not abort startup.
+ *
+ * We also drop /usr/local/lib from auto_path: Tcl's init adds it (the configured
+ * prefix's lib dir), but it holds older copies of our packages that would shadow
+ * the zip's. A user who wants it back can re-add it (e.g. from ~/.dlshrc).
  */
 static const char *dlsh_vfs_bootstrap =
     "apply {{} {\n"
@@ -75,7 +76,10 @@ static const char *dlsh_vfs_bootstrap =
     "  }\n"
     "  return {}\n"
     "}}\n"
-    "set ::auto_path [lsearch -all -inline -not -exact $::auto_path /usr/local/lib]\n";
+    "set ::auto_path [lsearch -all -inline -not -exact $::auto_path /usr/local/lib]\n"
+    /* Pull in the dlsh package (C lib + Tcl helpers) from the mounted zip, just
+       as dserv/stim2 do. Best-effort: no zip / no platform lib -> bare Tcl/Tk. */
+    "catch { package require dlsh }\n";
 
 /* True if a path (native OR //zipfs:) is accessible. Works before Tcl_Init:
    Tcl_FindExecutable (called via TclZipfs_AppHook in main) sets up the FS. */
@@ -89,21 +93,22 @@ static int dlsh_path_exists(const char *path)
 }
 
 /*
- * Make a Tcl (and Tk) script library reachable BEFORE Tcl_Init -- the one thing
- * the post-init dlsh.zip bootstrap below cannot do, since Tcl_Init itself needs
- * init.tcl.
+ * Make the baked-in Tcl (and Tk) script RUNTIME reachable BEFORE Tcl_Init --
+ * the one thing the post-init dlsh.zip bootstrap cannot do, since Tcl_Init
+ * itself needs init.tcl. This is the interpreter's own runtime, distinct from
+ * the dlsh PACKAGE (dlsh.zip), and uses its own filenames / mount points so the
+ * two never collide.
  *
  *   - Single-file build: TclZipfs_AppHook already mounted an archive appended
  *     to the executable at //zipfs:/app (tcl_library/ at its root). Nothing to
- *     do. This is the portable-but-unsignable form (trailing data breaks macOS
- *     codesign), good for Linux / dev / CI artifacts.
+ *     do. Portable-but-unsignable form (trailing data breaks macOS codesign);
+ *     good for Linux / dev / CI artifacts.
  *   - Signable build: the executable has no trailing data; the runtime ships in
- *     a sidecar dlsh.zip (next to the exe, or ../Resources in a .app) carrying
- *     lib/tcl9.0 + lib/tk9.0. Mount it and point TCL_LIBRARY/TK_LIBRARY there.
+ *     a sidecar "dlsh-runtime.zip" (next to the exe, or ../Resources in a .app)
+ *     carrying lib/tcl9.0 + lib/tk9.0. Mount it at //zipfs:/dlsh_runtime and
+ *     point TCL_LIBRARY/TK_LIBRARY there.
  *
- * Best-effort: if nothing is found, Tcl falls back to its own search (e.g. an
- * installed prefix). The post-init bootstrap then sees //zipfs:/dlsh already
- * mounted and only has to extend auto_path.
+ * Best-effort: if nothing is found, Tcl falls back to its own search.
  */
 static void Dlsh_BootstrapRuntime(void)
 {
@@ -120,24 +125,21 @@ static void Dlsh_BootstrapRuntime(void)
         if (slash) { *slash = '\0'; } else { strcpy(dir, "."); }
     }
 
-    char cands[4][2048];
+    char cands[2][2048];
     int n = 0;
-    const char *env_zip = getenv("DLSH_ZIP");
-    if (env_zip && *env_zip) snprintf(cands[n++], sizeof(cands[0]), "%s", env_zip);
-    snprintf(cands[n++], sizeof(cands[0]), "%s/dlsh.zip", dir);
-    snprintf(cands[n++], sizeof(cands[0]), "%s/../Resources/dlsh.zip", dir);
-    snprintf(cands[n++], sizeof(cands[0]), "/usr/local/dlsh/dlsh.zip");
+    snprintf(cands[n++], sizeof(cands[0]), "%s/dlsh-runtime.zip", dir);
+    snprintf(cands[n++], sizeof(cands[0]), "%s/../Resources/dlsh-runtime.zip", dir);
 
     for (int i = 0; i < n; i++) {
         if (!dlsh_path_exists(cands[i])) continue;
-        if (TclZipfs_Mount(NULL, cands[i], "//zipfs:/dlsh", NULL) != TCL_OK
-                && !dlsh_path_exists("//zipfs:/dlsh/lib")) {
+        if (TclZipfs_Mount(NULL, cands[i], "//zipfs:/dlsh_runtime", NULL) != TCL_OK
+                && !dlsh_path_exists("//zipfs:/dlsh_runtime/lib")) {
             continue;
         }
-        if (dlsh_path_exists("//zipfs:/dlsh/lib/tcl9.0/init.tcl")) {
-            setenv("TCL_LIBRARY", "//zipfs:/dlsh/lib/tcl9.0", 1);
-            if (dlsh_path_exists("//zipfs:/dlsh/lib/tk9.0/tk.tcl")) {
-                setenv("TK_LIBRARY", "//zipfs:/dlsh/lib/tk9.0", 1);
+        if (dlsh_path_exists("//zipfs:/dlsh_runtime/lib/tcl9.0/init.tcl")) {
+            setenv("TCL_LIBRARY", "//zipfs:/dlsh_runtime/lib/tcl9.0", 1);
+            if (dlsh_path_exists("//zipfs:/dlsh_runtime/lib/tk9.0/tk.tcl")) {
+                setenv("TK_LIBRARY", "//zipfs:/dlsh_runtime/lib/tk9.0", 1);
             }
             return;
         }
@@ -149,12 +151,9 @@ static int Dlsh_AppInit(Tcl_Interp *interp)
     if (Tcl_Init(interp) == TCL_ERROR) {
         return TCL_ERROR;
     }
-    if (Dlsh_Init(interp) == TCL_ERROR) {
-        return TCL_ERROR;
-    }
-    /* So `package require dlsh` resolves (incl. in child interps) without a
-       separate .so load step. */
-    Tcl_StaticLibrary(interp, "dlsh", Dlsh_Init, Dlsh_SafeInit);
+    /* The dlsh PACKAGE is NOT linked in -- the bootstrap below mounts dlsh.zip
+       and `package require dlsh` loads libdlsh + helpers from it, the same as
+       dserv/stim2. (Only the Tcl/Tk runtime is baked into this binary.) */
 
 #if defined(DLSH_WITH_TK)
     /* Make the statically-linked Aqua Tk load on demand: register it globally

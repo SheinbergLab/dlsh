@@ -49,6 +49,20 @@ jobs:
           cmake -B build -D DLSH_BUILD_INTERP=ON
           cmake --build build --target dlsh_interp -j"$(nproc)"
 
+      - name: Build dlsh library and stage a test dlsh.zip
+        # The interpreter no longer links libdlsh -- the dlsh PACKAGE is loaded
+        # from a zip at runtime (package require dlsh), exactly as dserv/stim2
+        # do. CI runners have no /usr/local/dlsh/dlsh.zip, so stage one from the
+        # freshly-built libdlsh + the checked-in vfs/lib/dlsh tree.
+        run: |
+          cmake --build build --target dlsh -j"$(nproc)"
+          rm -rf zipstage && mkdir -p zipstage/lib
+          cp -R vfs/lib/dlsh zipstage/lib/dlsh
+          dst="zipstage/lib/dlsh/$(uname -s)/$(uname -m)"; mkdir -p "$dst"
+          cp build/libdlsh.so "$dst/"
+          ( cd zipstage && zip -qr -X "$GITHUB_WORKSPACE/test-dlsh.zip" lib )
+          echo "DLSH_ZIP=$GITHUB_WORKSPACE/test-dlsh.zip" >> "$GITHUB_ENV"
+
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_leak_dl_foreach'
 
@@ -86,6 +100,20 @@ jobs:
           cmake -B build -D DLSH_BUILD_INTERP=ON
           cmake --build build --target dlsh_interp -j"$(sysctl -n hw.ncpu)"
 
+      - name: Build dlsh library and stage a test dlsh.zip
+        # The interpreter no longer links libdlsh -- the dlsh PACKAGE is loaded
+        # from a zip at runtime (package require dlsh), exactly as dserv/stim2
+        # do. CI runners have no /usr/local/dlsh/dlsh.zip, so stage one from the
+        # freshly-built libdlsh + the checked-in vfs/lib/dlsh tree.
+        run: |
+          cmake --build build --target dlsh -j"$(sysctl -n hw.ncpu)"
+          rm -rf zipstage && mkdir -p zipstage/lib
+          cp -R vfs/lib/dlsh zipstage/lib/dlsh
+          dst="zipstage/lib/dlsh/$(uname -s)/$(uname -m)"; mkdir -p "$dst"
+          cp build/libdlsh.dylib "$dst/"
+          ( cd zipstage && zip -qr -X "$GITHUB_WORKSPACE/test-dlsh.zip" lib )
+          echo "DLSH_ZIP=$GITHUB_WORKSPACE/test-dlsh.zip" >> "$GITHUB_ENV"
+
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_leak_dl_foreach'
 
@@ -114,4 +142,4 @@ jobs:
           path: |
             build/dlsh
             build-sign/dlsh
-            build-sign/dlsh.zip
+            build-sign/dlsh-runtime.zip

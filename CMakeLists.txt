@@ -469,11 +469,11 @@ if(DLSH_BUILD_INTERP)
     target_compile_options(dlsh_interp PRIVATE -UUSE_TCL_STUBS)
     target_include_directories(dlsh_interp PRIVATE
         ${tcl_SOURCE_DIR}/generic ${tcl_SOURCE_DIR}/unix ${tcl_SOURCE_DIR}/libtommath)
-    # The stub-based libdlsh.dylib resolves Tcl symbols from this executable at
-    # load, so export them; also find libdlsh in the build tree during dev.
-    set_target_properties(dlsh_interp PROPERTIES
-        ENABLE_EXPORTS ON BUILD_RPATH "${CMAKE_BINARY_DIR}")
-    target_link_libraries(dlsh_interp PRIVATE dlsh)
+    # The dlsh PACKAGE is NOT linked here -- it is loaded from dlsh.zip at
+    # runtime via `package require dlsh`, exactly as dserv/stim2 do, so all
+    # three share one source of truth. Export this executable's Tcl symbols so
+    # the stub-based libdlsh resolves them when Tcl `load`s it out of the zip.
+    set_target_properties(dlsh_interp PROPERTIES ENABLE_EXPORTS ON)
 
     if(DLSH_SELFCONTAINED)
         include(ExternalProject)
@@ -573,11 +573,11 @@ if(DLSH_BUILD_INTERP)
         ########################################################################
         # 3. After link, bundle the Tcl/Tk script libraries (see the helper):
         #      DLSH_APPEND_ZIP=ON  -> single-file (append onto the binary);
-        #      DLSH_APPEND_ZIP=OFF -> signable (sidecar dlsh.zip next to it).
+        #      DLSH_APPEND_ZIP=OFF -> signable (sidecar dlsh-runtime.zip).
         ########################################################################
         option(DLSH_APPEND_ZIP
             "Append the runtime into the binary (single file, unsignable on macOS); \
-OFF emits a sidecar dlsh.zip so the binary signs cleanly" ON)
+OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
         if(DLSH_APPEND_ZIP)
             set(_zip_mode append)
         else()
