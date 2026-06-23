@@ -45,6 +45,12 @@ extern int Dlsh_SafeInit(Tcl_Interp *interp);
  * executable (incl. ../Resources for a future .app bundle) -> /usr/local.
  * dlsh is already Tcl_PkgProvide'd above, so the zip's own dlsh pkgIndex never
  * triggers a second load.
+ *
+ * We then drop /usr/local/lib from auto_path: Tcl's init adds it (it is the
+ * configured prefix's lib dir), but it holds older copies of our packages that
+ * would shadow the ones in dlsh.zip. dlsh now ships its libraries via the zip,
+ * so the system lib dir is off by default. A user who wants it back can re-add
+ * it explicitly (e.g. from a future ~/.dlshrc).
  */
 static const char *dlsh_vfs_bootstrap =
     "apply {{} {\n"
@@ -60,13 +66,15 @@ static const char *dlsh_vfs_bootstrap =
     "    if {![file exists $z]} continue\n"
     "    set base [file join [zipfs root] dlsh]\n"
     "    if {$base ni [zipfs list]} { zipfs mount $z $base }\n"
-    "    if {[file isdirectory $base/lib] && $base/lib ni $::auto_path} {\n"
-    "      set ::auto_path [linsert $::auto_path 0 $base/lib]\n"
+    "    set libdir [file join $base lib]\n"
+    "    if {[file isdirectory $libdir] && $libdir ni $::auto_path} {\n"
+    "      set ::auto_path [linsert $::auto_path 0 $libdir]\n"
     "    }\n"
     "    return $z\n"
     "  }\n"
     "  return {}\n"
-    "}}\n";
+    "}}\n"
+    "set ::auto_path [lsearch -all -inline -not -exact $::auto_path /usr/local/lib]\n";
 
 static int Dlsh_AppInit(Tcl_Interp *interp)
 {
