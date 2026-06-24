@@ -183,6 +183,7 @@ static int tclCreateDynGroup          (ClientData, Tcl_Interp *, int, char **);
 static int tclCopyDynGroup            (ClientData, Tcl_Interp *, int, char **);
 static int tclRenameDynGroup          (ClientData, Tcl_Interp *, int, char **);
 static int tclAppendDynGroup          (ClientData, Tcl_Interp *, int, char **);
+static int tclConcatDynGroup          (ClientData, Tcl_Interp *, int, char **);
 static int tclWriteDynGroup           (ClientData, Tcl_Interp *, int, char **);
 static int tclReadDynGroup            (ClientData, Tcl_Interp *, int, char **);
 static int tclDeleteDynGroup          (ClientData, Tcl_Interp *, int, char **);
@@ -262,8 +263,10 @@ static TCL_COMMANDS DLcommands[] = {
       "copy a dynGroup" },
   { "dg_rename",           tclRenameDynGroup,     NULL, 
       "rename a dynGroup or dynGroup:list" },
-  { "dg_append",           tclAppendDynGroup,     NULL, 
+  { "dg_append",           tclAppendDynGroup,     NULL,
       "append dg2 onto dg1" },
+  { "dg_concat",           tclConcatDynGroup,     NULL,
+      "concat groups/files into a new dynGroup" },
   { "dg_write",            tclWriteDynGroup,      NULL, 
       "write a dynGroup" },
   { "dg_read",             tclReadDynGroup,       NULL, 
@@ -2425,21 +2428,97 @@ static int tclDynListFromString(ClientData cdata, Tcl_Interp * interp,
  * dguGzipFileToStruct() (dynio.c) -- no temp file.  The old
  * gz_uncompress()/uncompress_file() temp-file helpers have been retired. */
 
+/*
+ * dgReadFromFile
+ *
+ *   Read a dg file in any supported format (raw .dg, gzip .dgz, or .lz4)
+ *   into a newly-created DYN_GROUP.  Mirrors the format detection and the
+ *   .dg/.dgz fallback that dg_read has always used.
+ *
+ *   On success returns the group (caller owns it and must free it).
+ *   On failure returns NULL and, if errbuf is non-NULL, writes a short
+ *   reason (no command prefix) into it.
+ */
+static DYN_GROUP *dgReadFromFile(const char *filename,
+				 char *errbuf, size_t errlen)
+{
+  DYN_GROUP *dg;
+  FILE *fp;
+  const char *suffix;
+
+  if (!(dg = dfuCreateDynGroup(4))) {
+    if (errbuf) snprintf(errbuf, errlen, "error creating new dyngroup");
+    return NULL;
+  }
+
+  /* No need to uncompress a raw .dg file */
+  if ((suffix = strrchr(filename, '.')) && strstr(suffix, "dg") &&
+      !strstr(suffix, "dgz")) {
+    fp = fopen(filename, "rb");
+    if (!fp) {
+      if (errbuf) snprintf(errbuf, errlen, "file %s not found", filename);
+      dfuFreeDynGroup(dg);
+      return NULL;
+    }
+    if (!dguFileToStruct(fp, dg)) {
+      if (errbuf) snprintf(errbuf, errlen,
+			   "file %s not recognized as dg format", filename);
+      fclose(fp);
+      dfuFreeDynGroup(dg);
+      return NULL;
+    }
+    fclose(fp);
+    return dg;
+  }
+
+  if ((suffix = strrchr(filename, '.')) &&
+      strlen(suffix) == 4 &&
+      ((suffix[1] == 'l' && suffix[2] == 'z' && suffix[3] == '4') ||
+       (suffix[1] == 'L' && suffix[2] == 'Z' && suffix[3] == '4'))) {
+    if (dgReadDynGroup((char *) filename, dg) == DF_OK) return dg;
+    if (errbuf) snprintf(errbuf, errlen, "error reading .lz4 file %s", filename);
+    dfuFreeDynGroup(dg);
+    return NULL;
+  }
+
+  /* gzip-compressed (.dgz etc.): decompress fully in memory, no temp file.
+     Try the name as given, then with .dg / .dgz appended (mirrors the old
+     uncompress_file fallback). */
+  {
+    int gstat = dguGzipFileToStruct((char *) filename, dg);
+    if (gstat != DF_OK) {
+      char fullname[256];
+      snprintf(fullname, sizeof(fullname), "%s.dg", filename);
+      gstat = dguGzipFileToStruct(fullname, dg);
+      if (gstat != DF_OK) {
+	snprintf(fullname, sizeof(fullname), "%s.dgz", filename);
+	gstat = dguGzipFileToStruct(fullname, dg);
+      }
+    }
+    if (gstat != DF_OK) {
+      if (errbuf) snprintf(errbuf, errlen,
+			   "file \"%s\" not found or not a dg file", filename);
+      dfuFreeDynGroup(dg);
+      return NULL;
+    }
+    return dg;
+  }
+}
+
 static int tclReadDynGroup (ClientData data, Tcl_Interp *interp,
 			    int argc, char *argv[])
 {
   DYN_GROUP *dg;
-  FILE *fp;
   Tcl_HashEntry *entryPtr;
   int newentry;
-  char *newname = NULL, *suffix;
-  char tempname[128];
+  char *newname = NULL;
+  char errbuf[256];
 
   DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
   if (!dlinfo) return TCL_ERROR;
-  
+
   if (argc < 2) {
-    Tcl_AppendResult(interp, "usage: ", argv[0], " file [newname]", 
+    Tcl_AppendResult(interp, "usage: ", argv[0], " file [newname]",
 		     (char *) NULL);
     return TCL_ERROR;
   }
@@ -2453,78 +2532,11 @@ static int tclReadDynGroup (ClientData data, Tcl_Interp *interp,
     }
   }
 
-  if (!(dg = dfuCreateDynGroup(4))) {
-    Tcl_SetResult(interp, "dg_read: error creating new dyngroup", TCL_STATIC);
+  if (!(dg = dgReadFromFile(argv[1], errbuf, sizeof(errbuf)))) {
+    Tcl_AppendResult(interp, "dg_read: ", errbuf, (char *) NULL);
     return TCL_ERROR;
   }
 
-  /* No need to uncompress a .dg file */
-  if ((suffix = strrchr(argv[1], '.')) && strstr(suffix, "dg") &&
-      !strstr(suffix, "dgz")) {
-    fp = fopen(argv[1], "rb");
-    if (!fp) {
-      char resultstr[256];
-      snprintf(resultstr, sizeof(resultstr),
-	       "dg_read: file %s not found", argv[1]);
-      Tcl_SetObjResult(interp, Tcl_NewStringObj(resultstr, -1));
-      return TCL_ERROR;
-    }
-    tempname[0] = 0;
-  }
-  
-  else if ((suffix = strrchr(argv[1], '.')) &&
-	   strlen(suffix) == 4 &&
-	   ((suffix[1] == 'l' && suffix[2] == 'z' && suffix[3] == '4') ||
-	    (suffix[1] == 'L' && suffix[2] == 'Z' && suffix[3] == '4'))) {
-    if (dgReadDynGroup(argv[1], dg) == DF_OK) {
-      goto process_dg;
-    }
-    else {
-      Tcl_SetResult(interp, "dg_read: error reading .lz4 file", NULL);
-      return TCL_ERROR;
-    }
-  }
-
-  else {
-    /* gzip-compressed (.dgz etc.): decompress fully in memory, no temp file.
-       Try the name as given, then with .dg / .dgz appended (mirrors the old
-       uncompress_file fallback). */
-    int gstat = dguGzipFileToStruct(argv[1], dg);
-    if (gstat != DF_OK) {
-      char fullname[256];
-      snprintf(fullname, sizeof(fullname), "%s.dg", argv[1]);
-      gstat = dguGzipFileToStruct(fullname, dg);
-      if (gstat != DF_OK) {
-	snprintf(fullname, sizeof(fullname), "%s.dgz", argv[1]);
-	gstat = dguGzipFileToStruct(fullname, dg);
-      }
-    }
-    if (gstat != DF_OK) {
-      char resultstr[256];
-      snprintf(resultstr, sizeof(resultstr),
-	       "dg_read: file \"%s\" not found or not a dg file", argv[1]);
-      Tcl_SetObjResult(interp, Tcl_NewStringObj(resultstr, -1));
-      dfuFreeDynGroup(dg);
-      return TCL_ERROR;
-    }
-    goto process_dg;
-  }
-
-  /* Only the raw uncompressed .dg branch reaches here (fp set above). */
-  if (!dguFileToStruct(fp, dg)) {
-    char resultstr[256];
-    snprintf(resultstr, sizeof(resultstr),
-	     "dg_read: file %s not recognized as dg format", 
-	     argv[1]);
-    Tcl_SetObjResult(interp, Tcl_NewStringObj(resultstr, -1));
-    fclose(fp);
-    if (tempname[0]) unlink(tempname);
-    return TCL_ERROR;
-  }
-  fclose(fp);
-  if (tempname[0]) unlink(tempname);
-
- process_dg:
   if (newname) strncpy(DYN_GROUP_NAME(dg), newname, DYN_GROUP_NAME_SIZE-1);
   if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dgTable, DYN_GROUP_NAME(dg)))) {
     DYN_GROUP *dgold;
@@ -2539,9 +2551,98 @@ static int tclReadDynGroup (ClientData data, Tcl_Interp *interp,
    */
   entryPtr = Tcl_CreateHashEntry(&dlinfo->dgTable, DYN_GROUP_NAME(dg), &newentry);
   Tcl_SetHashValue(entryPtr, dg);
-  
+
   Tcl_SetResult(interp, DYN_GROUP_NAME(dg), TCL_VOLATILE);
   return TCL_OK;
+}
+
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    tclConcatDynGroup
+ *
+ * TCL FUNCTION
+ *    dg_concat
+ *
+ * DESCRIPTION
+ *    Concatenate two or more dyngroups into a new dyngroup, returning the
+ *    name of the freshly created group.  Each argument is resolved as an
+ *    in-memory group name first, otherwise read from a file (any format
+ *    dg_read accepts).  All inputs must share an identical schema (same
+ *    column names and datatypes); the first input establishes it.  Inputs
+ *    are left untouched -- the result is an independent copy.
+ *
+ *      dg_concat blockA blockB
+ *      dg_concat {*}[lsort -dictionary [glob prefix_*.dgz]]
+ *      dg_concat blockA file_03.dgz blockC
+ *
+ *****************************************************************************/
+
+static int tclConcatDynGroup (ClientData data, Tcl_Interp *interp,
+			      int argc, char *argv[])
+{
+  DYN_GROUP *result = NULL;
+  Tcl_HashEntry *entryPtr;
+  int i;
+  char errbuf[256];
+
+  DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
+  if (!dlinfo) return TCL_ERROR;
+
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0],
+		     " group_or_file [group_or_file ...]", (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  for (i = 1; i < argc; i++) {
+    DYN_GROUP *src;
+    int from_file = 0;
+
+    /* Resolve the token: in-memory group first, else read as a file. */
+    if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dgTable, argv[i]))) {
+      src = Tcl_GetHashValue(entryPtr);
+    }
+    else {
+      src = dgReadFromFile(argv[i], errbuf, sizeof(errbuf));
+      if (!src) {
+	Tcl_AppendResult(interp, argv[0], ": ", errbuf, (char *) NULL);
+	if (result) dfuFreeDynGroup(result);
+	return TCL_ERROR;
+      }
+      from_file = 1;
+    }
+
+    if (!result) {
+      /* First input seeds the result as an independent copy (blank name so
+	 tclPutGroup auto-assigns one).  For a file read we already own a
+	 fresh group, so adopt it directly. */
+      if (from_file) {
+	result = src;
+	DYN_GROUP_NAME(result)[0] = 0;
+      }
+      else {
+	result = dfuCopyDynGroup(src, "");
+	if (!result) {
+	  Tcl_AppendResult(interp, argv[0], ": error copying \"", argv[i],
+			   "\"", (char *) NULL);
+	  return TCL_ERROR;
+	}
+      }
+    }
+    else {
+      if (!dynGroupAppendStrict(result, src, errbuf, sizeof(errbuf))) {
+	Tcl_AppendResult(interp, argv[0], ": \"", argv[i],
+			 "\" incompatible (", errbuf, ")", (char *) NULL);
+	if (from_file) dfuFreeDynGroup(src);
+	dfuFreeDynGroup(result);
+	return TCL_ERROR;
+      }
+      if (from_file) dfuFreeDynGroup(src);
+    }
+  }
+
+  return tclPutGroup(interp, result);
 }
 
 

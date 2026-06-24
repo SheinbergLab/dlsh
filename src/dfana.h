@@ -60,6 +60,7 @@ void dynGroupDumpListNames(DYN_GROUP *dg, FILE *stream);
 int dynGroupDumpSelectedListNames(DYN_GROUP *dg, DYN_LIST *cols, FILE *stream);
 
 int dynGroupAppend(DYN_GROUP *dg1, DYN_GROUP *dg2);
+int dynGroupAppendStrict(DYN_GROUP *dg1, DYN_GROUP *dg2, char *err, int errlen);
 
 DYN_LIST *dynListConvertList(DYN_LIST *dl, int type);
 DYN_LIST *dynListUnsignedConvertList(DYN_LIST *dl, int type);

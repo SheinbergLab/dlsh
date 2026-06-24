@@ -326,11 +326,58 @@ int dynGroupAppend(DYN_GROUP *dg1, DYN_GROUP *dg2)
 
   /* Now call dynListConcat for each list */
   for (i = 0; i <  DYN_GROUP_NLISTS(dg2); i++) {
-      match_id = 
+      match_id =
 	dynGroupFindListID(dg1, DYN_GROUP_NAME(DYN_GROUP_LIST(dg2,i)));
       dynListConcat(DYN_GROUP_LIST(dg1,match_id), DYN_GROUP_LIST(dg2,i));
   }
   return(1);
+}
+
+/*
+ * dynGroupAppendStrict
+ *
+ *   Like dynGroupAppend, but requires the two groups to have identical
+ *   schemas before concatenating: the same number of lists, the same set
+ *   of list names, and matching datatypes for each.  This guards against
+ *   the silent ragged-group result of dynGroupAppend when one group is
+ *   missing a column the other has.
+ *
+ *   Returns 1 on success (dg2 concatenated onto dg1); 0 on mismatch.
+ *   On mismatch, if err is non-NULL a short reason is written to it.
+ */
+int dynGroupAppendStrict(DYN_GROUP *dg1, DYN_GROUP *dg2, char *err, int errlen)
+{
+  int i, match_id;
+
+  if (DYN_GROUP_NLISTS(dg1) != DYN_GROUP_NLISTS(dg2)) {
+    if (err) snprintf(err, errlen, "column count differs (%d vs %d)",
+		      DYN_GROUP_NLISTS(dg1), DYN_GROUP_NLISTS(dg2));
+    return 0;
+  }
+
+  /* Equal counts plus a same-named/same-typed match in dg1 for every list
+     in dg2 implies the two name sets are identical. */
+  for (i = 0; i < DYN_GROUP_NLISTS(dg2); i++) {
+    DYN_LIST *l2 = DYN_GROUP_LIST(dg2, i);
+    match_id = dynGroupFindListID(dg1, DYN_LIST_NAME(l2));
+    if (match_id < 0) {
+      if (err) snprintf(err, errlen, "column \"%s\" not present in both",
+			DYN_LIST_NAME(l2));
+      return 0;
+    }
+    if (DYN_LIST_DATATYPE(DYN_GROUP_LIST(dg1, match_id)) !=
+	DYN_LIST_DATATYPE(l2)) {
+      if (err) snprintf(err, errlen, "column \"%s\" datatype differs",
+			DYN_LIST_NAME(l2));
+      return 0;
+    }
+  }
+
+  for (i = 0; i < DYN_GROUP_NLISTS(dg2); i++) {
+    match_id = dynGroupFindListID(dg1, DYN_LIST_NAME(DYN_GROUP_LIST(dg2, i)));
+    dynListConcat(DYN_GROUP_LIST(dg1, match_id), DYN_GROUP_LIST(dg2, i));
+  }
+  return 1;
 }
 
 /************************************************************************/

@@ -621,6 +621,7 @@ OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
     set(DLSH_INTERP_TESTS
         test_dl_foreach
         test_dl_comprehension
+        test_dg_concat
         test_leak_dl_foreach)
     foreach(_name ${DLSH_INTERP_TESTS})
         set(_t ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_name}.tcl)
