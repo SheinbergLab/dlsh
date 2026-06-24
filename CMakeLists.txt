@@ -52,6 +52,16 @@ FetchContent_Declare(
 # Use MakeAvailable but TCL has no CMakeLists.txt, so it just populates
 FetchContent_MakeAvailable(tcl)
 
+# Tk source, pinned in lockstep with Tcl. Only populated (MakeAvailable) when the
+# self-contained interpreter actually needs it -- see the DLSH_BUILD_INTERP block.
+FetchContent_Declare(
+    tk
+    GIT_REPOSITORY https://github.com/tcltk/tk.git
+    GIT_TAG        core-9-0-1
+    GIT_SHALLOW    TRUE
+    EXCLUDE_FROM_ALL
+)
+
 # Build tclstub as a static library from TCL sources
 # The stub library is just tclStubLib.c which provides the stub table
 add_library(tclstub STATIC
@@ -431,57 +441,175 @@ elseif(APPLE)
 endif()
 
 ###############################
-# Optional: standalone `dlsh` interpreter (dev/testing).
+# Optional: standalone `dlsh` interpreter.
 # OFF by default so the release CI library build is untouched. Build with:
-#   cmake -B build -D DLSH_BUILD_INTERP=ON [-D DLSH_TCL_ROOT=/usr/local]
+#   cmake -B build -D DLSH_BUILD_INTERP=ON
 #   cmake --build build --target dlsh_interp
+#
+# Self-contained (default): Tcl AND Tk are built from pinned source (the same
+# core-9-0-1 used elsewhere) and statically linked, then their script libraries
+# are appended to the binary as a Tcl-9 //zipfs:/app archive. The result is one
+# portable executable that needs no Tcl/Tk install on the target -- Aqua/Cocoa
+# on macOS, X11 on Linux -- matching the brew-free deployment goal. Set
+# -D DLSH_SELFCONTAINED=OFF for a quick dev build against a prebuilt Tcl
+# (-D DLSH_TCL_ROOT=<prefix>), and -D DLSH_WITH_TK=OFF to omit the GUI layer.
 ###############################
-option(DLSH_BUILD_INTERP "Build the standalone dlsh interpreter (dev/testing)" OFF)
+option(DLSH_BUILD_INTERP "Build the standalone dlsh interpreter" OFF)
 if(DLSH_BUILD_INTERP)
-    # A real interpreter links the FULL Tcl directly. The directory-wide
-    # -DUSE_TCL_STUBS is for the extension; we undefine it for this target below
-    # so tcl.h uses direct entry points, not the stub-call bootstrap shim.
-    set(DLSH_TCL_ROOT "/usr/local" CACHE PATH "Prefix containing full Tcl 9 (lib/, include/)")
-    find_library(DLSH_TCL_LIB NAMES tcl9.0 tcl9 tcl
-                 PATHS "${DLSH_TCL_ROOT}/lib" NO_DEFAULT_PATH)
-    if(NOT DLSH_TCL_LIB)
-        message(FATAL_ERROR
-            "DLSH_BUILD_INTERP: full Tcl library not found under ${DLSH_TCL_ROOT}/lib "
-            "(set -D DLSH_TCL_ROOT=<prefix>)")
+    option(DLSH_SELFCONTAINED "Build Tcl+Tk from pinned source into a portable dlsh" ON)
+    option(DLSH_WITH_TK "Include the Tk GUI layer in the interpreter" ON)
+    if(WIN32)
+        message(FATAL_ERROR "DLSH_BUILD_INTERP: Windows is not supported yet")
     endif()
 
-    set(DLSH_LINENOISE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/linenoise)
-    set(DLSH_INTERP_SOURCES src/dlsh_main.c)
-    set(_dlsh_have_linenoise OFF)
-    if(EXISTS ${DLSH_LINENOISE_DIR}/linenoise.c)
-        list(APPEND DLSH_INTERP_SOURCES ${DLSH_LINENOISE_DIR}/linenoise.c)
-        set(_dlsh_have_linenoise ON)
-    endif()
-
-    add_executable(dlsh_interp ${DLSH_INTERP_SOURCES})
+    add_executable(dlsh_interp src/dlsh_main.c)
     set_target_properties(dlsh_interp PROPERTIES OUTPUT_NAME dlsh)
     # Undefine the inherited -DUSE_TCL_STUBS for this target only (appended after
     # the directory -D on the compile line, so it wins) -> direct Tcl linkage.
     target_compile_options(dlsh_interp PRIVATE -UUSE_TCL_STUBS)
     target_include_directories(dlsh_interp PRIVATE
-        ${tcl_SOURCE_DIR}/generic
-        ${tcl_SOURCE_DIR}/libtommath
-        ${DLSH_LINENOISE_DIR})
-    if(WIN32)
-        target_include_directories(dlsh_interp PRIVATE ${tcl_SOURCE_DIR}/win)
+        ${tcl_SOURCE_DIR}/generic ${tcl_SOURCE_DIR}/unix ${tcl_SOURCE_DIR}/libtommath)
+    # The dlsh PACKAGE is NOT linked here -- it is loaded from dlsh.zip at
+    # runtime via `package require dlsh`, exactly as dserv/stim2 do, so all
+    # three share one source of truth. Export this executable's Tcl symbols so
+    # the stub-based libdlsh resolves them when Tcl `load`s it out of the zip.
+    set_target_properties(dlsh_interp PROPERTIES ENABLE_EXPORTS ON)
+
+    if(DLSH_SELFCONTAINED)
+        include(ExternalProject)
+
+        ########################################################################
+        # 1. Tcl, static, from the already-fetched pinned source. --disable-shared
+        #    leaves the script library as <build>/libtcl9.0.1.zip (we append it
+        #    later); install gives us libtcl9.0.a + tclConfig.sh.
+        ########################################################################
+        set(_tcl_bld  ${CMAKE_BINARY_DIR}/dlsh-tcl/build)
+        set(_tcl_inst ${CMAKE_BINARY_DIR}/dlsh-tcl/install)
+        set(_tcl_lib  ${_tcl_inst}/lib/libtcl9.0.a)
+        set(_tcl_zip  ${_tcl_bld}/libtcl9.0.1.zip)   # the tcl_library/ archive
+        ExternalProject_Add(dlsh_tcl
+            SOURCE_DIR        ${tcl_SOURCE_DIR}
+            BINARY_DIR        ${_tcl_bld}
+            CONFIGURE_COMMAND ${tcl_SOURCE_DIR}/unix/configure
+                                  --disable-shared --enable-64bit
+                                  --prefix=${_tcl_inst}
+            BUILD_COMMAND     make
+            INSTALL_COMMAND   make install
+            BUILD_BYPRODUCTS  ${_tcl_lib} ${_tcl_zip}
+            DOWNLOAD_COMMAND  "")
+        add_dependencies(dlsh_interp dlsh_tcl)
+        # Whole-archive the static libs: their zipfs/init data is referenced only
+        # at runtime and would otherwise be dead-stripped. Spelling differs by
+        # linker (ld64 vs GNU ld) -- _whole_archive() wraps one static lib path.
+        if(APPLE)
+            macro(_whole_archive _tgt _lib)
+                target_link_libraries(${_tgt} PRIVATE "-Wl,-force_load,${_lib}")
+            endmacro()
+        else()
+            macro(_whole_archive _tgt _lib)
+                target_link_libraries(${_tgt} PRIVATE
+                    "-Wl,--whole-archive" "${_lib}" "-Wl,--no-whole-archive")
+            endmacro()
+        endif()
+        _whole_archive(dlsh_interp ${_tcl_lib})
+        # From tclConfig.sh TCL_LIBS.
+        target_link_libraries(dlsh_interp PRIVATE z pthread)
+        if(APPLE)
+            target_link_libraries(dlsh_interp PRIVATE "-framework CoreFoundation")
+        else()
+            target_link_libraries(dlsh_interp PRIVATE ${CMAKE_DL_LIBS} m)
+        endif()
+        target_link_options(dlsh_interp PRIVATE
+            $<$<PLATFORM_ID:Linux>:-Wl,--export-dynamic>
+            $<$<PLATFORM_ID:Darwin>:-Wl,-export_dynamic>)
+
+        ########################################################################
+        # 2. Tk, static, from pinned source built against the Tcl above:
+        #    Aqua (Cocoa) on macOS, X11 on Linux.
+        ########################################################################
+        if(DLSH_WITH_TK)
+            FetchContent_MakeAvailable(tk)   # populate tk_SOURCE_DIR (no build)
+            target_compile_definitions(dlsh_interp PRIVATE DLSH_WITH_TK=1)
+            # tk.h includes the X11 shim header even on Aqua -> xlib/ on the path.
+            target_include_directories(dlsh_interp PRIVATE
+                ${tk_SOURCE_DIR}/generic ${tk_SOURCE_DIR}/xlib ${tk_SOURCE_DIR}/unix)
+            if(APPLE)
+                target_include_directories(dlsh_interp PRIVATE ${tk_SOURCE_DIR}/macosx)
+                set(_tk_winsys --enable-aqua --disable-framework)
+            else()
+                # Linux: Tk's configure auto-detects X11; needs the X11 dev
+                # headers/libs present (libx11-dev et al.).
+                set(_tk_winsys "")
+            endif()
+            set(_tk_bld ${CMAKE_BINARY_DIR}/dlsh-tk/build)
+            set(_tk_lib ${_tk_bld}/libtcl9tk9.0.a)
+            ExternalProject_Add(dlsh_tk
+                DEPENDS           dlsh_tcl
+                SOURCE_DIR        ${tk_SOURCE_DIR}
+                BINARY_DIR        ${_tk_bld}
+                CONFIGURE_COMMAND ${tk_SOURCE_DIR}/unix/configure
+                                      --disable-shared ${_tk_winsys}
+                                      --with-tcl=${_tcl_inst}/lib
+                                      --prefix=${CMAKE_BINARY_DIR}/dlsh-tk/install
+                BUILD_COMMAND     make             # serial: dodge the zipfs -j race
+                INSTALL_COMMAND   ""
+                BUILD_BYPRODUCTS  ${_tk_lib}
+                DOWNLOAD_COMMAND  "")
+            add_dependencies(dlsh_interp dlsh_tk)
+            _whole_archive(dlsh_interp ${_tk_lib})
+            if(APPLE)
+                target_link_libraries(dlsh_interp PRIVATE "-ObjC"
+                    "-framework Cocoa"    "-framework Carbon"
+                    "-framework IOKit"    "-framework QuartzCore"
+                    "-framework Security" "-framework CoreGraphics"
+                    "-framework ApplicationServices" "-framework UserNotifications"
+                    "-weak_framework UniformTypeIdentifiers")
+            else()
+                target_link_libraries(dlsh_interp PRIVATE X11 Xft fontconfig Xss Xext)
+            endif()
+            set(_tk_libdir ${tk_SOURCE_DIR}/library)
+        endif()
+
+        ########################################################################
+        # 3. After link, bundle the Tcl/Tk script libraries (see the helper):
+        #      DLSH_APPEND_ZIP=ON  -> single-file (append onto the binary);
+        #      DLSH_APPEND_ZIP=OFF -> signable (sidecar dlsh-runtime.zip).
+        ########################################################################
+        option(DLSH_APPEND_ZIP
+            "Append the runtime into the binary (single file, unsignable on macOS); \
+OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
+        if(DLSH_APPEND_ZIP)
+            set(_zip_mode append)
+        else()
+            set(_zip_mode sidecar)
+        endif()
+        set(DLSH_CODESIGN_ID "" CACHE STRING "macOS codesign identity (empty = ad-hoc '-')")
+        add_custom_command(TARGET dlsh_interp POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                -D MODE=${_zip_mode}
+                -D EXE=$<TARGET_FILE:dlsh_interp>
+                -D TCL_ZIP=${_tcl_zip}
+                -D TK_LIBDIR=${_tk_libdir}
+                -D STAGE=${CMAKE_BINARY_DIR}/dlsh-appzip
+                -D RESIGN=$<BOOL:$<PLATFORM_ID:Darwin>>
+                -D CODESIGN_ID=${DLSH_CODESIGN_ID}
+                -P ${CMAKE_SOURCE_DIR}/cmake/dlsh_bundle_appzip.cmake
+            VERBATIM
+            COMMENT "Bundling Tcl/Tk runtime (${_zip_mode}) for dlsh")
     else()
-        target_include_directories(dlsh_interp PRIVATE ${tcl_SOURCE_DIR}/unix)
+        # --- Quick dev build: link a prebuilt full Tcl, library found on disk. ---
+        set(DLSH_TCL_ROOT "/usr/local" CACHE PATH "Prefix with prebuilt full Tcl 9")
+        find_library(DLSH_TCL_LIB NAMES tcl9.0 tcl9 tcl
+                     PATHS "${DLSH_TCL_ROOT}/lib" NO_DEFAULT_PATH)
+        if(NOT DLSH_TCL_LIB)
+            message(FATAL_ERROR "DLSH_SELFCONTAINED=OFF: no full Tcl under "
+                "${DLSH_TCL_ROOT}/lib (set -D DLSH_TCL_ROOT=<prefix>)")
+        endif()
+        target_link_libraries(dlsh_interp PRIVATE ${DLSH_TCL_LIB})
+        if(DLSH_WITH_TK)
+            message(FATAL_ERROR "DLSH_WITH_TK requires DLSH_SELFCONTAINED=ON")
+        endif()
     endif()
-    if(_dlsh_have_linenoise)
-        target_compile_definitions(dlsh_interp PRIVATE DLSH_HAVE_LINENOISE=1)
-    endif()
-    # Link the dlsh shared lib (commands + embedded prelude) + full Tcl.
-    target_link_libraries(dlsh_interp PRIVATE dlsh ${DLSH_TCL_LIB})
-    # Find libdlsh in the build tree when run in-place during dev; export the
-    # interpreter's symbols so the libdlsh dylib resolves Tcl at runtime.
-    set_target_properties(dlsh_interp PROPERTIES
-        ENABLE_EXPORTS ON
-        BUILD_RPATH "${CMAKE_BINARY_DIR}")
 
     # Run the self-contained dlsh/Tcl-layer test suite THROUGH the freshly built
     # binary: cmake --build build --target dlsh_interp && ctest --test-dir build

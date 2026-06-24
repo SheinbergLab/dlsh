@@ -1,0 +1,145 @@
+name: Build dlsh interpreter (self-contained Tcl+Tk)
+
+# Builds and tests the standalone, self-contained `dlsh` interpreter (Tcl + Tk
+# built from pinned source and statically linked) on Linux/X11 and macOS/Aqua.
+# This is separate from the release workflows, which build only the library /
+# dlsh.zip (via Tcl stubs, no Tcl runtime). Build + test only -- no signing /
+# notarization here (that needs the release secrets and sidecar mode).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dlsh-interp-selfcontained-tk]
+  pull_request:
+    paths:
+      - 'src/dlsh_main.c'
+      - 'cmake/dlsh_bundle_appzip.cmake'
+      - 'CMakeLists.txt'
+      - '.github/workflows/build-dlsh-interp.yml'
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }} (X11)
+    # ubuntu-22.04 (glibc 2.35) matches the release Linux build, so the binary
+    # runs on the same range of targets as dlsh.zip -- incl. Raspberry Pi OS
+    # (Bookworm, glibc 2.36) on the aarch64 runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,     arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake git autoconf pkg-config zip \
+            zlib1g-dev libpq-dev \
+            libx11-dev libxft-dev libxss-dev libxext-dev libxrender-dev \
+            libfontconfig1-dev xvfb
+
+      - name: Configure and build (single-file / append mode)
+        run: |
+          cmake -B build -D DLSH_BUILD_INTERP=ON
+          cmake --build build --target dlsh_interp -j"$(nproc)"
+
+      - name: Build dlsh library and stage a test dlsh.zip
+        # The interpreter no longer links libdlsh -- the dlsh PACKAGE is loaded
+        # from a zip at runtime (package require dlsh), exactly as dserv/stim2
+        # do. CI runners have no /usr/local/dlsh/dlsh.zip, so stage one from the
+        # freshly-built libdlsh + the checked-in vfs/lib/dlsh tree.
+        run: |
+          cmake --build build --target dlsh -j"$(nproc)"
+          rm -rf zipstage && mkdir -p zipstage/lib
+          cp -R vfs/lib/dlsh zipstage/lib/dlsh
+          dst="zipstage/lib/dlsh/$(uname -s)/$(uname -m)"; mkdir -p "$dst"
+          cp build/libdlsh.so "$dst/"
+          ( cd zipstage && zip -qr -X "$GITHUB_WORKSPACE/test-dlsh.zip" lib )
+          echo "DLSH_ZIP=$GITHUB_WORKSPACE/test-dlsh.zip" >> "$GITHUB_ENV"
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_leak_dl_foreach'
+
+      - name: Headless smoke test
+        run: ./build/dlsh -e 'puts "tcl=[info patchlevel] dlsh=[package require dlsh] sum=[dl_sum [dl_fromto 1 100]]"'
+
+      - name: Tk GUI under Xvfb (expect ws=x11)
+        run: |
+          xvfb-run -a ./build/dlsh -e '
+            package require Tk
+            button .b -text hi; pack .b; update idletasks
+            puts "ws=[tk windowingsystem] tk=[info patchlevel] btn=[winfo exists .b]"
+            if {[tk windowingsystem] ne "x11" || ![winfo exists .b]} { exit 1 }'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dlsh-linux-${{ matrix.arch }}
+          path: build/dlsh
+
+  macos:
+    name: macOS arm64 (Aqua)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        # zip + the Xcode toolchain are already present on the runner; the rest
+        # mirror the release workflow that's known to build the dlsh library.
+        run: brew install cmake libpq postgresql@17
+
+      - name: Configure and build (single-file / append mode)
+        run: |
+          cmake -B build -D DLSH_BUILD_INTERP=ON
+          cmake --build build --target dlsh_interp -j"$(sysctl -n hw.ncpu)"
+
+      - name: Build dlsh library and stage a test dlsh.zip
+        # The interpreter no longer links libdlsh -- the dlsh PACKAGE is loaded
+        # from a zip at runtime (package require dlsh), exactly as dserv/stim2
+        # do. CI runners have no /usr/local/dlsh/dlsh.zip, so stage one from the
+        # freshly-built libdlsh + the checked-in vfs/lib/dlsh tree.
+        run: |
+          cmake --build build --target dlsh -j"$(sysctl -n hw.ncpu)"
+          rm -rf zipstage && mkdir -p zipstage/lib
+          cp -R vfs/lib/dlsh zipstage/lib/dlsh
+          dst="zipstage/lib/dlsh/$(uname -s)/$(uname -m)"; mkdir -p "$dst"
+          cp build/libdlsh.dylib "$dst/"
+          ( cd zipstage && zip -qr -X "$GITHUB_WORKSPACE/test-dlsh.zip" lib )
+          echo "DLSH_ZIP=$GITHUB_WORKSPACE/test-dlsh.zip" >> "$GITHUB_ENV"
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_leak_dl_foreach'
+
+      - name: Headless smoke test
+        run: ./build/dlsh -e 'puts "tcl=[info patchlevel] dlsh=[package require dlsh] sum=[dl_sum [dl_fromto 1 100]]"'
+
+      - name: Tk loads (Aqua)
+        # A headless CI runner may not grant a window-server connection; treat a
+        # failure to map a window as non-fatal, but require the package to load.
+        run: |
+          ./build/dlsh -e '
+            if {[catch {package require Tk} err]} { puts "Tk load failed: $err"; exit 1 }
+            puts "Tk loaded: [info patchlevel]"
+            catch {puts "ws=[tk windowingsystem]"}'
+
+      - name: Build sidecar (signable) variant and verify signature
+        run: |
+          cmake -B build-sign -D DLSH_BUILD_INTERP=ON -D DLSH_APPEND_ZIP=OFF
+          cmake --build build-sign --target dlsh_interp -j"$(sysctl -n hw.ncpu)"
+          codesign --verify --strict --verbose=2 build-sign/dlsh
+          ./build-sign/dlsh -e 'puts "sidecar runtime: [info library]"'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dlsh-macos-arm64
+          path: |
+            build/dlsh
+            build-sign/dlsh
+            build-sign/dlsh-runtime.zip

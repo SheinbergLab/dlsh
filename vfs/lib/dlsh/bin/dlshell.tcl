@@ -1,362 +1,557 @@
-#!/bin/sh
-# the next line restarts using wish \
-exec wish8.6 "$0" "$@"
+# dlshell.tcl -- bundled dlsh GUI: a Tk window that renders cgraph/gbuf ASCII
+# graphics onto a canvas, plus a tkcon console. Launched by `dlsh --gui`, which
+# has already mounted dlsh.zip and done `package require dlsh`; the guarded
+# mount below is a no-op in that case and lets the script also run standalone
+# under wish (wish dlshell.tcl). $base resolves to the mounted zip either way.
+set dlshlib [file join /usr/local dlsh dlsh.zip]
+set base [file join [zipfs root] dlsh]
+if { ![catch {zipfs mount $dlshlib $base } ] } {
+    set auto_path [linsert $auto_path [set auto_path 0] $base/lib]
+}
 
 package require Tk
 package require dlsh
-package require tkcon
-load_Cgwin
-#load_Tix
 
-wm title . "analysis shell"
-wm protocol . WM_DELETE_WINDOW { wm iconify . }
+# this should happen in dlsh package...
+source $base/lib/dlsh/dgview.tcl
 
-set ::tkcon::PRIV(root) .console  ;# optional---defaults to .tkcon
-tkcon show
-wm protocol .console WM_DELETE_WINDOW { exit }
+# Canvas graphics renderer for gbuf ASCII format
+namespace eval gbuf {
+    variable canvas
+    variable scaleX 1.0
+    variable scaleY 1.0
+    variable windowLLX 0
+    variable windowLLY 0
+    variable windowURX 640
+    variable windowURY 480
+    variable currentColor "black"
+    variable currentPosX 0
+    variable currentPosY 0
+    variable currentFont "Helvetica"
+    variable currentFontSize 10
+    variable textJustification 0
+    variable textOrientation 0
+    variable lineWidth 1
+    variable lineStyle 0
+    variable canvasWidth 640
+    variable canvasHeight 480
+    variable lastAsciiData ""
+    variable resizeAfterId ""
+    variable cacheCount 0
+    
+    variable imageCache      ;# NEW: Array to cache decoded photo images
+    array set imageCache {}
+    
+    # Color mapping
+    variable colorMap
+    array set colorMap {
+        0  "#000000"  1  "#0000FF"  2  "#008000"  3  "#00FFFF"
+        4  "#FF0000"  5  "#FF00FF"  6  "#A52A2A"  7  "#FFFFFF"
+        8  "#808080"  9  "#ADD8E6"  10 "#00FF00"  11 "#E0FFFF"
+        12 "#FF1493"  13 "#9370DB"  14 "#FFFF00"  15 "#FFFFFF"
+	16 "#FFFFFF"
+    }
+    
+    proc transformX {x} {
+        variable scaleX
+        return [expr {$x * $scaleX}]
+    }
+    
+    proc transformY {y} {
+        variable canvasHeight
+        variable scaleY
+        return [expr {$canvasHeight - ($y * $scaleY)}]
+    }
+    
+    proc getColor {colorIndex} {
+        variable colorMap
+        
+        if {$colorIndex > 31} {
+            set shifted [expr {$colorIndex >> 5}]
+            set r [expr {($shifted & 0xFF0000) >> 16}]
+            set g [expr {($shifted & 0xFF00) >> 8}]
+            set b [expr {$shifted & 0xFF}]
+            return [format "#%02X%02X%02X" $r $g $b]
+        }
+        
+        if {[info exists colorMap($colorIndex)]} {
+            return $colorMap($colorIndex)
+        }
+        return "#000000"
+    }
+    
+    proc onResize {w h} {
+        variable resizeAfterId
+        
+        # Cancel any pending resize redraw
+        if {$resizeAfterId ne ""} {
+            after cancel $resizeAfterId
+        }
+        
+        # Schedule redraw after resize settles (200ms delay)
+        set resizeAfterId [after 200 [list gbuf::redrawAfterResize $w $h]]
+    }
+    
+    proc redrawAfterResize {w h} {
+        variable canvasWidth
+        variable canvasHeight
+        variable lastAsciiData
+        variable resizeAfterId
+        
+        set resizeAfterId ""
+        
+        # Update canvas dimensions
+        set canvasWidth $w
+        set canvasHeight $h
+        
+        # Redraw if we have data
+        if {$lastAsciiData ne ""} {
+            processCommands $lastAsciiData
+        }
+    }
+    
+    # Shadow procs that match gbuf command names
+    proc setwindow {llx lly urx ury} {
+        variable windowLLX
+        variable windowLLY
+        variable windowURX
+        variable windowURY
+        variable scaleX
+        variable scaleY
+        variable canvasWidth
+        variable canvasHeight
+        
+        set windowLLX $llx
+        set windowLLY $lly
+        set windowURX $urx
+        set windowURY $ury
+        
+        if {$urx > $llx && $ury > $lly} {
+            set scaleX [expr {double($canvasWidth) / ($urx - $llx)}]
+            set scaleY [expr {double($canvasHeight) / ($ury - $lly)}]
+        }
+    }
+    
+    proc setcolor {colorIdx} {
+        variable currentColor
+        set currentColor [getColor $colorIdx]
+    }
+    
+    proc setfont {fontname fontsize} {
+        variable currentFont
+        variable currentFontSize
+        set currentFont $fontname
+        set currentFontSize [expr {int($fontsize)}]
+    }
 
-# keeping track of notebook cgwin in an array - CGRAPH
-array set CGRAPH ""
-set CGRAPH(current_cgwin) ""
-set CGRAPH(current_page) ""
-set CGRAPH(notebook) ""
-set CGRAPH(background) black
-set CGRAPH(width) 640
-set CGRAPH(height) 480
-set CGRAPH(counter) -1
+    proc setlstyle {style} {
+	variable lineStyle
+	set lineStyle $style
+    }
 
-# parse command line args
-set state flag
-foreach arg $argv {
-    switch -- $state {
-	flag {
-	    switch -glob -- $arg {
-		-bg { set state bg } 
-		-width { set state width }
-		-height { set state height }
-		default { error "unknown flags $arg" }
+    proc getDashPattern {style} {
+	set dashMap {
+            0 {}              ;# Solid
+            1 {}              ;# Solid
+            2 {6 4}           ;# Dash
+            3 {2 4}           ;# Dot
+            4 {6 4 2 4}       ;# Dash-dot
+            5 {6 4 2 4 2 4}   ;# Dash-dot-dot
+            6 {12 4}          ;# Long dash
+            7 {12 4 2 4}      ;# Long dash-dot
+	}
+	
+	return [dict getdef $dashMap $style {}]
+    }
+
+    proc setlwidth {width} {
+        variable lineWidth
+        set lineWidth [expr {max(1, $width / 100.0)}]
+    }
+    
+    proc setorientation {orient} {
+        variable textOrientation
+        set textOrientation $orient
+    }
+    
+    proc setjust {just} {
+        variable textJustification
+        set textJustification $just
+    }
+    
+    proc line {x1 y1 x2 y2} {
+        variable canvas
+        variable currentColor
+        variable lineWidth
+	variable lineStyle
+        
+        set sx1 [transformX $x1]
+        set sy1 [transformY $y1]
+        set sx2 [transformX $x2]
+        set sy2 [transformY $y2]
+
+	set dash [getDashPattern $lineStyle]
+	
+        $canvas create line $sx1 $sy1 $sx2 $sy2 -fill $currentColor -width $lineWidth -dash $dash
+    }
+    
+    proc circle {cx cy radius {filled 0}} {
+	variable canvas
+	variable currentColor
+	variable scaleX
+	variable lineWidth
+	variable lineStyle
+	
+	set sx [transformX $cx]
+	set sy [transformY $cy]
+	set sr [expr {$radius * $scaleX * 0.5}]
+	set x1 [expr {$sx - $sr}]
+	set y1 [expr {$sy - $sr}]
+	set x2 [expr {$sx + $sr}]
+	set y2 [expr {$sy + $sr}]
+	
+	set dash [getDashPattern $lineStyle]
+	
+	if {$filled != 0} {
+        $canvas create oval $x1 $y1 $x2 $y2 \
+		-fill $currentColor -outline $currentColor \
+		-width $lineWidth -dash $dash
+	   } else {
+               $canvas create oval $x1 $y1 $x2 $y2 \
+		       -outline $currentColor \
+		       -width $lineWidth -dash $dash
+	   }
+    }
+    
+    proc fcircle {cx cy radius { filled 1 } } {
+        variable canvas
+        variable currentColor
+        variable scaleX
+        
+        set sx [transformX $cx]
+        set sy [transformY $cy]
+        set sr [expr {$radius * $scaleX * 0.5}]
+        set x1 [expr {$sx - $sr}]
+        set y1 [expr {$sy - $sr}]
+        set x2 [expr {$sx + $sr}]
+        set y2 [expr {$sy + $sr}]
+        $canvas create oval $x1 $y1 $x2 $y2 -fill $currentColor -outline $currentColor
+    }
+    
+    proc filledrect {x1 y1 x2 y2} {
+        variable canvas
+        variable currentColor
+        
+        set sx1 [transformX $x1]
+        set sy1 [transformY $y1]
+        set sx2 [transformX $x2]
+        set sy2 [transformY $y2]
+        $canvas create rectangle $sx1 $sy1 $sx2 $sy2 -fill $currentColor -outline $currentColor
+    }
+    
+    proc moveto {x y} {
+        variable currentPosX
+        variable currentPosY
+        set currentPosX $x
+        set currentPosY $y
+    }
+    
+    proc lineto {x y} {
+        variable canvas
+        variable currentColor
+        variable currentPosX
+        variable currentPosY
+        variable lineWidth
+        variable lineStyle
+	
+        set sx1 [transformX $currentPosX]
+        set sy1 [transformY $currentPosY]
+        set sx2 [transformX $x]
+        set sy2 [transformY $y]
+	
+	set dash [getDashPattern $lineStyle]
+	$canvas create line $sx1 $sy1 $sx2 $sy2 \
+		-fill $currentColor -width $lineWidth -dash $dash	
+
+        set currentPosX $x
+        set currentPosY $y
+    }
+    
+    proc poly {args} {
+        variable canvas
+        variable currentColor
+        variable lineWidth
+	variable lineStyle
+        
+        set coords {}
+        foreach {x y} $args {
+            lappend coords [transformX $x] [transformY $y]
+        }
+	set dash [getDashPattern $lineStyle]
+        $canvas create line {*}$coords -fill $currentColor -width $lineWidth -dash $dash
+    }
+    
+    proc fpoly {args} {
+        variable canvas
+        variable currentColor
+        
+        set coords {}
+        foreach {x y} $args {
+            lappend coords [transformX $x] [transformY $y]
+        }
+        $canvas create polygon {*}$coords -fill $currentColor -outline $currentColor
+    }
+    
+    proc drawtext {text} {
+        variable canvas
+        variable currentColor
+        variable currentPosX
+        variable currentPosY
+        variable currentFont
+        variable currentFontSize
+        variable textJustification
+        variable textOrientation
+        
+        set text [string trim $text "\""]
+        set sx [transformX $currentPosX]
+        set sy [transformY $currentPosY]
+        
+        set anchor "center"
+        switch $textJustification {
+            -1 { set anchor "w" }
+             0 { set anchor "center" }
+             1 { set anchor "e" }
+        }
+        
+        # Convert orientation (0=0°, 1=90°, 2=180°, 3=270°) to degrees
+        set angle [expr {$textOrientation * 90.0}]
+        
+        $canvas create text $sx $sy -text $text -fill $currentColor \
+            -font [list $currentFont $currentFontSize] -anchor $anchor \
+            -angle $angle
+    }
+    
+    proc point {x y} {
+        variable canvas
+        variable currentColor
+        
+        set sx [transformX $x]
+        set sy [transformY $y]
+        $canvas create oval [expr {$sx-1}] [expr {$sy-1}] \
+            [expr {$sx+1}] [expr {$sy+1}] -fill $currentColor -outline $currentColor
+    }
+
+    proc cacheImageData {img_dict} {
+	variable imageCache
+	variable cacheCount
+	
+	set id [dict get $img_dict id]
+	
+	# If already cached, don't recreate
+	if {[info exists imageCache($id)]} {
+	    return
+	}
+	
+	set w [dict get $img_dict width]
+	set h [dict get $img_dict height]
+	set b64_data [dict get $img_dict data]
+	
+	# Decode base64 to char DynList
+	dl_local dl [dl_clist]
+	dl_fromString64 $b64_data $dl
+	
+	# Create a dynamic group to store the image data
+	set dg [dg_create imgcache[incr cacheCount]]
+	dl_set $dg:width [dl_ilist $w]
+	dl_set $dg:height [dl_ilist $h]
+	dl_set $dg:imagebytes $dl
+	
+	# Create Tk photo image at original size
+	set photo [image create photo -width $w -height $h]
+	
+	# Create impro image, then convert to colors
+	package require impro
+	dl_local orig_img [dl_llist [dl_ilist $w $h] $dl]
+	set impro_img [img_imgfromlist $orig_img]
+	dl_local img_pixels [img_imgtolist $impro_img]
+	img_delete $impro_img
+	
+	# Convert image data to color list
+	set img_data [dlg_imagedata2photo $img_pixels $w $h]
+	
+	# Put all the data at once
+	$photo put $img_data
+	
+	# Cache the photo and the dynamic group
+	set imageCache($id) $photo
+	set imageCache(${id}_dg) $dg
+    }
+    
+    proc drawimage {x0 y0 x1 y1 image_id {w ""} {h ""} {d ""} {b64_data ""}} {
+	variable canvas
+	variable imageCache
+	
+	# Cache image data if provided inline
+	if {$w ne "" && $h ne "" && $d ne "" && $b64_data ne ""} {
+	    if {![info exists imageCache($image_id)]} {
+		set img_dict [dict create \
+				  id $image_id \
+				  width $w \
+				  height $h \
+				  depth $d \
+				  data $b64_data]
+		cacheImageData $img_dict
 	    }
 	}
-	bg {
-	    set CGRAPH(background) $arg
-	    set state flag
-	}
-	width {
-	    set CGRAPH(width) $arg
-	    set state flag
-	}
-	height {
-	    set CGRAPH(height) $arg
-	    set state flag
-	}
-    }
-}
-set winCounter 1
-
-proc configureMainWindow { } {
-    global colors
-    frame .mbar -relief raised -bd 2
-    pack .mbar -side top -fill x
-    
-    menubutton .mbar.file -text File -underline 0 -menu .mbar.file.menu
-    menubutton .mbar.edit -text Edit -underline 0 -menu .mbar.edit.menu
-    menubutton .mbar.view -text View -underline 0 -menu .mbar.view.menu
-    menubutton .mbar.help -text Help -underline 0 -menu .mbar.help.menu
-    pack .mbar.file .mbar.edit .mbar.view -side left
-    
-    pack .mbar.help -side right
-    menu .mbar.file.menu
-    .mbar.file.menu add command -label "Print" -underline 0 \
-	-underline 0 -command { dump_to_printer }
-    
-    .mbar.file.menu add command -label "Quit" -underline 0 \
-	-accelerator "Ctrl+q" -command { close_cgsh }
-    
-    menu .mbar.view.menu
-    .mbar.view.menu add cascade -label "Background" -underline 0 \
-	-menu .mbar.view.menu.bg
-    menu .mbar.view.menu.bg
-    .mbar.view.menu.bg add command -label "White" \
-	-underline 0 -command { 
-	    set w [lindex [$::CGRAPH(current_cgwin) configure -width] 4]
-	    set h [lindex [$::CGRAPH(current_cgwin) configure -height] 4]
-	    destroy $::CGRAPH(current_cgwin)
-	    pack [cgwin $::CGRAPH(current_cgwin) -width $w -height $h -bg white] \
-		-fill both -expand true
-	    setcolor $::colors(black)
-	} 
-    .mbar.view.menu.bg add command -label "Black" \
-	-underline 0 -command { 
-	    set w [lindex [$::CGRAPH(current_cgwin) configure -width] 4]
-	    set h [lindex [ $::CGRAPH(current_cgwin) configure -height] 4]
-	    destroy $::CGRAPH(current_cgwin)
-	    pack [cgwin $::CGRAPH(current_cgwin) -width $w -height $h -bg black] \
-		-fill both -expand true
-	} 
-
-    .mbar.view.menu add cascade -label "Display" -underline 0 \
-	-menu .mbar.view.menu.display
-    menu .mbar.view.menu.display
-    .mbar.view.menu.display add command -label "Landscape Mode" \
-	-underline 0 -command { 
-	    $::CGRAPH(current_cgwin) configure -width 792 -height 612 
-	    dlp_landscape
-	} 
-    .mbar.view.menu.display add command -label "Portrait Mode" \
-	-underline 0 -command { 
-	    $::CGRAPH(current_cgwin) configure -height 792 -width 612 
-	    dlp_portrait
-	} 
-
-    menu .mbar.edit.menu
-    .mbar.edit.menu add command -label "Copy" -underline 0 \
-	-command {$::CGRAPH(current_cgwin) copy}
-    
-    menu .mbar.help.menu
-    .mbar.help.menu add command -label "About" -underline 0
-    
-    tk_menuBar .mbar .mbar.file .mbar.edit .mbar.view .mbar.help
-
-    # button bar for notebook interactions (create, delete, delete_all)
-    set bfrm [frame .buttonframe]
-    pack $bfrm  -side top -fill both
-    set new [button $bfrm.new -text "New Tab" -command newTab -width 10]
-    set close [button $bfrm.close -text "Close" -command {closeTab $::CGRAPH(current_page)} -width 10]
-    set closeall [button $bfrm.closeall -text "Close All" -command closeAllTabs -width 10]
-    pack $closeall $close $new -side right -anchor e
-    
-    # setup a Notebook to hold cgwins
-    package require BWidget
-#    set winframe [frame .winframe]
-#    pack $winframe -fill both  -expand true
-#    set ::CGRAPH(notebook) [NoteBook $winframe.nb -ibd 0 -side top]
-    set ::CGRAPH(notebook) [NoteBook .nb -ibd 0 -side top]
-    # initialize first tab
-    newTab "Main"
-    $::CGRAPH(notebook) compute_size
-    pack $::CGRAPH(notebook) -fill both -expand yes -padx 0 -pady 0
-    $::CGRAPH(notebook) raise [$::CGRAPH(notebook) page 0]
-
-    # some basic bindings    
-    bind . <Control-q> { close_cgsh } 
-    bind . <Control-c> { $::CGRAPH(current_cgwin) copy }
-    bind . <Control-h> { toggle_console }
-    
-    # bindings to cycle through notebook with PageUp and PageDown (currently no wrapping, but could add it easily)
-    bind . <Prior> {
-	$CGRAPH(notebook) raise [lindex [$CGRAPH(notebook) pages] [expr [lsearch [$CGRAPH(notebook) pages] $CGRAPH(current_page)]+1]]
-    }
-    bind . <Next> {
-	$CGRAPH(notebook) raise [lindex [$CGRAPH(notebook) pages] [expr [lsearch [$CGRAPH(notebook) pages] $CGRAPH(current_page)]-1]]
-    }
-}
-
-proc newTab { {title ""} } {
-    set ::CGRAPH(current_page) cgraph[incr ::CGRAPH(counter)]
-    if {$title == ""} {
-	set title $::CGRAPH(current_page)
-    }
-    set nbf [$::CGRAPH(notebook) insert end $::CGRAPH(current_page) -text $title \
-		 -raisecmd "raiseTab $::CGRAPH(current_page)"]
-    # keep track of the cgwin for this page
-    set ::CGRAPH(current_cgwin) [set ::CGRAPH(${::CGRAPH(current_page)}_cgwin) \
-				     [cgwin $nbf.cgraph -background $::CGRAPH(background) \
-					  -width $::CGRAPH(width) -height $::CGRAPH(height) \
-					  -dbl 1]]
-    pack $::CGRAPH(current_cgwin) -fill both -expand true
-    # newTabs always go on top and become the active page
-    $::CGRAPH(notebook) raise $::CGRAPH(current_page)
-    if { $::CGRAPH(background) != "black" } { setcolor $::colors(black) }
-}
-
-proc raiseTab { page } {
-    set ::CGRAPH(current_page) $page
-    set ::CGRAPH(current_cgwin) $::CGRAPH(${page}_cgwin)
-    $::CGRAPH(notebook) see $page; # make sure we can see the tab of current window
-}
-
-proc closeTab { page } {
-    set idx [lsearch [$::CGRAPH(notebook) pages] $page]
-    $::CGRAPH(notebook) delete $page
-    # clean up a little bit
-    unset ::CGRAPH(${page}_cgwin)
-    if ![llength [$::CGRAPH(notebook) pages]] {
-	# if this was the only tab, then create a new main window
-	set ::CGRAPH(counter) -1; # reset counter since we are back to scratch
-	newTab "Main"
-    } else {
-	# try to raise the next highest page (or if this was on top, the one below it)
-	if {$idx == [llength [$::CGRAPH(notebook) pages]]} {
-	    set idx end
-	}
-	$::CGRAPH(notebook) raise [lindex [$::CGRAPH(notebook) pages] $idx]
-    }
-}
-
-proc closeAllTabs { } {
-    foreach p [$::CGRAPH(notebook) pages] {
-	closeTab $p
-    }
-}
-	       
-
-proc newWindow { { name Figure } { width 640 } { height 480 } { background black } } {
-    global winCounter colors
-    set w ".figure$winCounter"
-    incr winCounter
-
-    toplevel $w
-    wm title $w $name
-
-    frame $w.tb -bd 1 -relief raised
-    button $w.tb.print -text "Print" -command {dumpwin printer}
-    button $w.tb.close -text "Close" -command "destroy $w; $::CGRAPH(current_cgwin) select"
-    pack $w.tb.print -side right -padx 10
-    pack $w.tb.close -side right -padx 10
-    pack $w.tb -fill x
-    pack [cgwin $w.cgraph -background $background -width $width -height $height] -fill both -expand true
-    if { $background != "black" } { setcolor $colors(black) }
-    return "$w.cgraph"
-}
-
-# proc configureNewWindow { toplevel } {
-#     global colors
-#     frame $toplevel.mbar -relief raised -bd 2
-#     pack $toplevel.mbar -side top -fill x
-    
-#     menubutton $toplevel.mbar.file -text File -underline 0 -menu $toplevel.mbar.file.menu
-#     menubutton $toplevel.mbar.edit -text Edit -underline 0 -menu $toplevel.mbar.edit.menu
-#     menubutton $toplevel.mbar.view -text View -underline 0 -menu $toplevel.mbar.view.menu
-#     menubutton $toplevel.mbar.help -text Help -underline 0 -menu $toplevel.mbar.help.menu
-#     pack $toplevel.mbar.file $toplevel.mbar.edit $toplevel.mbar.view -side left
-    
-#     pack $toplevel.mbar.help -side right
-#     menu $toplevel.mbar.file.menu
-#     $toplevel.mbar.file.menu add command -label "Print" -underline 0 \
-# 	-underline 0 -command { dump_to_printer }
-    
-#     $toplevel.mbar.file.menu add command -label "Quit" -underline 0 \
-# 	-accelerator "Ctrl+q" -command { close_cgsh }
-    
-#     menu $toplevel.mbar.view.menu
-#     $toplevel.mbar.view.menu add cascade -label "Background" -underline 0 \
-# 	-menu $toplevel.mbar.view.menu.bg
-#     menu $toplevel.mbar.view.menu.bg
-#     $toplevel.mbar.view.menu.bg add command -label "White" \
-# 	-underline 0 -command { 
-# 	    set w [lindex [$::CGRAPH(current_cgwin) configure -width] 4]
-# 	    set h [lindex [$::CGRAPH(current_cgwin) configure -height] 4]
-# 	    destroy $::CGRAPH(current_cgwin)
-# 	    pack [cgwin $::CGRAPH(current_cgwin) -width $w -height $h -bg white] \
-# 		-fill both -expand true
-# 	    setcolor $::colors(black)
-# 	} 
-#     $toplevel.mbar.view.menu.bg add command -label "Black" \
-# 	-underline 0 -command { 
-# 	    set w [lindex [$::CGRAPH(current_cgwin) configure -width] 4]
-# 	    set h [lindex [ $::CGRAPH(current_cgwin) configure -height] 4]
-# 	    destroy $::CGRAPH(current_cgwin)
-# 	    pack [cgwin $::CGRAPH(current_cgwin) -width $w -height $h -bg black] \
-# 		-fill both -expand true
-# 	} 
-
-#     $toplevel.mbar.view.menu add cascade -label "Display" -underline 0 \
-# 	-menu $toplevel.mbar.view.menu.display
-#     menu $toplevel.mbar.view.menu.display
-#     $toplevel.mbar.view.menu.display add command -label "Landscape Mode" \
-# 	-underline 0 -command { 
-# 	    $::CGRAPH(current_cgwin) configure -width 792 -height 612 
-# 	    dlp_landscape
-# 	} 
-#     $toplevel.mbar.view.menu.display add command -label "Portrait Mode" \
-# 	-underline 0 -command { 
-# 	    $::CGRAPH(current_cgwin) configure -height 792 -width 612 
-# 	    dlp_portrait
-# 	} 
-
-#     menu $toplevel.mbar.edit.menu
-#     $toplevel.mbar.edit.menu add command -label "Copy" -underline 0 \
-# 	-command {$::CGRAPH(current_cgwin) copy}
-    
-#     menu $toplevel.mbar.help.menu
-#     $toplevel.mbar.help.menu add command -label "About" -underline 0
-    
-#     tk_menuBar $toplevel.mbar $toplevel.mbar.file $toplevel.mbar.edit $toplevel.mbar.view $toplevel.mbar.help
-
-#     # button bar for notebook interactions (create, delete, delete_all)
-#     set bfrm [frame $toplevel.buttonframe]
-#     pack $bfrm  -side top -fill both
-#     set new [button $bfrm.new -text "New Tab" -command newTab -width 10]
-#     set close [button $bfrm.close -text "Close" -command {closeTab $::CGRAPH(current_page)} -width 10]
-#     set closeall [button $bfrm.closeall -text "Close All" -command closeAllTabs -width 10]
-#     pack $closeall $close $new -side right -anchor e
-    
-#     # setup a Notebook to hold cgwins
-#     package require BWidget
-# #    set winframe [frame $toplevel.winframe]
-# #    pack $winframe -fill both  -expand true
-# #    set ::CGRAPH(notebook) [NoteBook $winframe.nb -ibd 0 -side top]
-#     set ::CGRAPH(notebook) [NoteBook $toplevel.nb -ibd 0 -side top]
-#     # initialize first tab
-#     newTab "Main"
-#     $::CGRAPH(notebook) compute_size
-#     pack $::CGRAPH(notebook) -fill both -expand yes -padx 0 -pady 0
-#     $::CGRAPH(notebook) raise [$::CGRAPH(notebook) page 0]
-
-#     # some basic bindings    
-#     bind $toplevel <Control-q> { close_cgsh } 
-#     bind $toplevel <Control-c> { $::CGRAPH(current_cgwin) copy }
-#     bind $toplevel <Control-h> { toggle_console }
-    
-#     # bindings to cycle through notebook with PageUp and PageDown (currently no wrapping, but could add it easily)
-#     bind $toplevel <Prior> {
-# 	$CGRAPH(notebook) raise [lindex [$CGRAPH(notebook) pages] [expr [lsearch [$CGRAPH(notebook) pages] $CGRAPH(current_page)]+1]]
-#     }
-#     bind $toplevel <Next> {
-# 	$CGRAPH(notebook) raise [lindex [$CGRAPH(notebook) pages] [expr [lsearch [$CGRAPH(notebook) pages] $CGRAPH(current_page)]-1]]
-#     }
-# }
-
-
-
-proc loadCGfile file {
-	source $file
-	flushwin
-	focus .
-}
-
-proc printCGfile file {
-	dumpwin postscript $file
-}
-
-proc dump_to_printer {} {
-    set f [dl_tempname].pdf
-    dumpwin pdf $f
-    if [info exists ::acrobat_path] {
-	if [file exists $::acrobat_path] {
-##	    exec c:/Program\ Files/adobe/adobe\ acrobat\ 6.0/acrobat/acrobat.exe $f &
-	    exec $::acrobat_path $f &
-	} else {
-	    error "dump_to_printer (in dlshell.tcl) - acrobat_path $acrobat_path not valid.\n   set acrobat_path in dlsh.cfg"
+	
+	# Render the image
+	if {[info exists imageCache($image_id)]} {
+	    # Transform coordinates
+	    set sx0 [transformX $x0]
+	    set sy0 [transformY $y0]
+	    set sx1 [transformX $x1]
+	    set sy1 [transformY $y1]
+	    
+	    # After Y-flip, sy0 might be > sy1, so use min/max
+	    set left [expr {min($sx0, $sx1)}]
+	    set top [expr {min($sy0, $sy1)}]
+	    set right [expr {max($sx0, $sx1)}]
+	    set bottom [expr {max($sy0, $sy1)}]
+	    
+	    set desired_width [expr {int($right - $left)}]
+	    set desired_height [expr {int($bottom - $top)}]
+	    
+	    # Get original dimensions from dynamic group
+	    set dg $imageCache(${image_id}_dg)
+	    set native_width [dl_get $dg:width 0]
+	    set native_height [dl_get $dg:height 0]
+	    
+	    # Check if we need to resize
+	    if {$desired_width == $native_width && $desired_height == $native_height} {
+		# No resize needed
+		$canvas create image $left $top -image $imageCache($image_id) -anchor nw
+		return
+	    }
+	    
+	    # Check cache for this size
+	    set scaled_name "${image_id}_${desired_width}x${desired_height}"
+	    
+	    if {![info exists imageCache($scaled_name)]} {
+		# Use impro to resize and flip
+		package require impro
+		
+		# Get original image bytes from dynamic group
+		set pixel_dl $dg:imagebytes
+		
+		# Create DynList in impro format: [dims_list pixel_data]
+		dl_local orig_img [dl_llist [dl_ilist $native_width $native_height] $pixel_dl]
+		
+		# Convert to impro image
+		set impro_img [img_imgfromlist $orig_img]
+		
+		# Resize using impro (nearest neighbor interp = 1)
+		set resized_impro_img [img_resize $impro_img $desired_width $desired_height 1]
+		
+		# Convert back to DynList
+		dl_local resized_pixels [img_imgtolist $resized_impro_img]
+		
+		# Clean up impro images
+		img_delete $impro_img $resized_impro_img
+		
+		# Create Tk photo at new size
+		set scaled_photo [image create photo -width $desired_width -height $desired_height]
+		
+		# Convert to color format
+		set img_data [dlg_imagedata2photo $resized_pixels $desired_width $desired_height]
+		
+		# Put the data
+		$scaled_photo put $img_data
+		
+		# Cache it
+		set imageCache($scaled_name) $scaled_photo
+	    }
+	    
+	    # Draw the scaled image
+	    $canvas create image $left $top -image $imageCache($scaled_name) -anchor nw
 	}
     }
+    
+    proc clearwin {} {
+	variable canvas
+	variable imageCache
+	
+	$canvas delete all
+	
+	# Clean up cached images and dynamic groups
+	foreach id [array names imageCache] {
+	    if {[string match "*_dg" $id]} {
+		# Delete the dynamic group
+		dg_delete $imageCache($id)
+	    } elseif {[image type $imageCache($id)] eq "photo"} {
+		# Delete the photo image
+		image delete $imageCache($id)
+	    }
+	    unset imageCache($id)
+	}
+    }
+    
+    proc setclipregion {x1 y1 x2 y2} {
+        # Clipping not implemented for canvas
+    }
+    
+    proc gsave {} {
+        # State save not implemented
+    }
+    
+    proc grestore {} {
+        # State restore not implemented
+    }
+
+    # Main rendering proc
+    proc processCommands {asciiData} {
+	variable canvas
+	variable lastAsciiData
+	
+	# Save for potential redraw on resize
+	set lastAsciiData $asciiData
+	
+	$canvas delete all
+	
+	foreach line [split $asciiData "\n"] {
+	    set line [string trim $line]
+	    if {$line eq "" || [string match "#*" $line]} continue
+	    
+	    namespace eval [namespace current] $line
+	}
+    }    
 }
 
-proc close_cgsh {} {
-	exit
+
+# Create canvas in main window
+wm title . "Graphics Display"
+set gbuf::canvas [canvas .c -width 640 -height 480 -bg white]
+pack .c -fill both -expand 1
+
+# Bind to canvas configure event (fires on resize)
+bind $gbuf::canvas <Configure> {
+    gbuf::onResize %w %h
 }
 
-proc quit {} { close_cgsh }
+# Wait for canvas to be drawn
+update idletasks
 
-proc toggle_console {} {
-    if { $::console_status } { console hide } { console show }
-    set ::console_status [expr 1-$::console_status]
+# Define flushwin in global namespace
+proc flushwin {} { 
+    gbuf::processCommands [dumpwin string] 
 }
 
-configureMainWindow
-
-# source personalized config file if exists
-if [info exists env(HOME)] {
-    set cfg [file join $env(HOME) dlsh_config.tcl]
-    if [file exists $cfg] { source $cfg }
+rename clearwin _clearwin
+proc clearwin {} {
+    gbuf::clearwin
+    _clearwin
 }
+
+# Now start tkcon if you want an interactive console
+package require tkcon
+set ::tkcon::OPT(exec) ""
+tkcon show
