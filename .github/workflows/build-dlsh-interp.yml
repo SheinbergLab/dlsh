@@ -65,7 +65,7 @@ jobs:
           echo "DLSH_ZIP=$GITHUB_WORKSPACE/test-dlsh.zip" >> "$GITHUB_ENV"
 
       - name: Unit tests
-        run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_leak_dl_foreach'
+        run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_dg_concat|test_leak_dl_foreach'
 
       - name: Headless smoke test
         run: ./build/dlsh -e 'puts "tcl=[info patchlevel] dlsh=[package require dlsh] sum=[dl_sum [dl_fromto 1 100]]"'
@@ -130,7 +130,7 @@ jobs:
           echo "DLSH_ZIP=$GITHUB_WORKSPACE/test-dlsh.zip" >> "$GITHUB_ENV"
 
       - name: Unit tests
-        run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_leak_dl_foreach'
+        run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_dg_concat|test_leak_dl_foreach'
 
       - name: Headless smoke test
         run: ./build/dlsh -e 'puts "tcl=[info patchlevel] dlsh=[package require dlsh] sum=[dl_sum [dl_fromto 1 100]]"'
