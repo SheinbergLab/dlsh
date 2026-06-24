@@ -9,12 +9,13 @@ name: Build dlsh interpreter (self-contained Tcl+Tk)
 on:
   workflow_dispatch:
   push:
-    branches: [dlsh-interp-selfcontained-tk]
+    branches: ['dlsh-interp-**']
   pull_request:
     paths:
       - 'src/dlsh_main.c'
       - 'cmake/dlsh_bundle_appzip.cmake'
       - 'CMakeLists.txt'
+      - 'linux/build-dlsh-deb.sh'
       - '.github/workflows/build-dlsh-interp.yml'
 
 jobs:
@@ -76,6 +77,20 @@ jobs:
             button .b -text hi; pack .b; update idletasks
             puts "ws=[tk windowingsystem] tk=[info patchlevel] btn=[winfo exists .b]"
             if {[tk windowingsystem] ne "x11" || ![winfo exists .b]} { exit 1 }'
+
+      - name: Build .deb (dry run) and verify structure
+        # Exercises linux/build-dlsh-deb.sh on a real runner (the release job
+        # only runs on a tag); confirm it packages the expected paths.
+        run: |
+          linux/build-dlsh-deb.sh build/dlsh "$DLSH_ZIP" 0.0.0-ci
+          deb=$(ls dlsh-interp_*.deb | head -1)
+          echo "== contents =="
+          dpkg-deb --contents "$deb" | grep -E './usr/local/(bin/dlsh|dlsh/dlsh.zip)$'
+          dpkg-deb --contents "$deb" | grep -qE './usr/local/bin/dlsh$' \
+            && dpkg-deb --contents "$deb" | grep -qE './usr/local/dlsh/dlsh.zip$' \
+            || { echo "FAIL: expected paths missing from .deb"; exit 1; }
+          echo "== control =="
+          dpkg-deb --field "$deb" Package Version Architecture Depends
 
       - uses: actions/upload-artifact@v4
         with:
