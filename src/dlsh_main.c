@@ -54,7 +54,12 @@
  * prefix's lib dir), but it holds older copies of our packages that would shadow
  * the zip's. A user who wants it back can re-add it (e.g. from ~/.dlshrc).
  */
-static const char *dlsh_vfs_bootstrap =
+/* Mount dlsh.zip and put its lib/ on auto_path -- WITHOUT yet pulling in the
+   dlsh package. Shared by the normal startup (which then does `package require
+   dlsh` to load the zip's libdlsh) and by --libdlsh dev mode (which instead
+   loads a working-tree libdlsh, but still wants the zip on auto_path so other
+   packages and Tcl helpers resolve). Returns the mounted zip path (or {}). */
+static const char *dlsh_vfs_mount =
     "apply {{} {\n"
     "  set cands {}\n"
     "  if {[info exists ::env(DLSH_ZIP)]} { lappend cands $::env(DLSH_ZIP) }\n"
@@ -76,10 +81,12 @@ static const char *dlsh_vfs_bootstrap =
     "  }\n"
     "  return {}\n"
     "}}\n"
-    "set ::auto_path [lsearch -all -inline -not -exact $::auto_path /usr/local/lib]\n"
-    /* Pull in the dlsh package (C lib + Tcl helpers) from the mounted zip, just
-       as dserv/stim2 do. Best-effort: no zip / no platform lib -> bare Tcl/Tk. */
-    "catch { package require dlsh }\n";
+    "set ::auto_path [lsearch -all -inline -not -exact $::auto_path /usr/local/lib]\n";
+
+/* Working-tree libdlsh to `load` instead of `package require dlsh`, set by the
+   `--libdlsh <path>` dev flag (NULL in normal use). A development affordance for
+   exercising an unreleased libdlsh build before it ships inside dlsh.zip. */
+static const char *dlsh_dev_lib = NULL;
 
 /* True if a path (native OR //zipfs:) is accessible. Works before Tcl_Init:
    Tcl_FindExecutable (called via TclZipfs_AppHook in main) sets up the FS. */
@@ -173,8 +180,34 @@ static int Dlsh_AppInit(Tcl_Interp *interp)
 #endif
 
     /* Best-effort: mount the VFS if present. Never fatal. */
-    (void) Tcl_Eval(interp, dlsh_vfs_bootstrap);
+    (void) Tcl_Eval(interp, dlsh_vfs_mount);
     Tcl_ResetResult(interp);
+
+    if (dlsh_dev_lib) {
+        /* Dev mode (--libdlsh): load a working-tree libdlsh directly. Its
+           Dlsh_Init calls Tcl_PkgProvide(dlsh,...), so this both registers the
+           C commands and satisfies any later `package require dlsh` -- the zip's
+           copy is never loaded. The zip's Tcl helper scripts (plot/stats/...)
+           are therefore NOT sourced; this flag is for exercising the C lib. */
+        Tcl_SetVar(interp, "dlsh_dev_lib", dlsh_dev_lib, TCL_GLOBAL_ONLY);
+        /* No package prefix: let Tcl derive Dlsh_Init from the libdlsh
+           filename, exactly as dlsh.zip's pkgIndex.tcl does. */
+        if (Tcl_Eval(interp, "load $dlsh_dev_lib") != TCL_OK) {
+            fprintf(stderr, "dlsh: --libdlsh: failed to load %s: %s\n",
+                    dlsh_dev_lib, Tcl_GetStringResult(interp));
+        } else {
+            fprintf(stderr,
+                    "dlsh: --libdlsh: loaded dev libdlsh from %s "
+                    "(dlsh.zip Tcl helpers not sourced)\n", dlsh_dev_lib);
+        }
+        Tcl_ResetResult(interp);
+    }
+    else {
+        /* Pull in the dlsh package (C lib + Tcl helpers) from the mounted zip,
+           just as dserv/stim2 do. Best-effort: no zip -> bare Tcl/Tk. */
+        (void) Tcl_Eval(interp, "catch { package require dlsh }");
+        Tcl_ResetResult(interp);
+    }
 
     /* Name the user startup file. Tcl_Main calls Tcl_SourceRCFile on its
        interactive path, which reads this variable and sources it iff it
@@ -295,6 +328,21 @@ int main(int argc, char **argv)
     /* If not a single-file build, find the sidecar dlsh-runtime.zip and point
        Tcl/Tk at the script libraries it carries -- before any interp exists. */
     Dlsh_BootstrapRuntime();
+
+    /* `dlsh --libdlsh <path> [...]`: dev flag -- load a working-tree libdlsh
+       instead of the one inside dlsh.zip, for testing an unreleased build.
+       Consume the two args here so the remaining dispatch (-e / --gui /
+       Tcl_Main) sees argv exactly as if the flag were absent. */
+    if (argc >= 2 && strcmp(argv[1], "--libdlsh") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "dlsh: --libdlsh requires a path argument\n");
+            return 2;
+        }
+        dlsh_dev_lib = argv[2];
+        argv[2] = argv[0];   /* keep program name at the new argv[0] */
+        argv += 2;
+        argc -= 2;
+    }
 
     /* `dlsh -e <script> [args...]`: evaluate and exit (scriptable/CI use). */
     if (argc >= 3 && (strcmp(argv[1], "-e") == 0 || strcmp(argv[1], "--eval") == 0)) {
