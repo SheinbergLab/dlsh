@@ -520,3 +520,57 @@ jobs:
           tag: ${{ github.ref_name }}
           allowUpdates: true
           omitBodyDuringUpdate: true
+
+  # Build the standalone dlsh INTERPRETER installer (.deb) for Linux, both
+  # arches. No signing needed, so the single-file (append) build is used:
+  #   /usr/local/bin/dlsh + /usr/local/dlsh/dlsh.zip
+  # ubuntu-22.04[-arm] matches the glibc baseline of the release dlsh.zip.
+  package-linux-interp:
+    needs: assemble-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,     arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake git autoconf pkg-config zip \
+            zlib1g-dev libpq-dev \
+            libx11-dev libxft-dev libxss-dev libxext-dev libxrender-dev \
+            libfontconfig1-dev
+
+      - name: Download the assembled dlsh.zip
+        uses: actions/download-artifact@v4
+        with:
+          name: dlsh-zip
+          path: dist/
+
+      - name: Build the interpreter (single-file)
+        run: |
+          cmake -B build -D DLSH_BUILD_INTERP=ON
+          cmake --build build --target dlsh_interp -j"$(nproc)"
+
+      - name: Build the .deb
+        run: |
+          ZIP=$(ls dist/dlsh-*.zip | head -1)
+          linux/build-dlsh-deb.sh build/dlsh "$ZIP" "${{ github.ref_name }}"
+
+      - name: Attach the .deb to the release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "dlsh-interp_*.deb"
+          tag: ${{ github.ref_name }}
+          allowUpdates: true
+          omitBodyDuringUpdate: true
