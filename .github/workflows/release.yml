@@ -418,16 +418,105 @@ jobs:
           cd final
           zip -r ../dlsh-${{ github.ref_name }}.zip lib/
 
+      - name: Upload dlsh.zip for downstream packaging
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlsh-zip
+          path: dlsh-${{ github.ref_name }}.zip
+
       - name: Create GitHub release
         uses: ncipollo/release-action@v1
         with:
           artifacts: "dlsh-${{ github.ref_name }}.zip"
           body: |
             dlsh version ${{ github.ref_name }}
-            
+
             Combined package with support for:
             - macOS arm64
-            - Linux x86_64  
+            - Linux x86_64
             - Linux aarch64
           generateReleaseNotes: true
           allowUpdates: true
+
+  # Build, sign, and notarize the standalone dlsh INTERPRETER installer (.pkg):
+  #   /usr/local/bin/dlsh + /usr/local/dlsh/{dlsh.zip,dlsh-runtime.zip}
+  # Sidecar mode (no trailing data) so the binary codesigns; uses the final
+  # dlsh.zip assembled above. Mirrors the keychain/notarytool steps already
+  # proven by the library-installer workflow.
+  package-macos-interp:
+    needs: assemble-release
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: brew install cmake libpq postgresql@17
+
+      - name: Download the assembled dlsh.zip
+        uses: actions/download-artifact@v4
+        with:
+          name: dlsh-zip
+          path: dist/
+
+      - name: Set up keychain for code signing
+        env:
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APP_CERTIFICATE_BASE64: ${{ secrets.APPLE_APP_CERTIFICATE_BASE64 }}
+          INSTALLER_CERTIFICATE_BASE64: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_BASE64 }}
+        run: |
+          APP_CERTIFICATE_PATH=$RUNNER_TEMP/developerID_application.p12
+          echo -n "$APP_CERTIFICATE_BASE64" | base64 --decode -o $APP_CERTIFICATE_PATH
+          INSTALLER_CERTIFICATE_PATH=$RUNNER_TEMP/developerID_installer.p12
+          echo -n "$INSTALLER_CERTIFICATE_BASE64" | base64 --decode -o $INSTALLER_CERTIFICATE_PATH
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$APP_CERTIFICATE_PATH" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security import "$INSTALLER_CERTIFICATE_PATH" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+      - name: Build the interpreter (signable sidecar) + harden the signature
+        run: |
+          cmake -B build -D DLSH_BUILD_INTERP=ON -D DLSH_APPEND_ZIP=OFF
+          cmake --build build --target dlsh_interp -j"$(sysctl -n hw.ncpu)"
+          # The POST_BUILD step only ad-hoc signs; re-sign with Developer ID +
+          # hardened runtime + secure timestamp (required for notarization).
+          codesign --force --options runtime --timestamp \
+            --sign "Developer ID Application" build/dlsh
+          codesign --verify --strict --verbose=2 build/dlsh
+
+      - name: Build, sign, and notarize the .pkg
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          INSTALLER_CERT_ID: ${{ secrets.APPLE_INSTALLLER_CERT_ID }}
+        run: |
+          ZIP=$(ls dist/dlsh-*.zip | head -1)
+          macos/build-dlsh-pkg.sh build/dlsh "$ZIP" "${{ github.ref_name }}" \
+            "$INSTALLER_CERT_ID" build/dlsh-runtime.zip
+          # Distinguish from the library installer; pick the signed pkg.
+          SRC=$(ls dlsh-${{ github.ref_name }}-*-signed.pkg | head -1)
+          PKG="dlsh-interp-${{ github.ref_name }}-$(uname -m)-signed.pkg"
+          mv "$SRC" "$PKG"
+          xcrun notarytool store-credentials --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" --password "$APPLE_APP_PASSWORD" "dlsh-signing"
+          xcrun notarytool submit "$PKG" --keychain-profile "dlsh-signing" --wait
+          xcrun stapler staple "$PKG"
+          echo "PKG=$PKG" >> "$GITHUB_ENV"
+
+      - name: Attach the interpreter installer to the release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: ${{ env.PKG }}
+          tag: ${{ github.ref_name }}
+          allowUpdates: true
+          omitBodyDuringUpdate: true

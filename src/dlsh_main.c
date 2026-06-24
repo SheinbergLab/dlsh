@@ -125,10 +125,13 @@ static void Dlsh_BootstrapRuntime(void)
         if (slash) { *slash = '\0'; } else { strcpy(dir, "."); }
     }
 
-    char cands[2][2048];
+    char cands[3][2048];
     int n = 0;
     snprintf(cands[n++], sizeof(cands[0]), "%s/dlsh-runtime.zip", dir);
     snprintf(cands[n++], sizeof(cands[0]), "%s/../Resources/dlsh-runtime.zip", dir);
+    /* Installed CLI layout: exe in <prefix>/bin, runtime beside the package zip
+       in <prefix>/dlsh -- so /usr/local/bin/dlsh finds /usr/local/dlsh/. */
+    snprintf(cands[n++], sizeof(cands[0]), "%s/../dlsh/dlsh-runtime.zip", dir);
 
     for (int i = 0; i < n; i++) {
         if (!dlsh_path_exists(cands[i])) continue;
