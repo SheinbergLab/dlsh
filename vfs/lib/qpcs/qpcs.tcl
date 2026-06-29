@@ -1,4 +1,4 @@
-package provide qpcs 3.40
+package provide qpcs 3.41
 
 package require dlsh
 
@@ -596,25 +596,27 @@ namespace eval qpcs {
     proc dsSocketSendBinary { sock varname dl } {
 	variable _binfmt
 	variable _dtypes
-	variable _eltsizes
 	set dtype [dl_datatype $dl]
-	set type [dict get $_dtypes $dtype]
-	set eltsize [dict get $_eltsizes $dtype]
-	set n [dl_length $dl]
-	set datalen [expr {$eltsize * $n}]
-	set varlen [string length $varname]
-
-	set fmt [dict get $_binfmt $dtype]
+	set fmt  [dict get $_binfmt $dtype]
 	set data [binary format ${fmt}* [dl_tcllist $dl]]
+	dsSocketSendBytes $sock $varname $data [dict get $_dtypes $dtype]
+    }
 
-	# Build entire 128-byte message as a single binary format
-	# to avoid Tcl string/ByteArray representation mixing which
-	# can corrupt bytes >127 in the float data.
-	#
-	# Layout: '>' + varlen(u16) + varname + timestamp(u64=0)
-	#         + type(u32) + datalen(u32) + data + zero padding
-	set hdrlen [expr {1 + 2 + $varlen + 8 + 4 + 4 + $datalen}]
-	set pad [expr {128 - $hdrlen}]
+    # Send raw, already-encoded bytes as a typed datapoint over a pre-opened
+    # binary socket, using the fixed 128-byte '>' message. This is the shared
+    # framing for dsSocketSendBinary (a typed dl) and the stim-event transport
+    # (an opaque blob). type defaults to 0 (DSERV_BYTE). Payload must fit the
+    # 128-byte frame.
+    #
+    # Layout: '>' + varlen(u16) + varname + timestamp(u64=0)
+    #         + type(u32) + datalen(u32) + data + zero padding.
+    # Built as a SINGLE binary format to avoid Tcl string/ByteArray mixing
+    # that can corrupt bytes >127.
+    proc dsSocketSendBytes { sock varname data { type 0 } } {
+	set varlen  [string length $varname]
+	set datalen [string length $data]
+	set hdrlen  [expr {1 + 2 + $varlen + 8 + 4 + 4 + $datalen}]
+	set pad     [expr {128 - $hdrlen}]
 	if { $pad < 0 } { set pad 0 }
 
 	set msg [binary format \
@@ -623,6 +625,38 @@ namespace eval qpcs {
 
 	puts -nonewline $sock $msg
 	flush $sock
+    }
+
+    # ----------------------------------------------------------------------
+    # Stim-event sync transport (3.41)
+    #
+    # Compact wire format for marking timed stimulus events pushed from a
+    # remote stim2 process. A sync header -- SwapCount (u64) + StimTicksF
+    # (double, free-running ms), captured at the buffer flip -- precedes an
+    # optional float payload, sent as one DSERV_BYTE datapoint via
+    # dsSocketSendBytes. The receiver (ESS) reconstructs the event's
+    # dserv-clock time from a per-trial anchor; see ess-2.0.tm.
+    #
+    # evtPack / evtUnpack are the SINGLE definition of the layout: both the
+    # stim sender and the dserv receiver call them, so the format cannot
+    # drift. Header is 16 bytes (w=u64 little-endian, d=native double); the
+    # double preserves free-running StimTicksF to full sub-ms precision where
+    # a float would quantize after ~1 h of uptime.
+    # ----------------------------------------------------------------------
+
+    # Pack a sync header (SwapCount, StimTicksF) + optional float values.
+    proc evtPack { swapcount stimticksf { vals {} } } {
+	set blob [binary format wd $swapcount $stimticksf]
+	if { [llength $vals] } { append blob [binary format f* $vals] }
+	return $blob
+    }
+
+    # Unpack a stim-event blob -> {swapcount stimticksf {vals...}}.
+    proc evtUnpack { blob } {
+	binary scan $blob wd swapcount stimticksf
+	binary scan [string range $blob 16 end] f* vals
+	if { ![info exists vals] } { set vals {} }
+	return [list $swapcount $stimticksf $vals]
     }
 
     # Like dsPutData but uses a pre-opened persistent socket.
