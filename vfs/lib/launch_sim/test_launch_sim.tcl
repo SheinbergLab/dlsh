@@ -153,6 +153,69 @@ lassign [launch_sim::ball_pos_at_time $trl [expr {[dict get $trl land_time]*0.5}
 assert {abs($mly - ($lyl + $vyl*[expr {[dict get $trl land_time]*0.5}])) < 1e-9} \
     "ball_pos_at_time analytic exact under zero gravity"
 
+# ---- 8b. negative gravity: inverse parabola == vertical mirror of |g| arc ----
+puts "negative gravity (inverse parabola)..."
+# pin every range so +g and -g are the SAME launch -> a matched mirror pair.
+# wide goals (side 1 window [0,50]) so the deterministic land_x is accepted.
+set ppin {launcher_x_min -5 launcher_x_max -5 launcher_y_min -2 launcher_y_max -2 \
+          floor_y -6 lcatcher_x -100 rcatcher_x 100 goal_halfwidth 100 \
+          speed_min 12 speed_max 12 angle_min 55 angle_max 55 \
+          min_visible 0.3 max_sim_time 6.0 max_attempts 200}
+set pos [launch_sim::sample_trajectory [dict merge $p $ppin {gravity_min 9.8 gravity_max 9.8}] 1]
+set neg [launch_sim::sample_trajectory [dict merge $p $ppin {gravity_min -9.8 gravity_max -9.8}] 1]
+set lyp [dict get $pos launcher_y]
+assert {abs([dict get $neg vy] + [dict get $pos vy]) < 1e-9} \
+    "inverted vy == -normal vy (launched the other way)"
+assert {[dict get $neg gravity] < 0 && abs([dict get $neg gravity]+[dict get $pos gravity]) < 1e-9} \
+    "inverted gravity == -normal gravity"
+assert {abs([dict get $neg land_time]-[dict get $pos land_time]) < 1e-9} \
+    "inverted land_time == normal (matched duration)"
+assert {abs([dict get $neg land_x]-[dict get $pos land_x]) < 1e-9} \
+    "inverted land_x == normal (x unchanged)"
+set merr 0.0
+foreach a [dict get $pos ball_y] b [dict get $neg ball_y] {
+    set e [expr {abs((2.0*$lyp-$a)-$b)}]; if {$e > $merr} {set merr $e}
+}
+assert {$merr < 1e-9} "inverted ball_y == 2*launcher_y - normal ball_y at every sample (max err [format %.2e $merr])"
+assert {[dict exists $neg land_y] && \
+        abs([dict get $neg land_y]-(2.0*$lyp-[dict get $neg floor_y])) < 1e-9} \
+    "inverted dict carries land_y = 2*launcher_y - floor_y"
+assert {[dict exists $pos land_y] && abs([dict get $pos land_y]-[dict get $pos floor_y]) < 1e-9} \
+    "positive-gravity land_y == floor_y (now always present)"
+# analytic replay needs no special-casing under negative gravity
+set lt2 [dict get $neg land_time]
+set vxn [dict get $neg vx]; set vyn [dict get $neg vy]; set gn [dict get $neg gravity]
+set lxn [dict get $neg launcher_x]; set lyn [dict get $neg launcher_y]
+set merr2 0.0
+for {set k 1} {$k < 40} {incr k} {
+    set t [expr {$lt2*$k/40.0}]
+    set ey [expr {$lyn + $vyn*$t - 0.5*$gn*$t*$t}]
+    lassign [launch_sim::ball_pos_at_time $neg $t analytic] ax ay
+    set e [expr {abs($ay-$ey)}]; if {$e > $merr2} {set merr2 $e}
+}
+assert {$merr2 < 1e-9} "ball_pos_at_time analytic exact under negative gravity (max err [format %.2e $merr2])"
+lassign [launch_sim::ball_vel_at_time $neg [expr {$lt2*0.5}] analytic] nvx nvy
+assert {abs($nvx-$vxn) < 1e-9 && abs($nvy-($vyn-$gn*$lt2*0.5)) < 1e-9} \
+    "ball_vel_at_time analytic == (vx, vy - g*t) with g<0"
+
+# ---- 8c. g=0 straight line over a sampled duration (no-curvature control) ----
+puts "linear control (g=0, duration-based)..."
+set lin [launch_sim::sample_trajectory \
+    [dict merge $p $ppin {gravity_min 0 gravity_max 0 linear_dur_min 1.5 linear_dur_max 1.5}] 1]
+assert {[dict get $lin gravity] == 0} "linear trial has zero gravity"
+assert {abs([dict get $lin land_time]-1.5) < 1e-9} "linear land_time == the sampled duration"
+assert {[dict get $lin vy] > 0} "linear honors the (upward) launch elevation (vy>0, not floor-limited)"
+set vxL [dict get $lin vx]; set vyL [dict get $lin vy]
+set lxL [dict get $lin launcher_x]; set lyL [dict get $lin launcher_y]
+set me 0.0
+foreach t [dict get $lin ball_t] x [dict get $lin ball_x] y [dict get $lin ball_y] {
+    set e [expr {hypot($x-($lxL+$vxL*$t), $y-($lyL+$vyL*$t))}]; if {$e > $me} {set me $e}
+}
+assert {$me < 1e-9} "linear: every sample on launcher + v*t (max err [format %.2e $me])"
+assert {[dict exists $lin land_y] && \
+        abs([dict get $lin land_y]-($lyL+$vyL*[dict get $lin land_time])) < 1e-9} \
+    "linear land_y == launcher_y + vy*T (line endpoint)"
+
 # ---- 9. circle boundary: interior launcher, exit on rim, exit angle ----
 puts "circle boundary..."
 set pc [dict merge $p {boundary circle angle_min 0 angle_max 360 gravity_min 0 gravity_max 10}]

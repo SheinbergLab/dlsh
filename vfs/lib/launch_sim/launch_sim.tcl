@@ -18,11 +18,24 @@
 #     side           0 = left goal, 1 = right goal
 #     launcher_x/y   launch point (dva)
 #     angle_rad      launch elevation (radians)
-#     speed vx vy gravity
+#     speed vx vy gravity      (gravity may be negative or zero: see below)
 #     land_time      s until landing
-#     land_x         landing x (dva) at floor_y
+#     land_x land_y  the trajectory's endpoint (dva); land_y is ALWAYS present
 #     ball_t/x/y     sampled trajectory as Tcl lists (fixed dt + final land pt)
 #   plus the board geometry it was generated against (floor_y, catchers, ...).
+#
+#   Floor-mode curvature is set by the sign of gravity, all sharing one model
+#   y(t) = launcher_y + vy*t - 0.5*gravity*t^2 (so ball_pos/vel_at_time need no
+#   special-casing) and one endpoint key land_y:
+#     g > 0   "hill" (concave down), lands on the floor (land_y == floor_y).
+#     g < 0   "valley": the vertical MIRROR of the |g| arc (launched downward,
+#             curving up), land_y == 2*launcher_y - floor_y. A matched +g/-g
+#             pair (same launch, speed, duration, extent) tests gravity-based
+#             extrapolation.
+#     g == 0  straight LINE. With linear_dur_max > 0 it flies for a sampled
+#             duration (linear_dur_min..max) in the launch direction with no
+#             floor/goal gate (the no-curvature control; ramp-style pursuit).
+#             Otherwise the legacy downward-only floor landing.
 #
 #   Occlusion is a SEPARATE, decoupled overlay (it never affects trajectories):
 #   run a trajectory through `occlude {tr regions}` to add occlusion_intervals
@@ -55,6 +68,7 @@ proc launch_sim::default_params {} {
         speed_min        5.0 speed_max       30.0 \
         angle_min       10.0 angle_max       80.0 \
         gravity_min      0.0 gravity_max    19.62 \
+        linear_dur_min   0.0 linear_dur_max   0.0 \
         min_visible      0.3 max_sim_time     8.0 \
         dt        0.01666667 vx_cap          30.0 \
         max_attempts    5000 \
@@ -142,37 +156,69 @@ proc launch_sim::sample_trajectory { {params {}} {side -1} } {
         set launcher_y [expr {$launcher_y_min + rand()*($launcher_y_max-$launcher_y_min)}]
 
         set dy [expr {$launcher_y - $floor_y}]
-        if { $gravity > 0.0 } {
-            # ballistic: lands at the positive root of the parabola
-            set disc [expr {$vy*$vy + 2.0*$gravity*$dy}]
+        set g_abs [expr {abs($gravity)}]
+
+        # Three curvature regimes, selected by the sign of gravity:
+        #   g > 0  ballistic "hill" (concave down), lands on the floor.
+        #   g < 0  the vertical MIRROR of the |g| arc -- a "valley" (concave
+        #          up), launched the other way; timing/goal are computed on the
+        #          |g| arc and the path is reflected. A matched +g/-g pair (same
+        #          launch, speed, duration, extent; opposite curvature) is the
+        #          "do they extrapolate by gravity" test.
+        #   g == 0 straight LINE (the no-curvature control). With linear_dur_max
+        #          > 0 it flies for a sampled duration in the launch direction
+        #          (any elevation; no floor landing or goal gate -- the caller's
+        #          fit/recenter places it), unifying ramp-style linear pursuit
+        #          into this generator. Otherwise it keeps the legacy
+        #          downward-only floor landing.
+        set linear_dur 0.0
+        if { $g_abs == 0.0 && $linear_dur_max > 0.0 } {
+            set linear_dur [expr {$linear_dur_min + rand()*($linear_dur_max-$linear_dur_min)}]
+        }
+        if { $g_abs > 0.0 } {
+            set disc [expr {$vy*$vy + 2.0*$g_abs*$dy}]
             if { $disc < 0.0 } continue
-            set land_time [expr {($vy + sqrt($disc))/$gravity}]
-        } elseif { $gravity == 0.0 } {
-            # linear (constant-velocity) motion: a straight line reaches the
-            # floor only if aimed DOWNWARD (vy < 0). land_time = dy/|vy|.
-            if { $vy >= 0.0 } continue
+            set land_time [expr {($vy + sqrt($disc))/$g_abs}]
+        } elseif { $linear_dur > 0.0 } {
+            set land_time $linear_dur
+        } elseif { $vy < 0.0 } {
             set land_time [expr {-$dy/$vy}]
         } else {
-            continue   ;# negative gravity unsupported
+            continue
         }
         if { $land_time < $min_visible || $land_time > $max_sim_time } continue
 
-        set land_x [expr {$launcher_x + $vx*$land_time}]
-        if { $land_x < $target_lo || $land_x > $target_hi } continue
+        # negative gravity mirrors vertically about the launch height (vy_out
+        # carries the sign); g >= 0 leaves vy unchanged.
+        set inverted [expr {$gravity < 0.0}]
+        set vy_out [expr {$inverted ? -$vy : $vy}]
 
-        # success -- sample the parabola at fixed dt, then the exact land point
+        set land_x [expr {$launcher_x + $vx*$land_time}]
+        # the duration-based linear control has no goal landing; every other
+        # case must land in the chosen goal's inner half
+        if { $linear_dur <= 0.0 && ($land_x < $target_lo || $land_x > $target_hi) } continue
+
+        # land_y is the analytic ENDPOINT, ALWAYS present: floor_y for +g, the
+        # mirror 2*launcher_y-floor_y for -g, launcher_y+vy*T for the line.
+        # y(t) = launcher_y + vy_out*t - 0.5*gravity*t^2 holds for all three, so
+        # the analytic replay (ball_pos_at_time / ball_vel_at_time) needs no
+        # special-casing for any regime.
+        set land_y [expr {$launcher_y + $vy_out*$land_time - 0.5*$gravity*$land_time*$land_time}]
+        set ang    [expr {$inverted ? -$rad : $rad}]
+
+        # success -- sample the path at fixed dt, then the exact land point
         set tlist {}; set xlist {}; set ylist {}
         for { set t 0.0 } { $t < $land_time } { set t [expr {$t+$dt}] } {
             lappend tlist $t
             lappend xlist [expr {$launcher_x + $vx*$t}]
-            lappend ylist [expr {$launcher_y + $vy*$t - 0.5*$gravity*$t*$t}]
+            lappend ylist [expr {$launcher_y + $vy_out*$t - 0.5*$gravity*$t*$t}]
         }
-        lappend tlist $land_time; lappend xlist $land_x; lappend ylist $floor_y
+        lappend tlist $land_time; lappend xlist $land_x; lappend ylist $land_y
 
         return [dict create \
             boundary floor side $side launcher_x $launcher_x launcher_y $launcher_y \
-            angle_rad $rad speed $speed vx $vx vy $vy gravity $gravity \
-            land_time $land_time land_x $land_x \
+            angle_rad $ang speed $speed vx $vx vy $vy_out gravity $gravity \
+            land_time $land_time land_x $land_x land_y $land_y \
             floor_y $floor_y lcatcher_x $lcatcher_x rcatcher_x $rcatcher_x \
             goal_halfwidth $goal_halfwidth \
             ball_t $tlist ball_x $xlist ball_y $ylist]
