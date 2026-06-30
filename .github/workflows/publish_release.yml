@@ -1,0 +1,66 @@
+name: Publish release
+
+# All three dlsh release workflows build their assets into a PRERELEASE, so a
+# freshly-tagged build is never returned by the GitHub /releases/latest API
+# while artifacts are still uploading. This matters especially for dlsh because
+# dependent projects (dserv, stim2) resolve the dlsh version via
+# /releases/latest -- a prerelease keeps them on the last COMPLETE dlsh until
+# this one is fully assembled.
+#
+# This workflow flips the prerelease into a full, "latest" release -- but ONLY
+# once ALL three release workflows have completed successfully for the tag's
+# commit. It fires whenever any of them finishes; the run that fires when the
+# others are already green is the one that actually publishes. Earlier runs see
+# a sibling still in flight and exit. Re-publishing is a harmless no-op.
+
+on:
+  workflow_run:
+    workflows:
+      - "Release"
+      - "Release Installers for Linux"
+      - "Release Installers for macOS"
+    types: [completed]
+
+permissions:
+  contents: write   # edit the release
+  actions: read      # query sibling workflow run status
+
+jobs:
+  publish:
+    # A failed release build must never trigger a publish.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      # For a tag push, head_branch is the tag name (e.g. 0.0.55).
+      TAG: ${{ github.event.workflow_run.head_branch }}
+    steps:
+      - name: Publish the release once every release workflow has succeeded
+        run: |
+          set -euo pipefail
+
+          # Only act on tag builds.
+          if ! gh api "/repos/$REPO/git/refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::notice::'$TAG' is not a tag ref -- nothing to publish."
+            exit 0
+          fi
+
+          # Every release workflow must have a successful run at this commit.
+          runs=$(gh api "/repos/$REPO/actions/runs?head_sha=$SHA&event=push&per_page=100")
+          all_ok=true
+          for wf in "Release" "Release Installers for Linux" "Release Installers for macOS"; do
+            concl=$(echo "$runs" | jq -r --arg n "$wf" \
+              '[.workflow_runs[] | select(.name==$n)] | sort_by(.run_started_at) | last | .conclusion // "missing"')
+            echo "$wf => $concl"
+            [ "$concl" = "success" ] || all_ok=false
+          done
+
+          if [ "$all_ok" != "true" ]; then
+            echo "::notice::Not all release workflows are green yet -- the last one to finish will publish."
+            exit 0
+          fi
+
+          echo "All release builds succeeded -- publishing '$TAG' as the latest release."
+          gh release edit "$TAG" --repo "$REPO" --prerelease=false --latest

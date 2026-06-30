@@ -437,6 +437,13 @@ jobs:
             - Linux aarch64
           generateReleaseNotes: true
           allowUpdates: true
+          # Build into a prerelease so dependents (dserv, stim2) that resolve
+          # dlsh via /releases/latest never grab a half-uploaded release. The
+          # publish workflow flips this to a full release once every dlsh
+          # release workflow succeeds. omitPrereleaseDuringUpdate keeps re-runs
+          # from reverting a published release back to prerelease.
+          prerelease: true
+          omitPrereleaseDuringUpdate: true
 
   # Build, sign, and notarize the standalone dlsh INTERPRETER installer (.pkg):
   #   /usr/local/bin/dlsh + /usr/local/dlsh/{dlsh.zip,dlsh-runtime.zip}
@@ -520,6 +527,8 @@ jobs:
           tag: ${{ github.ref_name }}
           allowUpdates: true
           omitBodyDuringUpdate: true
+          prerelease: true
+          omitPrereleaseDuringUpdate: true
 
   # Build the standalone dlsh INTERPRETER installer (.deb) for Linux, both
   # arches. No signing needed, so the single-file (append) build is used:
@@ -574,3 +583,5 @@ jobs:
           tag: ${{ github.ref_name }}
           allowUpdates: true
           omitBodyDuringUpdate: true
+          prerelease: true
+          omitPrereleaseDuringUpdate: true

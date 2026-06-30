@@ -44,3 +44,5 @@ jobs:
           body: libs, headers and dependencies for dlsh version ${{ github.ref_name }}
           generateReleaseNotes: true
           allowUpdates: true
+          prerelease: true
+          omitPrereleaseDuringUpdate: true
