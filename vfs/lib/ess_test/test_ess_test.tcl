@@ -96,6 +96,19 @@ ess_test::test "loader: probe lands inside the coherence dip" {
     assert {$checked > 0} "at least one probe-present row existed to check"
 }
 
+ess_test::test "variant: run a loader as ESS would for a named variant" {
+    # run_variant reproduces ESS's variant->args resolution (comment-stripping,
+    # preset substitution, first-choice options) -- no hand-written args.
+    set gd [ess_test::run_variant pursuit ballistic ballistic_detect]
+    assert {[dl_length $gd:stimtype] == 40} "ballistic_detect variant builds 40 trials"
+    set gs [dl_tcllist $gd:gravity]
+    assert {[ess_test::approx [tcl::mathfunc::min {*}$gs] -9.8 1e-3] &&
+            [ess_test::approx [tcl::mathfunc::max {*}$gs]  9.8 1e-3]} \
+        "gravities came from the normal_inverted preset (+/-9.8)"
+    # rebuild the patch design for the stim tests below (they read stimdg)
+    set ::g [ess_test::run_loader {}]
+}
+
 # ==========================================================================
 # TIER 2 -- headless per-frame stim-driver validation (capturing stubs)
 # ==========================================================================

@@ -41,10 +41,20 @@ namespace eval ess_test {
     # --- config -------------------------------------------------------------
     variable systems_root [file join $::env(HOME) systems ess]
 
+    # Ambient variables ESS injects into a loader method's scope on the rig
+    # (screen geometry, ...). We inject these as locals before a loader body
+    # runs so loaders that read them work headless. Override via config.
+    variable ambient {screen_halfx 16.0 screen_halfy 9.0}
+
+    # Seed values for dserv datapoint reads (dservGet). Loaders/stim that read
+    # a datapoint at run time get these instead of touching a live dserv.
+    variable dserv_data {ess/screen_refresh_rate 60}
+
     # --- loader-harness state ----------------------------------------------
     variable loaders   {}   ;# dict: loader_name -> {params <list> body <str>}
     variable last_loader ""  ;# name of the most recently registered loader
     variable defaults  {}   ;# dict: loader_name -> default arg dict (optional)
+    variable cur_sys   ""   ;# the fake_system from the most recent load_loaders
 
     # --- fake_system state --------------------------------------------------
     variable syscalls {}    ;# dict: fake_system cmd -> list of {subcmd args}
@@ -71,12 +81,18 @@ namespace eval ess_test {
 # ess_test::config                        -- return the current config dict
 proc ess_test::config {args} {
     variable systems_root
+    variable ambient
+    variable dserv_data
     if {[llength $args] == 0} {
-        return [dict create systems_root $systems_root]
+        return [dict create systems_root $systems_root ambient $ambient dserv_data $dserv_data]
     }
     foreach {k v} $args {
         switch -- $k {
             -systems_root { set systems_root $v }
+            -screen_halfx { dict set ambient screen_halfx $v }
+            -screen_halfy { dict set ambient screen_halfy $v }
+            -ambient      { set ambient [dict merge $ambient $v] }
+            -dserv        { set dserv_data [dict merge $dserv_data $v] }
             default { error "ess_test::config: unknown option $k" }
         }
     }
@@ -105,6 +121,7 @@ proc ess_test::fake_ess {{version 2.0}} {
     catch {package forget ess}
     package provide ess $version
     namespace eval ::ess {}
+    ess_test::stub_dserv
     return
 }
 
@@ -187,12 +204,26 @@ proc ess_test::_scan_loaders_init {ns outvar} {
 proc ess_test::load_loaders {system protocol args} {
     variable loaders
     variable last_loader
+    variable cur_sys
 
     set path [ess_test::script_path $system $protocol loaders]
     if {[dict exists $args -file]} { set path [dict get $args -file] }
     if {![file exists $path]} { error "ess_test::load_loaders: no file $path" }
 
+    # -with_system 1 (default): also source <sys>/<sys>.tcl inside ::ess so any
+    # shared helpers the loader calls (e.g. ::ess::prf::generate_positions,
+    # defined in the system file) resolve. Best-effort: system files often
+    # `package require` rig-only packages, so a failure here is non-fatal (the
+    # loader may still run, or fail later with a clear missing-command error).
+    set with_system 1
+    if {[dict exists $args -with_system]} { set with_system [dict get $args -with_system] }
+
     ess_test::fake_ess
+
+    if {$with_system} {
+        set sysfile [ess_test::script_path $system $protocol system]
+        catch { namespace eval ::ess [list source $sysfile] }
+    }
 
     # Source inside ::ess so absolute-name helper resolution matches the rig.
     # (A global-scope source hides ::ess::sys::proto::helper resolution bugs --
@@ -201,10 +232,10 @@ proc ess_test::load_loaders {system protocol args} {
     namespace eval ::ess [list source $path]
     set after [ess_test::_all_loaders_init]
 
-    # Find the loaders_init this file defined. The protocol's namespace tail
-    # need NOT match the directory name (e.g. prf/drifting-gratings defines
-    # ::ess::prf::drifting), so prefer the conventional name but fall back to
-    # whichever loaders_init is newly defined.
+    # Find the loaders_init this file defined. Every current system uses the
+    # conventional ::ess::<sys>::<proto>::loaders_init (namespace == directory,
+    # hyphens and all), so we use that; the fallback below just handles a file
+    # that ever defines loaders_init under a differently-named namespace.
     set init "::ess::${system}::${protocol}::loaders_init"
     if {[info commands $init] eq ""} {
         set new {}
@@ -221,6 +252,7 @@ proc ess_test::load_loaders {system protocol args} {
     }
 
     set s [ess_test::fake_system "${system}_${protocol}_sys"]
+    set cur_sys $s
     $init $s
 
     # Harvest every add_loader {name params body} into our registry.
@@ -233,6 +265,7 @@ proc ess_test::load_loaders {system protocol args} {
     if {[dict size $loaders] == 0} {
         error "ess_test::load_loaders: $init registered no loaders"
     }
+    ess_test::_install_loader_env
     return [dict keys $loaders]
 }
 
@@ -285,12 +318,46 @@ proc ess_test::_bind_args {name spec} {
     return $spec
 }
 
+# Install the loader-run environment: a global `my` that dispatches to a
+# sibling loader (a variant loader that delegates, e.g. `my setup_trials ...`)
+# or, failing that, forwards to the captured system object as a method call.
+# dserv reads are already stubbed by fake_ess. Idempotent.
+proc ess_test::_install_loader_env {} {
+    if {[info commands ::my] eq ""} {
+        proc ::my {sub args} {
+            if {[dict exists $::ess_test::loaders $sub]} {
+                return [ess_test::_run_loader_body $sub $args]
+            }
+            if {$::ess_test::cur_sys ne "" && [info commands $::ess_test::cur_sys] ne ""} {
+                return [$::ess_test::cur_sys $sub {*}$args]
+            }
+            return {}
+        }
+    }
+    return
+}
+
+# Execute a loader body via `apply` from the GLOBAL namespace :: (NOT the
+# loader's sys::proto namespace) to match the real oo-method execution context.
+# Ambient system variables (screen_halfx, ...) are injected as locals first --
+# ESS supplies them in the method scope on the rig -- except any whose name is
+# already a loader parameter (the param wins).
+proc ess_test::_run_loader_body {name vals} {
+    variable loaders
+    variable ambient
+    set params [dict get $loaders $name params]
+    set body   [dict get $loaders $name body]
+    set pre ""
+    dict for {k v} $ambient {
+        if {[lsearch -exact $params $k] < 0} { append pre "set [list $k] [list $v]\n" }
+    }
+    return [apply [list $params $pre$body] {*}$vals]
+}
+
 # Run a loader body with args and return the stimdg handle.
 #   run_loader <spec>          -- default (last-registered) loader
 #   run_loader <name> <spec>   -- a named loader
 # <spec> is a named dict {nr 2 gravities {9.8 0 -9.8} ...} or a positional list.
-# The body runs via `apply` from the GLOBAL namespace :: (NOT the loader's
-# sys::proto namespace) to match the real oo-method execution context.
 proc ess_test::run_loader {args} {
     variable loaders
     variable last_loader
@@ -303,12 +370,10 @@ proc ess_test::run_loader {args} {
     }
     if {![dict exists $loaders $name]} { error "ess_test: no loader '$name'" }
 
-    set params [dict get $loaders $name params]
-    set body   [dict get $loaders $name body]
-    set vals   [ess_test::_bind_args $name $spec]
-
+    set vals [ess_test::_bind_args $name $spec]
+    ess_test::_install_loader_env
     if {[dg_exists stimdg]} { dg_delete stimdg }
-    return [apply [list $params $body] {*}$vals]
+    return [ess_test::_run_loader_body $name $vals]
 }
 
 # A compact human summary of a dg: columns, lengths, and a couple sample rows.
@@ -324,6 +389,84 @@ proc ess_test::dg_summary {g {nrows 2}} {
         lappend lines [format "  %-24s len=%-5d  %s" $c $n $samp]
     }
     return [join $lines \n]
+}
+
+# ==========================================================================
+# 3b. Variant harness -- run a loader exactly as a variant would
+# ==========================================================================
+# Strip whole-command comment lines (# ... / ## ...) from a body -- borrowed
+# verbatim from ess (ess-2.0.tm strip_comments) so variant blocks parse as
+# dicts even with the ## annotation lines authors put inside loader_options.
+proc ess_test::strip_comments {body} {
+    set out {}
+    set accum {}
+    foreach line [split $body \n] {
+        if {$accum eq ""} { set accum $line } else { append accum \n $line }
+        if {[info complete $accum]} {
+            if {[string index [string trimleft $accum] 0] ne "#"} { append out $accum \n }
+            set accum {}
+        }
+    }
+    return $out
+}
+
+# Strip comments at every level parsed as a dict (top, each variant body, and
+# the loader_options/params sub-blocks) -- mirrors ess normalize_variants.
+proc ess_test::normalize_variants {vdict} {
+    set out [dict create]
+    dict for {vname vdef} [ess_test::strip_comments $vdict] {
+        set vdef [ess_test::strip_comments $vdef]
+        foreach sub {loader_options params} {
+            if {[dict exists $vdef $sub]} {
+                dict set vdef $sub [ess_test::strip_comments [dict get $vdef $sub]]
+            }
+        }
+        dict set out $vname $vdef
+    }
+    return $out
+}
+
+# Source a <proto>_variants.tcl inside ::ess and return its normalized variants
+# dict (preset var refs like $gravity_presets are already resolved -- the
+# variants file runs its own `set variants [subst $variants]` at source time).
+proc ess_test::load_variants {system protocol args} {
+    set path [ess_test::script_path $system $protocol variants]
+    if {[dict exists $args -file]} { set path [dict get $args -file] }
+    if {![file exists $path]} { error "ess_test::load_variants: no file $path" }
+    namespace eval ::ess [list source $path]
+    set var "::ess::${system}::${protocol}::variants"
+    if {![info exists $var]} { error "ess_test::load_variants: no variants dict at $var" }
+    return [ess_test::normalize_variants [set $var]]
+}
+
+# The default arg VALUES for a variant, in the loader's parameter order --
+# reproduces ess variant_loader_info: normalize each option to {name value}
+# pairs, then take the first pair's value. `variants` defaults to the sourced
+# dict for (system, protocol).
+proc ess_test::variant_args {system protocol variant {variants {}}} {
+    if {$variants eq ""} { set variants [ess_test::load_variants $system $protocol] }
+    if {![dict exists $variants $variant]} { error "ess_test: no variant '$variant'" }
+    set vinfo [dict get $variants $variant]
+    set lp [dict get $vinfo loader_proc]
+    set lopts {}
+    if {[dict exists $vinfo loader_options]} { set lopts [dict get $vinfo loader_options] }
+    set out {}
+    foreach a [ess_test::loader_params $lp] {
+        if {![dict exists $lopts $a]} { error "ess_test: variant '$variant' has no loader_option for '$a'" }
+        set norm {}
+        foreach o [dict get $lopts $a] {
+            if {[llength $o] == 2} { lappend norm $o } elseif {[llength $o] == 1} { lappend norm [list $o $o] }
+        }
+        lappend out [lindex [lindex $norm 0] 1]
+    }
+    return [list $lp $out]
+}
+
+# Run a loader exactly as ESS would for the named variant's defaults; returns
+# the stimdg handle. load_loaders for (system, protocol) must have run first.
+proc ess_test::run_variant {system protocol variant} {
+    lassign [ess_test::variant_args $system $protocol $variant] lp vals
+    return [ess_test::run_loader $lp $vals]
 }
 
 # ==========================================================================
@@ -461,6 +604,15 @@ proc ess_test::stub_dserv {} {
     proc ::qpcs::dsSet {args} {}
     proc ::qpcs::dsGet {args} { return {} }
     proc ::qpcs::dsStimAddMatch {args} {}
+    # dserv datapoint access: reads come from the seed dict (ess_test::config
+    # -dserv {key value ...}); writes update it; nothing connects.
+    proc ::dservGet {key} {
+        if {[dict exists $::ess_test::dserv_data $key]} { return [dict get $::ess_test::dserv_data $key] }
+        return {}
+    }
+    proc ::dservExists {key} { return [dict exists $::ess_test::dserv_data $key] }
+    proc ::dservSet {key val} { dict set ::ess_test::dserv_data $key $val; return $val }
+    proc ::dservTouch {args} {}
     return
 }
 
@@ -654,6 +806,7 @@ namespace eval ess_test {
     namespace export config script_path fake_ess fake_system \
         sys_calls sys_subcall sys_params sys_variables sys_methods sys_loaders \
         load_loaders loader_params loader_defaults run_loader dg_summary \
+        strip_comments normalize_variants load_variants variant_args run_variant \
         stub_stim2 stub_dserv stim_source reset_stim clear_captures \
         set_time step play captured last series values events event_time \
         assert approx in_range test summary reset_counts

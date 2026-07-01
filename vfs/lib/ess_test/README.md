@@ -141,8 +141,22 @@ already captured — `stub_stim2` records **every** `motionpatch_*` setter plus
 ### Config
 | Command | Purpose |
 |---|---|
-| `config ?-systems_root path?` | get/set the systems root (default `~/systems/ess`) |
+| `config` | return the current config (`systems_root`, `ambient`, `dserv_data`) |
+| `config -systems_root path` | set the systems root (default `~/systems/ess`) |
+| `config -screen_halfx v` / `-screen_halfy v` | screen geometry injected into loader scope |
+| `config -ambient dict` | merge more ambient vars injected as loader locals |
+| `config -dserv {key val …}` | seed values returned by `dservGet` |
 | `script_path sys proto type` | resolve a file path (`type`: loaders/stim/variants/protocol/system) |
+
+**ESS execution context.** On the rig a loader runs as an oo method with ESS
+ambient state around it. The harness reproduces enough of that to run real
+loaders headless: it injects **ambient variables** (`screen_halfx/halfy`, extend
+via `config -ambient`) as locals, **stubs dserv** (`dservGet` returns seeded
+values, default `ess/screen_refresh_rate 60`; writes/subscriptions go nowhere),
+binds **`my`** so a variant loader that delegates (`my setup_trials …`) runs the
+sibling loader, and best-effort **sources the system file** (`<sys>/<sys>.tcl`)
+so shared helpers (e.g. `::ess::prf::generate_positions`) resolve. Disable the
+last with `load_loaders sys proto -with_system 0`.
 
 ### Tier 1 — loader harness
 | Command | Purpose |
@@ -155,7 +169,21 @@ already captured — `stub_stim2` records **every** `motionpatch_*` setter plus
 | `loader_params ?name?` | captured parameter-name list |
 | `loader_defaults name dict` | register a default arg dict for `run_loader` |
 | `run_loader ?name? <dict\|list>` | run a loader body, return the `stimdg` handle |
+| `load_variants sys proto` | source `*_variants.tcl`, return the normalized variants dict |
+| `variant_args sys proto variant` | `{loader_proc arg-values}` for a variant's defaults |
+| `run_variant sys proto variant` | run the loader as ESS would for that variant → `stimdg` |
 | `dg_summary g ?nrows?` | columns + lengths + sample rows |
+
+`run_variant` reproduces ESS's own variant→args resolution (comment-stripping
+via the borrowed `normalize_variants`, preset-var substitution, first-choice of
+each `loader_option` normalized to `{name value}`), so you can dry-run any
+variant without hand-writing its args:
+
+```tcl
+ess_test::load_loaders pursuit ballistic
+set g [ess_test::run_variant pursuit ballistic ballistic_detect]
+ess_test::assert {[dl_length $g:stimtype] == 40} "detect variant = 40 trials"
+```
 
 `run_loader` accepts a **named dict** (`{nr 2 gravities {…} …}`, mapped onto the
 loader's param order; missing keys error unless supplied by registered
@@ -198,24 +226,25 @@ re-registers cleanly.
 
 ## Coverage across systems
 
-`test_systems.tcl` runs Tier-1 `load_loaders` against **every**
-`<sys>/<proto>/*_loaders.tcl` under the systems root and categorizes each:
+Two probes sweep the whole collection:
 
 ```sh
-dlsh vfs/lib/ess_test/test_systems.tcl
+dlsh vfs/lib/ess_test/test_systems.tcl    # Tier-1: does every loader LOAD?
+dlsh vfs/lib/ess_test/test_variants.tcl   # does every variant's loader RUN + produce a clean stimdg?
 ```
 
-As of this writing, 17/22 systems load clean (loaders from 1–31 params), and 5
-are flagged **DEP** — they `package require` a package not in `dlsh.zip`
-(`planko`, `haptic`, `blob`). Those aren't harness failures; the script simply
-can't be sourced headless until its dependency is available. All 23 `*_stim.tcl`
-files **source** clean under `stub_stim2` (GL/motionpatch/dserv all stubbed).
+As of this writing: **17/22 systems load** clean (loaders from 1–31 params) and
+all **23 `*_stim.tcl` source** clean under `stub_stim2`; **60/60 runnable
+variants execute and produce a well-formed `stimdg`** (all columns equal length,
+0 ragged). The 5 systems not covered are flagged **DEP** — they `package
+require` a package not in `dlsh.zip` (`planko`, `haptic`, `blob`); not harness
+failures, just unavailable headless.
 
 A script is testable headless only if the pure-dlsh packages it requires load
-headless (`launch_sim`, `mp_sim`, `sqlite3` do). Stim files that wire a live
-dserv subscription at load (`qpcs::dsSet`/`dsGet`/`dsStimAddMatch`,
-`$::dservhost`) are kept headless by `stub_dserv` (folded into `stub_stim2`):
-reads return empty, writes go nowhere, nothing connects.
+headless (`launch_sim`, `mp_sim`, `sqlite3` do). The ESS-context shims described
+under **Config** (ambient vars, `dservGet` seed, `my`, system-file sourcing) are
+what let real loaders run without the rig; a live dserv subscription in a stim
+file (`qpcs::dsSet`/`dsGet`, `$::dservhost`) is kept headless by `stub_dserv`.
 
 ## Non-goals
 
