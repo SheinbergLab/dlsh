@@ -610,7 +610,7 @@ proc ess_test::stub_stim2 {} {
 
     # -- inert: structural no-ops -----------------------------------------
     foreach c {glistInit resetObjList shaderImageReset shaderSetPath polycirc \
-               scaleObj metagroupAdd glistAddObject glistSetDynamic \
+               scaleObj metagroupAdd glistAddObject glistSetDynamic priorityObj \
                glistSetCurGroup glistSetVisible redraw load_Impro img_delete \
                masksoftness motionpatch_logBegin motionpatch_logEnd \
                motionpatch_logExport} {
