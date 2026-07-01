@@ -46,9 +46,21 @@ namespace eval ess_test {
     # runs so loaders that read them work headless. Override via config.
     variable ambient {screen_halfx 16.0 screen_halfy 9.0}
 
+    # Params/variables the system+protocol declare (name -> default), harvested
+    # from add_param/add_variable during load_loaders and ALSO injected into the
+    # loader scope -- ESS makes a system's params/variables visible there, so
+    # loaders that read e.g. $n_choices work. Rebuilt by each load_loaders.
+    variable runtime_ambient {}
+
     # Seed values for dserv datapoint reads (dservGet). Loaders/stim that read
     # a datapoint at run time get these instead of touching a live dserv.
     variable dserv_data {ess/screen_refresh_rate 60}
+
+    # Extra Tcl module (.tm) directories to put on the module path so a script's
+    # `package require` finds system-local libs. `<systems_root>/lib` (where
+    # planko/haptic/blob/fractal/... live) is always included; add more via
+    # `config -tm_path <dir>`.
+    variable tm_paths {}
 
     # --- loader-harness state ----------------------------------------------
     variable loaders   {}   ;# dict: loader_name -> {params <list> body <str>}
@@ -79,10 +91,26 @@ namespace eval ess_test {
 # ==========================================================================
 # ess_test::config -systems_root <path>   -- set/override the systems root
 # ess_test::config                        -- return the current config dict
+# Put `<systems_root>/lib` (and any `config -tm_path` extras) on the Tcl module
+# path so a script's `package require` finds system-local .tm modules (planko,
+# haptic, blob, fractal, ...). Idempotent; skips non-existent dirs.
+proc ess_test::_ensure_tm_paths {} {
+    variable systems_root
+    variable tm_paths
+    set have [::tcl::tm::path list]
+    foreach p [linsert $tm_paths 0 [file join $systems_root lib]] {
+        if {[file isdirectory $p] && [lsearch -exact $have $p] < 0} {
+            catch { ::tcl::tm::path add $p }
+        }
+    }
+    return
+}
+
 proc ess_test::config {args} {
     variable systems_root
     variable ambient
     variable dserv_data
+    variable tm_paths
     if {[llength $args] == 0} {
         return [dict create systems_root $systems_root ambient $ambient dserv_data $dserv_data]
     }
@@ -93,6 +121,7 @@ proc ess_test::config {args} {
             -screen_halfy { dict set ambient screen_halfy $v }
             -ambient      { set ambient [dict merge $ambient $v] }
             -dserv        { set dserv_data [dict merge $dserv_data $v] }
+            -tm_path      { lappend tm_paths $v }
             default { error "ess_test::config: unknown option $k" }
         }
     }
@@ -118,9 +147,21 @@ proc ess_test::script_path {system protocol type} {
 # only DEFINE procs (few ::ess calls fire), and the loader body's ess-side
 # calls are captured by the fake_system, so the stub namespace stays minimal.
 proc ess_test::fake_ess {{version 2.0}} {
+    variable systems_root
     catch {package forget ess}
     package provide ess $version
     namespace eval ::ess {}
+    # ESS globals loaders/paths read: system_path is the base holding the
+    # project dir, current(project) its tail -- so ${::ess::system_path}/
+    # $::ess::current(project)/... resolves back under the systems root (e.g.
+    # hapticvis loaders locate their sqlite db this way).
+    set ::ess::system_path [file dirname $systems_root]
+    set ::ess::current(project) [file tail $systems_root]
+    # a few ESS scalar globals protocol files read at protocol_init time
+    if {![info exists ::ess::rmt_host]}        { set ::ess::rmt_host localhost }
+    if {![info exists ::ess::open_datafile]}   { set ::ess::open_datafile {} }
+    if {![info exists ::ess::last_touch_press]} { set ::ess::last_touch_press {} }
+    ess_test::_ensure_tm_paths
     ess_test::stub_dserv
     return
 }
@@ -217,8 +258,15 @@ proc ess_test::load_loaders {system protocol args} {
     # loader may still run, or fail later with a clear missing-command error).
     set with_system 1
     if {[dict exists $args -with_system]} { set with_system [dict get $args -with_system] }
+    # -with_protocol 1 (default): also run the protocol's protocol_init against
+    # the fake system so its add_param/add_variable declarations are captured
+    # and injected into loader scope (ESS makes them visible there). Best-effort.
+    set with_protocol 1
+    if {[dict exists $args -with_protocol]} { set with_protocol [dict get $args -with_protocol] }
 
     ess_test::fake_ess
+    set ::ess::current(system) $system
+    set ::ess::current(protocol) $protocol
 
     if {$with_system} {
         set sysfile [ess_test::script_path $system $protocol system]
@@ -253,6 +301,18 @@ proc ess_test::load_loaders {system protocol args} {
 
     set s [ess_test::fake_system "${system}_${protocol}_sys"]
     set cur_sys $s
+
+    # Best-effort: run the protocol's protocol_init against the same fake system
+    # so its params/variables are captured for injection into loader scope.
+    if {$with_protocol} {
+        set pfile [ess_test::script_path $system $protocol protocol]
+        if {[file exists $pfile]} {
+            catch { namespace eval ::ess [list source $pfile] }
+            set pinit "::ess::${system}::${protocol}::protocol_init"
+            if {[info commands $pinit] ne ""} { catch { $pinit $s } }
+        }
+    }
+
     $init $s
 
     # Harvest every add_loader {name params body} into our registry.
@@ -265,6 +325,14 @@ proc ess_test::load_loaders {system protocol args} {
     if {[dict size $loaders] == 0} {
         error "ess_test::load_loaders: $init registered no loaders"
     }
+
+    # Build the runtime-ambient dict (param/variable name -> default) from what
+    # protocol_init/loaders_init declared, for injection into loader bodies.
+    variable runtime_ambient
+    set runtime_ambient {}
+    foreach a [ess_test::sys_subcall $s add_param]    { dict set runtime_ambient [lindex $a 0] [lindex $a 1] }
+    foreach a [ess_test::sys_subcall $s add_variable] { dict set runtime_ambient [lindex $a 0] [lindex $a 1] }
+
     ess_test::_install_loader_env
     return [dict keys $loaders]
 }
@@ -345,10 +413,14 @@ proc ess_test::_install_loader_env {} {
 proc ess_test::_run_loader_body {name vals} {
     variable loaders
     variable ambient
+    variable runtime_ambient
     set params [dict get $loaders $name params]
     set body   [dict get $loaders $name body]
+    # inject captured system/protocol params+variables, then config ambient
+    # (config wins); a name that is a loader parameter is left to the arg value.
+    set inject [dict merge $runtime_ambient $ambient]
     set pre ""
-    dict for {k v} $ambient {
+    dict for {k v} $inject {
         if {[lsearch -exact $params $k] < 0} { append pre "set [list $k] [list $v]\n" }
     }
     return [apply [list $params $pre$body] {*}$vals]
@@ -623,6 +695,7 @@ proc ess_test::stim_source {system protocol args} {
     set path [ess_test::script_path $system $protocol stim]
     if {[dict exists $args -file]} { set path [dict get $args -file] }
     if {![file exists $path]} { error "ess_test::stim_source: no file $path" }
+    ess_test::_ensure_tm_paths
     uplevel #0 [list source $path]
     return
 }

@@ -146,17 +146,20 @@ already captured — `stub_stim2` records **every** `motionpatch_*` setter plus
 | `config -screen_halfx v` / `-screen_halfy v` | screen geometry injected into loader scope |
 | `config -ambient dict` | merge more ambient vars injected as loader locals |
 | `config -dserv {key val …}` | seed values returned by `dservGet` |
+| `config -tm_path dir` | extra Tcl module (.tm) dir on the `package require` path |
 | `script_path sys proto type` | resolve a file path (`type`: loaders/stim/variants/protocol/system) |
 
 **ESS execution context.** On the rig a loader runs as an oo method with ESS
 ambient state around it. The harness reproduces enough of that to run real
-loaders headless: it injects **ambient variables** (`screen_halfx/halfy`, extend
-via `config -ambient`) as locals, **stubs dserv** (`dservGet` returns seeded
-values, default `ess/screen_refresh_rate 60`; writes/subscriptions go nowhere),
-binds **`my`** so a variant loader that delegates (`my setup_trials …`) runs the
-sibling loader, and best-effort **sources the system file** (`<sys>/<sys>.tcl`)
-so shared helpers (e.g. `::ess::prf::generate_positions`) resolve. Disable the
-last with `load_loaders sys proto -with_system 0`.
+loaders headless:
+- injects **ambient variables** (`screen_halfx/halfy`, extend via `config -ambient`) as locals;
+- harvests the **system/protocol params + variables** (from `add_param`/`add_variable`, by best-effort running the protocol's `protocol_init`) and injects those too, so a loader that reads e.g. `$n_choices` works;
+- puts **`<systems_root>/lib`** (and `config -tm_path` dirs) on the Tcl module path, so `package require planko`/`haptic`/`blob`/… resolve;
+- **stubs dserv** (`dservGet` returns seeded values, default `ess/screen_refresh_rate 60`; writes/subscriptions go nowhere) and seeds a few ESS globals (`::ess::system_path`, `::ess::current(...)`, `::ess::rmt_host`, …);
+- binds **`my`** so a delegating variant loader (`my setup_trials …`) runs the sibling loader;
+- best-effort **sources the system and protocol files** so shared helpers (e.g. `::ess::prf::generate_positions`) resolve.
+
+Disable the last two with `load_loaders sys proto -with_system 0 -with_protocol 0`.
 
 ### Tier 1 — loader harness
 | Command | Purpose |
@@ -233,18 +236,23 @@ dlsh vfs/lib/ess_test/test_systems.tcl    # Tier-1: does every loader LOAD?
 dlsh vfs/lib/ess_test/test_variants.tcl   # does every variant's loader RUN + produce a clean stimdg?
 ```
 
-As of this writing: **17/22 systems load** clean (loaders from 1–31 params) and
-all **23 `*_stim.tcl` source** clean under `stub_stim2`; **60/60 runnable
-variants execute and produce a well-formed `stimdg`** (all columns equal length,
-0 ragged). The 5 systems not covered are flagged **DEP** — they `package
-require` a package not in `dlsh.zip` (`planko`, `haptic`, `blob`); not harness
-failures, just unavailable headless.
+As of this writing: **all 22 systems load**, all **23 `*_stim.tcl` source** clean,
+and **87/95 variants run and produce a well-formed `stimdg`** (0 ragged). Systems
+whose libs live in `<systems_root>/lib` (`planko`, `haptic`, `blob`, …) load
+because the harness puts that dir on the Tcl module path. The 8 non-running
+variants are genuine: 2 are a **real loader bug** the sweep surfaced
+(`hapticvis/transfer`'s `setup_visual_transfer`/`setup_haptic_transfer` call
+`setup_trials` with 10 args, but it takes 13), 4 need a value computed at trial
+time (`n_choices`), and 2 (`phd`) need a real grasp sqlite DB. Finding those is
+the point — `dl_choose`/arg-count/`dynlist` errors in a sweep are exactly what
+you want a dry test to flag.
 
-A script is testable headless only if the pure-dlsh packages it requires load
-headless (`launch_sim`, `mp_sim`, `sqlite3` do). The ESS-context shims described
-under **Config** (ambient vars, `dservGet` seed, `my`, system-file sourcing) are
-what let real loaders run without the rig; a live dserv subscription in a stim
-file (`qpcs::dsSet`/`dsGet`, `$::dservhost`) is kept headless by `stub_dserv`.
+A script is testable headless only if the packages it requires load headless
+(pure-dlsh ones plus anything in `<systems_root>/lib`). The ESS-context shims
+described under **Config** (ambient vars, harvested system/protocol
+params+variables, `dservGet` seed, `my`, module path, system/protocol sourcing)
+are what let real loaders run without the rig; a live dserv subscription in a
+stim file (`qpcs::dsSet`/`dsGet`, `$::dservhost`) is kept headless by `stub_dserv`.
 
 ## Non-goals
 
