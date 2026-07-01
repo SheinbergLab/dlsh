@@ -203,22 +203,41 @@ int dpoint_read(FILE *fp, ds_datapoint_t **dpoint)
     goto read_error;
 
   //  printf("[%4d] %s (%d)\n", i++, dp->varname, dp->data.len);
-  
-  
+
+  /* A truncated/corrupt log can carry a garbage data.len that drives a
+     huge malloc before the fread below fails.  For suspiciously large
+     lengths only (the common small-record path pays nothing), verify the
+     data actually fits in what remains of the file. */
+  if (dp->data.len > (1u << 26)) {   /* 64 MB */
+    long pos = ftell(fp);
+    if (pos >= 0 && fseek(fp, 0, SEEK_END) == 0) {
+      long end = ftell(fp);
+      (void) fseek(fp, pos, SEEK_SET);
+      if (end >= 0 && (uint64_t) dp->data.len > (uint64_t)(end - pos))
+	goto read_error;
+    }
+  }
+
   if (dp->data.len) {
     dp->data.buf = malloc(dp->data.len);
     if (!dp->data.buf) goto memory_error;
-    if (fread(dp->data.buf, dp->data.len, 1, fp) != 1)
-    goto read_error;
+    if (fread(dp->data.buf, dp->data.len, 1, fp) != 1) {
+      free(dp->data.buf);
+      goto read_error;
+    }
   }
   else dp->data.buf = NULL;
 
   if (dpoint) *dpoint = dp;
-  
+
   return 1;
  read_error:
+  free(dp->varname);
+  free(dp);
   return -1;
  memory_error:
+  free(dp->varname);
+  free(dp);
   return -2;
 }
 

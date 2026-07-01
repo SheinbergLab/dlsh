@@ -64,7 +64,7 @@ void read_version(FILE *InFP, FILE *OutFP)
   float val;
   if (fread(&val, sizeof(float), 1, InFP) != 1) {
      fprintf(stderr,"Error reading float info\n");
-     exit(-1);
+     return;
   }
 
   /* 
@@ -80,7 +80,7 @@ void read_version(FILE *InFP, FILE *OutFP)
       fprintf(stderr,
 	      "Unable to read this version of data file (V %5.1f/%5.1f)\n",
 	      val, flipfloat(val));
-      exit(-1);
+      return;
     }
   }
   else dfFlipEvents = 0;
@@ -99,7 +99,7 @@ void read_float(char type, FILE *InFP, FILE *OutFP)
   float val;
   if (fread(&val, sizeof(float), 1, InFP) != 1) {
      fprintf(stderr,"Error reading float info\n");
-     exit(-1);
+     return;
   }
   if (dfFlipEvents) val = flipfloat(val);
 
@@ -112,7 +112,7 @@ void read_char(char type, FILE *InFP, FILE *OutFP)
   char val;
   if (fread(&val, sizeof(char), 1, InFP) != 1) {
      fprintf(stderr,"Error reading char val\n");
-     exit(-1);
+     return;
   }
   fprintf(OutFP, "%-20s\t%d\n", dfGetTagName(type), val);
 }
@@ -125,7 +125,7 @@ void read_long(char type, FILE *InFP, FILE *OutFP)
   
   if (fread(&val, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading int val\n");
-    exit(-1);
+    return;
   }
   
   if (dfFlipEvents) val = fliplong(val);
@@ -140,7 +140,7 @@ void read_short(char type, FILE *InFP, FILE *OutFP)
   
   if (fread(&val, sizeof(short), 1, InFP) != 1) {
     fprintf(stderr,"Error reading short val\n");
-    exit(-1);
+    return;
   }
   
   if (dfFlipEvents) val = flipshort(val);
@@ -159,7 +159,7 @@ void read_string(char type, FILE *InFP, FILE *OutFP)
 
   if (fread(&length, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading string length\n");
-    exit(-1);
+    return;
   }
   
   if (dfFlipEvents) length = fliplong(length);
@@ -168,7 +168,7 @@ void read_string(char type, FILE *InFP, FILE *OutFP)
     
     if (fread(str, length, 1, InFP) != 1) {
       fprintf(stderr,"Error reading\n");
-      exit(-1);
+      return;
     }
   }
 
@@ -185,7 +185,7 @@ void read_strings(char type, FILE *InFP, FILE *OutFP)
 
   if (fread(&n, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading string length\n");
-    exit(-1);
+    return;
   }
   if (dfFlipEvents) n = fliplong(n);
   fprintf(OutFP, "%-20s\t%d\n", dfGetTagName(type),n);
@@ -193,7 +193,7 @@ void read_strings(char type, FILE *InFP, FILE *OutFP)
   for (i = 0; i < n; i++) {
     if (fread(&length, sizeof(int), 1, InFP) != 1) {
       fprintf(stderr,"Error reading string length\n");
-      exit(-1);
+      return;
     }
     if (dfFlipEvents) length = fliplong(length);
     
@@ -203,7 +203,7 @@ void read_strings(char type, FILE *InFP, FILE *OutFP)
       
       if (fread(str, length, 1, InFP) != 1) {
 	fprintf(stderr,"Error reading\n");
-	exit(-1);
+	return;
       }
     }
     
@@ -221,7 +221,7 @@ void read_longs(char type, FILE *InFP, FILE *OutFP)
   
   if (fread(&nlongs, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of longs\n");
-    exit(-1);
+    return;
   }
   
   if (dfFlipEvents) nlongs = fliplong(nlongs);
@@ -229,12 +229,12 @@ void read_longs(char type, FILE *InFP, FILE *OutFP)
   if (nlongs) {
     if (!(vals = (int *) calloc(nlongs, sizeof(int)))) {
       fprintf(stderr,"Error allocating memory for long array\n");
-      exit(-1);
+      return;
     }
   
     if (fread(vals, sizeof(int), nlongs, InFP) != nlongs) {
       fprintf(stderr,"Error reading long array\n");
-      exit(-1);
+      return;
     }
   
     if (dfFlipEvents) fliplongs(nlongs, vals);
@@ -257,7 +257,7 @@ void read_shorts(char type, FILE *InFP, FILE *OutFP)
   
   if (fread(&nshorts, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of shorts\n");
-    exit(-1);
+    return;
   }
   
   if (dfFlipEvents) nshorts = fliplong(nshorts);
@@ -265,12 +265,12 @@ void read_shorts(char type, FILE *InFP, FILE *OutFP)
   if (nshorts) {
     if (!(vals = (short *) calloc(nshorts, sizeof(short)))) {
       fprintf(stderr,"Error allocating memory for short array\n");
-      exit(-1);
+      return;
     }
     
     if (fread(vals, sizeof(short), nshorts, InFP) != nshorts) {
       fprintf(stderr,"Error reading short array\n");
-      exit(-1);
+      return;
     }
     
     if (dfFlipEvents) flipshorts(nshorts, vals);
@@ -292,7 +292,7 @@ void read_floats(char type, FILE *InFP, FILE *OutFP)
   
   if (fread(&nfloats, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of floats\n");
-    exit(-1);
+    return;
   }
   
   if (dfFlipEvents) nfloats = fliplong(nfloats);
@@ -300,12 +300,12 @@ void read_floats(char type, FILE *InFP, FILE *OutFP)
   if (nfloats) {
     if (!(vals = (float *) calloc(nfloats, sizeof(float)))) {
       fprintf(stderr,"Error allocating memory for float array\n");
-      exit(-1);
+      return;
     }
     
     if (fread(vals, sizeof(float), nfloats, InFP) != nfloats) {
       fprintf(stderr,"Error reading float array\n");
-      exit(-1);
+      return;
     }
     
     if (dfFlipEvents) flipfloats(nfloats, vals);
@@ -350,7 +350,7 @@ int vread_version(float *version, FILE *OutFP)
       fprintf(stderr,
 	      "Unable to read this version of data file (V %5.1f/%5.1f)\n",
 	      val, flipfloat(val));
-      exit(-1);
+      return(sizeof(float));
     }
   }
   else dfFlipEvents = 0;
@@ -472,7 +472,7 @@ int vread_longs(char type, int *n, FILE *OutFP)
   if (nvals) {
     if (!(vals = (int *) calloc(nvals, sizeof(int)))) {
       fprintf(stderr,"dfutils: error allocating space for int array\n");
-      exit(-1);
+      return(sizeof(int)+nvals*sizeof(int));
     }
     memcpy(vals, vl, sizeof(int)*nvals);
 
@@ -504,7 +504,7 @@ int vread_shorts(char type, int *n, FILE *OutFP)
   if (nvals) {
     if (!(vals = (short *) calloc(nvals, sizeof(short)))) {
       fprintf(stderr,"dfutils: error allocating space for short array\n");
-      exit(-1);
+      return(sizeof(int)+nvals*sizeof(short));
     }
     memcpy(vals, vl, sizeof(short)*nvals);
     
@@ -535,7 +535,7 @@ int vread_floats(char type, int *n, FILE *OutFP)
   if (nvals) {
     if (!(vals = (float *) calloc(nvals, sizeof(float)))) {
       fprintf(stderr,"dfutils: error allocating space for float array\n");
-      exit(-1);
+      return(sizeof(int)+nvals*sizeof(float));
     }
     memcpy(vals, vl, sizeof(float)*nvals);
 
@@ -571,7 +571,7 @@ void skip_version(FILE *InFP)
   float val;
   if (fread(&val, sizeof(float), 1, InFP) != 1) {
      fprintf(stderr,"Error reading float info\n");
-     exit(-1);
+     return;
   }
 
   /* 
@@ -587,7 +587,7 @@ void skip_version(FILE *InFP)
       fprintf(stderr,
 	      "Unable to read this version of data file (V %5.1f/%5.1f)\n",
 	      val, flipfloat(val));
-      exit(-1);
+      return;
     }
   }
   else dfFlipEvents = 0;
@@ -647,7 +647,7 @@ static int skip_longs(FILE *InFP)
   int nvals;
   if (fread(&nvals, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of ints\n");
-    exit(-1);
+    return(0);
   }
   if (dfFlipEvents) nvals = fliplong(nvals);
   return(skip_bytes(InFP, nvals*sizeof(int)));
@@ -658,7 +658,7 @@ static int skip_shorts(FILE *InFP)
   int nvals;
   if (fread(&nvals, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of shorts\n");
-    exit(-1);
+    return(0);
   }
   if (dfFlipEvents) nvals = fliplong(nvals);
   return(skip_bytes(InFP, nvals*sizeof(short)));
@@ -669,7 +669,7 @@ static int skip_floats(FILE *InFP)
   int nvals;
   if (fread(&nvals, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of floats\n");
-    exit(-1);
+    return(0);
   }
   if (dfFlipEvents) nvals = fliplong(nvals);
   return(skip_bytes(InFP, nvals*sizeof(float)));
@@ -698,7 +698,7 @@ int vskip_version(float *version)
       fprintf(stderr,
 	      "Unable to read this version of data file (V %5.1f/%5.1f)\n",
 	      val, flipfloat(val));
-      exit(-1);
+      return(sizeof(float));
     }
   }
   else dfFlipEvents = 0;
@@ -778,17 +778,25 @@ static int vskip_longs(int *n)
   -----                    File Get Functions                    -----
   -------------------------------------------------------------------*/
 
-static 
+/*
+ * These legacy .df get_ readers used to exit(-1) on any short read,
+ * unknown version, or allocation failure -- killing the host process on a
+ * single corrupt/truncated file.  They now print the error and return
+ * with safe default outputs (empty list / zero) so the caller degrades
+ * gracefully instead of the whole program dying.
+ */
+static
 void get_version(FILE *InFP, float *version)
 {
   float val;
+  *version = 0;
   if (fread(&val, sizeof(float), 1, InFP) != 1) {
      fprintf(stderr,"Error reading float info\n");
-     exit(-1);
+     return;
   }
 
-  /* 
-   * The VERSION should stay as a float, so that byte ordering can be 
+  /*
+   * The VERSION should stay as a float, so that byte ordering can be
    * checked dynamically.  If it doesn't match the first way, then the
    * dfFlipEvents flag is set and it's tried again.
    */
@@ -800,7 +808,8 @@ void get_version(FILE *InFP, float *version)
       fprintf(stderr,
 	      "Unable to read this version of data file (V %5.1f/%5.1f)\n",
 	      val, flipfloat(val));
-      exit(-1);
+      dfFlipEvents = 0;
+      return;
     }
   }
   else dfFlipEvents = 0;
@@ -808,13 +817,14 @@ void get_version(FILE *InFP, float *version)
 }
 
 
-static 
+static
 void get_float(FILE *InFP, float *fval)
 {
   float val;
+  *fval = 0;
   if (fread(&val, sizeof(float), 1, InFP) != 1) {
      fprintf(stderr,"Error reading float info\n");
-     exit(-1);
+     return;
   }
   if (dfFlipEvents) val = flipfloat(val);
   *fval = val;
@@ -824,23 +834,25 @@ static
 void get_char(FILE *InFP, char *cval)
 {
   char val;
+  *cval = 0;
   if (fread(&val, sizeof(char), 1, InFP) != 1) {
      fprintf(stderr,"Error reading char val\n");
-     exit(-1);
+     return;
   }
   *cval = val;
 }
 
-static 
+static
 void get_long(FILE *InFP,  int *ival)
 {
   int val;
-  
+  *ival = 0;
+
   if (fread(&val, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading long val\n");
-    exit(-1);
+    return;
   }
-  
+
   if (dfFlipEvents) val = fliplong(val);
 
   *ival = val;
@@ -850,12 +862,13 @@ static
 void get_short(FILE *InFP,  short *sval)
 {
   short val;
-  
+  *sval = 0;
+
   if (fread(&val, sizeof(short), 1, InFP) != 1) {
     fprintf(stderr,"Error reading short val\n");
-    exit(-1);
+    return;
   }
-  
+
   if (dfFlipEvents) val = flipshort(val);
   *sval = val;
 }
@@ -865,140 +878,138 @@ void get_string(FILE *InFP, int *n, char **s)
 {
   int length;
   static char *str = "";
-  
+
+  *n = 0;
+  *s = "";
   if (fread(&length, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading string length\n");
-    exit(-1);
+    return;
   }
-  
+
   if (dfFlipEvents) length = fliplong(length);
-  
+
   if (length) {
     str = (char *) malloc(length);
-    
-    if (fread(str, length, 1, InFP) != 1) {
+    if (!str || fread(str, length, 1, InFP) != 1) {
       fprintf(stderr,"Error reading\n");
-      exit(-1);
+      free(str);
+      return;
     }
   }
-  
+
   *n = length;
   *s = str;
-}   
+}
 
 static
 void get_strings(FILE *InFP, int *num, char ***s)
 {
   int n, i, length;
   char **strings = NULL;
-  
+
+  *num = 0;
+  *s = NULL;
   if (fread(&n, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of strings\n");
-    exit(-1);
+    return;
   }
   if (dfFlipEvents) n = fliplong(n);
 
-  if (n) strings = (char **) calloc(n, sizeof(char *));
-
-  for (i = 0; i < n; i++) {
-    get_string(InFP, &length, &strings[i]);
+  if (n < 0) return;
+  if (n) {
+    strings = (char **) calloc(n, sizeof(char *));
+    if (!strings) return;
+    for (i = 0; i < n; i++) {
+      get_string(InFP, &length, &strings[i]);
+    }
   }
-  
+
   *num = n;
   *s = strings;
-}   
+}
 
 static
 void get_shorts(FILE *InFP, int *n, short **v)
 {
   int nvals;
-  short *vals = NULL;
 
+  *n = 0;
+  *v = NULL;
   if (fread(&nvals, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of shorts\n");
-    exit(-1);
-  }
-  
-  if (dfFlipEvents) nvals = fliplong(nvals);
-  
-  if (nvals) {
-    if (!(vals = (short *) calloc(nvals, sizeof(short)))) {
-      fprintf(stderr,"Error allocating memory for short elements\n");
-      exit(-1);
-    }
-    
-    if (fread(vals, sizeof(short), nvals, InFP) != nvals) {
-      fprintf(stderr,"Error reading short elements\n");
-      exit(-1);
-    }
-  
-    if (dfFlipEvents) flipshorts(nvals, vals);
+    return;
   }
 
-  *n = nvals;
-  *v = vals;
+  if (dfFlipEvents) nvals = fliplong(nvals);
+  if (nvals < 0) return;
+
+  if (nvals) {
+    short *vals = (short *) calloc(nvals, sizeof(short));
+    if (!vals || fread(vals, sizeof(short), nvals, InFP) != (size_t) nvals) {
+      fprintf(stderr,"Error reading short elements\n");
+      free(vals);
+      return;
+    }
+    if (dfFlipEvents) flipshorts(nvals, vals);
+    *n = nvals;
+    *v = vals;
+  }
 }
 
 static
 void get_longs(FILE *InFP, int *n, int **v)
 {
   int nvals;
-  int *vals = NULL;
 
+  *n = 0;
+  *v = NULL;
   if (fread(&nvals, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of ints\n");
-    exit(-1);
-  }
-  
-  if (dfFlipEvents) nvals = fliplong(nvals);
-  
-  if (nvals) {
-    if (!(vals = (int *) calloc(nvals, sizeof(int)))) {
-      fprintf(stderr,"Error allocating memory for long elements\n");
-      exit(-1);
-    }
-    
-    if (fread(vals, sizeof(int), nvals, InFP) != nvals) {
-      fprintf(stderr,"Error reading int elements\n");
-      exit(-1);
-    }
-    
-    if (dfFlipEvents) fliplongs(nvals, vals);
+    return;
   }
 
-  *n = nvals;
-  *v = vals;
+  if (dfFlipEvents) nvals = fliplong(nvals);
+  if (nvals < 0) return;
+
+  if (nvals) {
+    int *vals = (int *) calloc(nvals, sizeof(int));
+    if (!vals || fread(vals, sizeof(int), nvals, InFP) != (size_t) nvals) {
+      fprintf(stderr,"Error reading int elements\n");
+      free(vals);
+      return;
+    }
+    if (dfFlipEvents) fliplongs(nvals, vals);
+    *n = nvals;
+    *v = vals;
+  }
 }
 
 static
 void get_floats(FILE *InFP, int *n, float **v)
 {
   int nvals;
-  float *vals = NULL;
 
+  *n = 0;
+  *v = NULL;
   if (fread(&nvals, sizeof(int), 1, InFP) != 1) {
     fprintf(stderr,"Error reading number of floats\n");
-    exit(-1);
-  }
-  
-  if (dfFlipEvents) nvals = fliplong(nvals);
-  
-  if (nvals) {
-    if (!(vals = (float *) calloc(nvals, sizeof(float)))) {
-      fprintf(stderr,"Error allocating memory for float elements\n");
-      exit(-1);
-    }
-    
-    if (fread(vals, sizeof(float), nvals, InFP) != nvals) {
-      fprintf(stderr,"Error reading float elements\n");
-      exit(-1);
-    }
-  
-  if (dfFlipEvents) flipfloats(nvals, vals);
+    return;
   }
 
-  *n = nvals;
-  *v = vals;
+  if (dfFlipEvents) nvals = fliplong(nvals);
+  if (nvals < 0) return;
+
+  if (nvals) {
+    float *vals = (float *) calloc(nvals, sizeof(float));
+    if (!vals || fread(vals, sizeof(float), nvals, InFP) != (size_t) nvals) {
+      fprintf(stderr,"Error reading float elements\n");
+      free(vals);
+      return;
+    }
+    if (dfFlipEvents) flipfloats(nvals, vals);
+    *n = nvals;
+    *v = vals;
+  }
 }
 
 /*--------------------------------------------------------------------
@@ -1017,7 +1028,7 @@ int vget_version(float *v, float *version)
       fprintf(stderr,
 	      "Unable to read this version of data file (V %5.1f/%5.1f)\n",
 	      val, flipfloat(val));
-      exit(-1);
+      dfFlipEvents = 0;
     }
   }
   else dfFlipEvents = 0;
@@ -1125,7 +1136,8 @@ int vget_shorts(int *n, int *nv, short **v)
   if (nvals) {
     if (!(vals = (short *) calloc(nvals, sizeof(short)))) {
       fprintf(stderr,"dfutils: error allocating space for short array\n");
-      exit(-1);
+      *nv = 0; *v = NULL;
+      return(sizeof(int));
     }
     memcpy(vals, vl, sizeof(short)*nvals);
 
@@ -1152,7 +1164,8 @@ int vget_longs(int *n, int *nv, int **v)
   if (nvals) {
     if (!(vals = (int *) calloc(nvals, sizeof(int)))) {
       fprintf(stderr,"dfutils: error allocating space for int array\n");
-      exit(-1);
+      *nv = 0; *v = NULL;
+      return(sizeof(int));
     }
     memcpy(vals, vl, sizeof(int)*nvals);
   }
@@ -1179,13 +1192,14 @@ int vget_floats(int *n, int *nv, float **v)
   if (nvals) {
     if (!(vals = (float *) calloc(nvals, sizeof(float)))) {
       fprintf(stderr,"dfutils: error allocating space for float array\n");
-      exit(-1);
+      *nv = 0; *v = NULL;
+      return(sizeof(int));
     }
     memcpy(vals, vl, sizeof(float)*nvals);
-    
+
     if (dfFlipEvents) flipfloats(nvals, vals);
   }
-  
+
   *nv = nvals;
   *v  = vals;
 
@@ -2321,7 +2335,7 @@ void dfuBufferToAscii(unsigned char *vbuf, int bufsize, FILE *OutFP)
 
   if (!vconfirm_magic_number((char *)vbuf)) {
     fprintf(stderr,"dfutils: file not recognized as df format\n");
-    exit(-1);
+    return;
   }
   
   for (i = DF_MAGIC_NUMBER_SIZE; i < bufsize; i+=advance_bytes) {
@@ -2386,7 +2400,7 @@ void dfuFileToAscii(FILE *InFP, FILE *OutFP)
 
   if (!confirm_magic_number(InFP)) {
     fprintf(stderr,"dfutils: file not recognized as df format\n");
-    exit(-1);
+    return;
   }
   
   while((c = getc(InFP)) != EOF) {
