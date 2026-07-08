@@ -21,7 +21,12 @@ namespace eval ::colorcal {
     variable displays
     array set displays {}
     set displays(srgb) {eotf srgb weights {0.2126 0.7152 0.0722}}
+    # `default` is the ACTIVE model used when no -display is given. It starts as
+    # sRGB ("about right") and monitor.tcl overrides it via set_default with the
+    # measured primaries, so demos with no -display arg get the calibrated
+    # display on a calibrated box and sRGB elsewhere.
     set displays(default) {eotf srgb weights {0.2126 0.7152 0.0722}}
+    variable default_calibrated 0
 
     namespace export lin enc luminance isolum_pair max_chroma in_gamut
 }
@@ -34,16 +39,54 @@ namespace eval ::colorcal {
 # (need not sum to 1; ratios are what matter for equiluminance).
 proc ::colorcal::display_define {name args} {
     variable displays
+    # -chromaticities {xr yr xg yg xb yb} enables the cone/DKL backend;
+    # -white {xw yw} is the white point. Both optional (weights-only otherwise).
     set m {eotf srgb weights {0.2126 0.7152 0.0722}}
     foreach {k v} $args {
         switch -- $k {
-            -eotf    { dict set m eotf $v }
-            -weights { dict set m weights $v }
-            default  { error "display_define: unknown option $k" }
+            -eotf           { dict set m eotf $v }
+            -weights        { dict set m weights $v }
+            -chromaticities { dict set m chroma $v }
+            -white          { dict set m white $v }
+            default         { error "display_define: unknown option $k" }
         }
     }
     set displays($name) $m
     return $name
+}
+
+# Does this display carry the colorimetric data (primary chromaticities) needed
+# for the cone/DKL backend? If not, only the weights-only backend is available.
+proc ::colorcal::_has_cone {display} {
+    expr {[dict exists [_model $display] chroma]}
+}
+
+# Set the ACTIVE default display model (what every proc uses when no -display
+# is given). monitor.tcl calls this once at startup with the measured display.
+# -label is optional provenance. Marks the default calibrated so consumers can
+# tell measured from the sRGB fallback.
+proc ::colorcal::set_default {args} {
+    variable default_calibrated
+    variable default_label
+    set label ""
+    set fwd {}
+    foreach {k v} $args {
+        if {$k eq "-label"} { set label $v } else { lappend fwd $k $v }
+    }
+    display_define default {*}$fwd
+    set default_calibrated 1
+    set default_label $label
+    return default
+}
+
+# 1 if monitor.tcl has installed a measured display; 0 if still sRGB fallback.
+proc ::colorcal::default_calibrated {} {
+    variable default_calibrated
+    return $default_calibrated
+}
+proc ::colorcal::default_label {} {
+    variable default_label
+    return [expr {[info exists default_label] ? $default_label : ""}]
 }
 
 proc ::colorcal::_model {display} {
@@ -55,7 +98,7 @@ proc ::colorcal::_model {display} {
 }
 
 # Inverse EOTF: gamma-encoded code value [0,1] -> linear light [0,1].
-proc ::colorcal::lin {c {display srgb}} {
+proc ::colorcal::lin {c {display default}} {
     set eotf [dict get [_model $display] eotf]
     if {$eotf eq "srgb"} {
         return [expr {$c <= 0.04045 ? $c/12.92 : pow(($c+0.055)/1.055, 2.4)}]
@@ -67,7 +110,7 @@ proc ::colorcal::lin {c {display srgb}} {
 }
 
 # EOTF: linear [0,1] -> code value [0,1]. Clamps out-of-gamut input.
-proc ::colorcal::enc {c {display srgb}} {
+proc ::colorcal::enc {c {display default}} {
     if {$c < 0.0} { set c 0.0 } elseif {$c > 1.0} { set c 1.0 }
     set eotf [dict get [_model $display] eotf]
     if {$eotf eq "srgb"} {
@@ -79,7 +122,7 @@ proc ::colorcal::enc {c {display srgb}} {
 }
 
 # Relative luminance Y of a code-value RGB triplet on the given display.
-proc ::colorcal::luminance {rgb {display srgb}} {
+proc ::colorcal::luminance {rgb {display default}} {
     lassign $rgb r g b
     lassign [dict get [_model $display] weights] wr wg wb
     expr {$wr*[lin $r $display] + $wg*[lin $g $display] + $wb*[lin $b $display]}
@@ -97,7 +140,7 @@ proc ::colorcal::luminance {rgb {display srgb}} {
 #   predicted luminance split of 2*b*y0. This is the residual correction the HFP
 #   null produces; on a measured/hardware display it is ~0.
 proc ::colorcal::isolum_pair {pedestal chroma args} {
-    set display srgb
+    set display default
     set balance 0.0
     foreach {k v} $args {
         switch -- $k {
@@ -123,7 +166,7 @@ proc ::colorcal::isolum_pair {pedestal chroma args} {
 # this the enc() clamp silently destroys equiluminance (the mp_postcue footgun),
 # so callers/UI should cap saturation here (or raise the pedestal for headroom).
 proc ::colorcal::max_chroma {pedestal args} {
-    set display srgb
+    set display default
     set balance 0.0
     foreach {k v} $args {
         switch -- $k {
@@ -148,6 +191,119 @@ proc ::colorcal::max_chroma {pedestal args} {
 proc ::colorcal::in_gamut {linear_rgb} {
     foreach c $linear_rgb { if {$c < 0.0 || $c > 1.0} { return 0 } }
     return 1
+}
+
+# ------------------------------------------------------------------
+# Generalized picker:  color = pedestal + chromatic DIRECTION + magnitude
+#
+# Direction lives in the display's ISOLUMINANT PLANE. Red/green is no longer
+# special -- it's one axis. Two tiers, chosen by what the display model carries:
+#
+#   weights-only (primary luminances): axes are DISPLAY-RGB luminance-neutral
+#     directions -- honest and useful, but NOT cone-cardinal.
+#       -axis rg : red up / green down, blue fixed         (dir = {1, -wR/wG, 0})
+#       -axis by : blue up / yellow down, luminance-neutral (dir = {m, m, 1})
+#       -azimuth <deg> : cos*rg + sin*by  (display-space angle; documented approx)
+#
+#   cone/DKL (needs -chromaticities): true L-M / S-(L+M) cardinal axes and
+#     cone-contrast magnitude -- the rig/observer-PORTABLE representation. STUB.
+#
+# `contrast` is the magnitude (the portable "delta"): code-value chroma along
+# the axis in weights-only mode; cone contrast in cone mode.
+# ------------------------------------------------------------------
+
+# Luminance-neutral direction {dr dg db} in code space for an axis/azimuth.
+proc ::colorcal::_direction {display axis {azimuth ""}} {
+    lassign [dict get [_model $display] weights] wr wg wb
+    set k  [expr {double($wr)/double($wg)}]
+    set e1 [list 1.0 [expr {-$k}] 0.0]                        ;# red-green
+    set m  [expr {-double($wb)/(double($wr)+double($wg))}]
+    set e2 [list $m $m 1.0]                                   ;# blue-yellow (display)
+    if {$azimuth ne ""} {
+        set th [expr {$azimuth * 3.14159265358979 / 180.0}]
+        return [lmap a $e1 b $e2 {expr {cos($th)*$a + sin($th)*$b}}]
+    }
+    switch -- $axis {
+        rg      { return $e1 }
+        by - s  { return $e2 }
+        default { error "colorcal: unknown axis '$axis' (use rg|by or -azimuth)" }
+    }
+}
+
+proc ::colorcal::_parse_dir_opts {argsVar} {
+    upvar 1 $argsVar a
+    set o {display default axis rg azimuth {} contrast 0.0 pole + balance 0.0 space auto}
+    foreach {k v} $a {
+        switch -- $k {
+            -display  { dict set o display $v }
+            -axis     { dict set o axis $v }
+            -azimuth  { dict set o azimuth $v }
+            -contrast { dict set o contrast $v }
+            -pole     { dict set o pole $v }
+            -balance  { dict set o balance $v }
+            -space    { dict set o space $v }
+            default   { error "colorcal: unknown option $k" }
+        }
+    }
+    return $o
+}
+
+# One equiluminant color (code-value {r g b}). -pole +|a (default) or -|b picks
+# the sign of the excursion (and of the balance tilt).
+proc ::colorcal::color {pedestal args} {
+    set o [_parse_dir_opts args]
+    set display [dict get $o display]
+    set s [expr {([dict get $o pole] in {- b}) ? -1.0 : 1.0}]
+    set space [dict get $o space]
+    # cone/DKL is opt-in ONLY (-space cone) until the backend lands, so a
+    # display that merely carries chromaticities never routes to the stub and
+    # errors. When cone is implemented, `auto` can prefer it on such displays.
+    if {$space eq "cone"} {
+        return [_cone_color $pedestal $o $s]
+    }
+    set y0  [lin $pedestal $display]
+    set dir [_direction $display [dict get $o axis] [dict get $o azimuth]]
+    set c   [dict get $o contrast]
+    set off [expr {$s * [dict get $o balance] * $y0}]
+    return [lmap d $dir {enc [expr {$y0 + $s*$c*$d + $off}] $display}]
+}
+
+# The +/- pole pair about the pedestal (generalizes isolum_pair to any axis).
+proc ::colorcal::pair {pedestal args} {
+    return [dict create a [color $pedestal {*}$args -pole +] \
+                        b [color $pedestal {*}$args -pole -]]
+}
+
+# Largest contrast before either pole clips (breaking equiluminance) for the
+# chosen axis/azimuth. Generalizes max_chroma.
+proc ::colorcal::max_contrast {pedestal args} {
+    set o [_parse_dir_opts args]
+    set display [dict get $o display]
+    set y0  [lin $pedestal $display]
+    set dir [_direction $display [dict get $o axis] [dict get $o azimuth]]
+    set b   [dict get $o balance]
+    set best Inf
+    foreach s {1.0 -1.0} {
+        set base [expr {$y0 + $s*$b*$y0}]
+        foreach d $dir {
+            set sd [expr {$s*$d}]
+            if {abs($sd) < 1e-12} continue
+            set lim [expr {$sd > 0 ? (1.0-$base)/$sd : (0.0-$base)/$sd}]
+            if {$lim < $best} { set best $lim }
+        }
+    }
+    return [expr {$best < 0 ? 0.0 : $best}]
+}
+
+# ---- cone/DKL backend (STUB) --------------------------------------
+# From primary chromaticities + luminances -> RGB->XYZ; then XYZ->LMS via cone
+# fundamentals -> RGB->LMS. A DKL azimuth becomes an LMS-contrast direction;
+# `contrast` is cone contrast. This is the rig/observer-portable path.
+proc ::colorcal::_rgb2lms {display} {
+    error "colorcal cone/DKL backend: TODO (build RGB->LMS from -chromaticities + cone fundamentals)"
+}
+proc ::colorcal::_cone_color {pedestal o s} {
+    error "colorcal cone/DKL backend: TODO (azimuth/contrast in cone space)"
 }
 
 # 8-bit (0..255) form of a code-value triplet -- convenience for reports/meters.
@@ -206,13 +362,17 @@ proc ::colorcal::profile_rgb {profile name args} {
 proc ::colorcal::profile_to_dict {profile} { return $profile }
 proc ::colorcal::profile_from_dict {d}      { return $d }
 
-# TODO: dg-backed persistence (mirror mp_sim's dgz round-trip) and dserv
-# publish/subscribe of the active profile.
+# Persist / restore a profile. A profile is a plain Tcl dict, so v0.1 writes it
+# verbatim (also valid as a dserv string / JSON-ish). dg/dgz + dserv
+# publish/subscribe are a later transport upgrade, not required for the
+# monitor.tcl -> set_default -> generate path.
 proc ::colorcal::profile_save {profile file} {
-    error "colorcal::profile_save: not yet implemented (TODO: dg/dgz)"
+    set fp [open $file w]; puts $fp $profile; close $fp
+    return $file
 }
 proc ::colorcal::profile_load {file} {
-    error "colorcal::profile_load: not yet implemented (TODO: dg/dgz)"
+    set fp [open $file r]; set d [read $fp]; close $fp
+    return [string trim $d]
 }
 
 package provide colorcal $::colorcal::version

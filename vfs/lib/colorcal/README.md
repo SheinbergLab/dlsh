@@ -6,10 +6,22 @@ runs/stores the observer or photometer calibration that pins them to a real
 display, and lets experiments and loaders **carry calibrated colors between
 systems** at runtime.
 
-Status: **skeleton**. The pure-math core (display model + equiluminant
-construction + gamut/limit math) is implemented and headless-testable. The
-profile store, dserv/dgz transport, and the stim2 calibration frontend are
-stubbed with signatures and TODOs.
+Status: **core usable (0.1)**. Pure Tcl, no compile — drops into the vfs.
+
+**Stable surface (safe to depend on from `task_stim.tcl`):**
+- `display_define`, `set_default`, `default_calibrated`, `default_label`
+- `lin` / `enc` / `luminance` / `in_gamut` / `rgb8`
+- equiluminant construction: `color`, `pair`, `isolum_pair`, `max_contrast`,
+  `max_chroma` — weights-only tier, axes `rg` / `by` / `-azimuth`
+- `profile_new` / `profile_set` / `profile_rgb` / `profile_to_dict` /
+  `profile_from_dict` / `profile_save` / `profile_load` (plain-dict file)
+
+**Experimental / stubbed (do NOT depend on yet; they error clearly):**
+- cone/DKL backend — opt-in only via `-space cone` (`-space auto` stays
+  weights-only even on a chromaticity-bearing display, so nothing errors by
+  surprise). Cone contrast / true cardinal axes land with `_rgb2lms`.
+- `colorcal_stim` frontend (`hfp_run`, `patches`) — generalize from mp_postcue.
+- dg/dgz + dserv transport for profiles.
 
 ---
 

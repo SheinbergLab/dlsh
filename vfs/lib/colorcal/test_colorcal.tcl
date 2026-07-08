@@ -52,13 +52,53 @@ ok "equilum on custom display" \
             [colorcal::luminance [dict get $prm b] testmon]]
 
 # 7. Profile round-trips and regenerates at a boosted saturation.
-set p [colorcal::profile_new -observer test -display srgb]
-colorcal::profile_set p probe_a {kind isolum pole a pedestal 0.5 chroma 0.16 balance 0.0 display srgb}
+set prof [colorcal::profile_new -observer test -display srgb]
+colorcal::profile_set prof probe_a {kind isolum pole a pedestal 0.5 chroma 0.16 balance 0.0 display srgb}
 ok "profile_rgb matches construction" \
-    [expr {[colorcal::profile_rgb $p probe_a] eq [dict get $pr a]}]
-set boosted [colorcal::profile_rgb $p probe_a -saturation 0.4]
+    [expr {[colorcal::profile_rgb $prof probe_a] eq [dict get $pr a]}]
+set boosted [colorcal::profile_rgb $prof probe_a -saturation 0.4]
 ok "profile boosted saturation equilum" \
     [approx [colorcal::luminance $boosted] [colorcal::lin 0.5]]
+
+# 8. Generalized picker: general pair(-axis rg) == legacy isolum_pair.
+set gp [colorcal::pair 0.5 -axis rg -contrast 0.16]
+ok "general rg == isolum_pair a" [expr {[dict get $gp a] eq [dict get $pr a]}]
+ok "general rg == isolum_pair b" [expr {[dict get $gp b] eq [dict get $pr b]}]
+
+# 9. Blue/yellow axis is equiluminant too.
+set by [colorcal::pair 0.5 -axis by -contrast 0.15]
+ok "by axis equal Y" \
+    [approx [colorcal::luminance [dict get $by a]] [colorcal::luminance [dict get $by b]]]
+ok "by axis Y == pedestal" \
+    [approx [colorcal::luminance [dict get $by a]] [colorcal::lin 0.5]]
+
+# 10. Arbitrary azimuth stays equiluminant (weights-only display plane).
+foreach az {30 90 135} {
+    set p [colorcal::pair 0.5 -azimuth $az -contrast 0.08]
+    ok "azimuth $az equiluminant" \
+        [approx [colorcal::luminance [dict get $p a]] [colorcal::luminance [dict get $p b]]]
+}
+
+# 11. max_contrast(-axis rg) == max_chroma; a single color respects the pole.
+ok "max_contrast rg == max_chroma" \
+    [approx [colorcal::max_contrast 0.5 -axis rg] [colorcal::max_chroma 0.5]]
+ok "single color pole +" [expr {[colorcal::color 0.5 -axis rg -contrast 0.16 -pole +] eq [dict get $pr a]}]
+
+# 12. A chromaticity-bearing display is detected, but -space auto stays
+#     weights-only (no surprise error); cone is opt-in only and errors clearly.
+colorcal::display_define conemon -eotf gamma:1.0 -weights {22.4 61.4 7.3} \
+    -chromaticities {0.64 0.33 0.30 0.60 0.15 0.06}
+ok "cone display detected"     [colorcal::_has_cone conemon]
+ok "auto stays weights-only"   [expr {![catch {colorcal::color 0.5 -axis rg -contrast 0.1 -display conemon}]}]
+ok "explicit cone is stubbed"  [catch {colorcal::color 0.5 -axis rg -contrast 0.1 -display conemon -space cone}]
+
+# 13. Profile save/load round-trips and still regenerates the same triplet.
+set tmp [file join [pwd] .colorcal_test_profile]
+colorcal::profile_save $prof $tmp
+set p2 [colorcal::profile_load $tmp]
+file delete $tmp
+ok "profile save/load regenerates" \
+    [expr {[colorcal::profile_rgb $p2 probe_a] eq [colorcal::profile_rgb $prof probe_a]}]
 
 puts "colorcal: $pass passed, $fail failed"
 exit [expr {$fail ? 1 : 0}]
