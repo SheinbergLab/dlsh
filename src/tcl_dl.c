@@ -48,6 +48,8 @@
 
 /* generated at build time from src/dl_comprehension.tcl (see cmake/EmbedTcl.cmake) */
 #include "dl_comprehension_tcl.h"
+/* generated at build time from src/dl_sugar.tcl (see cmake/EmbedTcl.cmake) */
+#include "dl_sugar_tcl.h"
 
 static const char *DLSH_ASSOC_DATA_KEY = "dlsh";
 
@@ -439,7 +441,7 @@ static TCL_COMMANDS DLcommands[] = {
   { "dl_shuffle",          tclGenerateDynList,    (void *) DL_SHUFFLE,
       "randomly shuffle elements of a list" },
   { "dl_randchoose",       tclGenerateDynList,    (void *) DL_RANDCHOOSE,
-      "select m random numbers between 0 and n" },
+      "select n unique random ints from [0,m); lists broadcast: n_i from [0,m_i) per row" },
   { "dl_series",           tclSeries,             (void *) DL_SERIES,
       "generate an arithmetic series" },
   { "dl_fromto",           tclSeries,             (void *) DL_FROMTO,
@@ -969,6 +971,13 @@ int Dl_Init(Tcl_Interp *interp)
      command they depend on is registered -- so they are always available on
      load without needing the VFS lib path. See cmake/EmbedTcl.cmake. */
   if (Tcl_Eval(interp, dl_comprehension_tcl) != TCL_OK)
+    return TCL_ERROR;
+
+  /* Embedded Tcl: base syntactic sugar over the dl_* primitives
+     (dl_randchooseLists, ...). Same rationale as above -- built into the
+     library and evaluated after the commands it depends on, so it is always
+     available on load without sourcing anything from the VFS lib path. */
+  if (Tcl_Eval(interp, dl_sugar_tcl) != TCL_OK)
     return TCL_ERROR;
 
 #if 0
@@ -6479,7 +6488,7 @@ static int tclGenerateDynList (ClientData data, Tcl_Interp *interp,
 
   if (operation == DL_RANDCHOOSE) {
     if (argc != 3) {
-      Tcl_AppendResult(interp, "usage: ", argv[0], " m n",
+      Tcl_AppendResult(interp, "usage: ", argv[0], " m n | mlist nlist",
 		       (char *) NULL);
       return TCL_ERROR;
     }
@@ -6550,12 +6559,23 @@ static int tclGenerateDynList (ClientData data, Tcl_Interp *interp,
     }
     else {
       DYN_LIST *dl1, *dl2;
+      /* the Tcl_GetInt above left its "expected integer" message in the
+	 result; clear it so our own diagnostics are not appended to it */
+      Tcl_ResetResult(interp);
       if (tclFindDynList(interp, argv[1], &dl1) == TCL_OK &&
 	  tclFindDynList(interp, argv[2], &dl2) == TCL_OK) {
 	newlist = dynListRandChoose(dl1, dl2);
+	if (!newlist) {
+	  Tcl_AppendResult(interp, argv[0],
+			   ": m and n must be int lists of equal length "
+			   "(or length 1 to broadcast), with 0 <= n <= m "
+			   "for every row", (char *) NULL);
+	  return TCL_ERROR;
+	}
       }
       else {
-	Tcl_AppendResult(interp, "usage: ", argv[0], " m n",
+	/* keep tclFindDynList's "not found" message; separate our usage line */
+	Tcl_AppendResult(interp, "\n  usage: ", argv[0], " m n | mlist nlist",
 			 (char *) NULL);
 	return TCL_ERROR;
       }

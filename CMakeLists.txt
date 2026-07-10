@@ -321,10 +321,26 @@ add_custom_command(
     VERBATIM
 )
 
+# Embed dl_sugar.tcl (base syntactic sugar) the same way, so the helpers are
+# compiled into the shared lib and available the instant dlsh loads.
+set(_dlsugar_tcl ${CMAKE_CURRENT_SOURCE_DIR}/src/dl_sugar.tcl)
+set(_dlsugar_hdr ${CMAKE_CURRENT_BINARY_DIR}/dl_sugar_tcl.h)
+add_custom_command(
+    OUTPUT ${_dlsugar_hdr}
+    COMMAND ${CMAKE_COMMAND}
+            -DINPUT=${_dlsugar_tcl} -DOUTPUT=${_dlsugar_hdr}
+            -DVAR=dl_sugar_tcl
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTcl.cmake
+    DEPENDS ${_dlsugar_tcl} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTcl.cmake
+    COMMENT "Embedding dl_sugar.tcl -> dl_sugar_tcl.h"
+    VERBATIM
+)
+
 # dlsh library
 ###############################
 add_library(dlsh SHARED
     ${_dlcomp_hdr}
+    ${_dlsugar_hdr}
     src/dfana.c
     src/tcl_dlg.c 
     src/dfevt.c 
@@ -366,7 +382,7 @@ set_target_properties(dlsh PROPERTIES
 # Include directories for in-tree deps
 ###############################
 target_include_directories(dlsh PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}   # generated dl_comprehension_tcl.h
+    ${CMAKE_CURRENT_BINARY_DIR}   # generated dl_comprehension_tcl.h, dl_sugar_tcl.h
     ${tcl_SOURCE_DIR}/generic
     ${tcl_SOURCE_DIR}/libtommath
     ${nanoarrow_SOURCE_DIR}/src/nanoarrow
