@@ -527,6 +527,12 @@ proc ess_test::variant_args {system protocol variant {variants {}}} {
         if {![dict exists $lopts $a]} { error "ess_test: variant '$variant' has no loader_option for '$a'" }
         set norm {}
         foreach o [dict get $lopts $a] {
+            # '#'-leading token = a comment that leaked from inside this option's
+            # value braces (strip_comments only strips top-level comments); fail
+            # loudly instead of extracting "##" as the default. Mirrors ess.
+            if {[string index [string trimleft $o] 0] eq "#"} {
+                error "ess_test: loader_option '$a' in variant '$variant' has a comment inside its value braces (token '$o'); move '##' comment lines ABOVE the '$a' option"
+            }
             if {[llength $o] == 2} { lappend norm $o } elseif {[llength $o] == 1} { lappend norm [list $o $o] }
         }
         lappend out [lindex [lindex $norm 0] 1]
