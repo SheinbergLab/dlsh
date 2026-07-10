@@ -9,18 +9,9 @@
 
 package provide dlsh 1.2
 
-proc dl_between { dl low high } {
-    dl_return [dl_and [dl_lt $dl $high] [dl_gt $dl $low]]
-}
-proc dl_betweenEq { dl low high } {
-    dl_return [dl_and [dl_lte $dl $high] [dl_gte $dl $low]]
-}
-proc dl_betweenEqLow { dl low high } {
-    dl_return [dl_and [dl_lt $dl $high] [dl_gte $dl $low]]
-}
-proc dl_betweenEqHigh { dl low high } {
-    dl_return [dl_and [dl_lte $dl $high] [dl_gt $dl $low]]
-}
+# dl_between / dl_betweenEq / dl_betweenEqLow / dl_betweenEqHigh moved to
+# src/dl_sugar.tcl (compiled into libdlsh, defined at package load). dl_closeto
+# below still uses dl_between -- it is available by the time this file is sourced.
 
 proc dl_closeto { dl val {epsilon .0001} } {
     # %HELP%

@@ -114,20 +114,8 @@ proc dg_copySelected { g s {save_noteq 0}} {
 # }
 
 
-#
-# NAME
-#  dl_shuffleLists
-#
-# DESCRIPTION
-#  Takes a list of lists and shuffles each list individually, but maintains
-#     the order of the highest list level.
-#
-proc dl_shuffleLists { l } {
-    if {[dl_datatype $l] != "list"} {
-	error "dl_shuffleLists: list must be a list of lists"
-    }
-    dl_return [dl_choose $l [dl_randfill [dl_lengths $l]]]
-}
+# dl_shuffleLists moved to src/dl_sugar.tcl (compiled into libdlsh, defined at
+# package load): shuffles each sublist independently, preserving outer order.
 
 
 
