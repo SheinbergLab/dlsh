@@ -349,6 +349,11 @@ static DYN_LIST *create_val_list(ds_datatype_t type, int len, unsigned char *buf
       break;
     }
   }
+  /* Never return NULL: unhandled (type,len) combinations (e.g. a non-empty
+     DSERV_NONE, or a type not in the switch) would otherwise feed a null list
+     into the essdg column builders and mis-align / crash them. An empty list
+     is the correct "no value here" placeholder and keeps rows aligned. */
+  if (!dl) dl = dfuCreateDynList(DF_LONG, 1);
   return dl;
 }
 
@@ -411,9 +416,18 @@ static DYN_LIST *add_dpoint_to_list(DYN_LIST *dl, ds_datapoint_t *dpoint)
     dfuAddDynListString(dl, (char *) vals);
     free(vals);
     break;
+  case DSERV_NONE:
+    /* A valueless timing marker (e.g. a stim photon-sync signal sent via
+       dserv_send_evt with no payload). There is no value to append; just
+       ensure a non-null, correctly-aligned placeholder list exists. */
+    if (!dl) dl = dfuCreateDynList(DF_LONG, 1);
+    break;
   default:
     break;
   }
+  /* Never hand a null back to the column builders (keeps rows aligned and
+     avoids the null-list path entirely for unhandled/empty datapoints). */
+  if (!dl) dl = dfuCreateDynList(DF_LONG, 1);
   return dl;
 }
 

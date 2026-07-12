@@ -2938,18 +2938,27 @@ DYN_LIST *dfuCreateNamedDynList(char *name, int datatype, int increment)
       (char **)calloc(DYN_LIST_MAX(dynlist), sizeof(char *));
     break;
   case DF_LIST:
-    DYN_LIST_VALS(dynlist) = 
+    DYN_LIST_VALS(dynlist) =
       (DYN_LIST **)calloc(DYN_LIST_MAX(dynlist), sizeof(DYN_LIST *));
     break;
+  default:
+    /* Unknown datatype -- e.g. a DSERV_ type leaked in where a DF_ type was
+       expected (an empty placeholder for a valueless DSERV_NONE marker
+       column). Fall back to an empty DF_LONG list rather than returning NULL
+       with a misleading "out of memory" (the caller isn't actually OOM). */
+    DYN_LIST_DATATYPE(dynlist) = DF_LONG;
+    DYN_LIST_VALS(dynlist) =
+      (int *)calloc(DYN_LIST_MAX(dynlist), sizeof(int));
+    break;
   }
-  
+
   if (!DYN_LIST_VALS(dynlist)) {
     free(dynlist);
     fprintf(stderr,"dlsh/dlwish: out of memory\n");
     return(NULL);
   }
   DYN_LIST_N(dynlist) = 0;
-  
+
   return(dynlist);
 }
 
@@ -3656,15 +3665,20 @@ void dfuAddDynListList(DYN_LIST *dynlist, DYN_LIST *newlist)
 {
   DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dynlist);
 
-  if (DYN_LIST_N(dynlist) == DYN_LIST_MAX(dynlist)) {
-    DYN_LIST_MAX(dynlist) += DYN_LIST_INCREMENT(dynlist);
-    vals = (DYN_LIST **) 
-      realloc(vals, sizeof(DYN_LIST *)*DYN_LIST_MAX(dynlist));
+  /* Check for null BEFORE growing/realloc: an early return after realloc()
+     would leave DYN_LIST_VALS() pointing at the just-freed old buffer (the
+     new pointer is only stored back at the end), causing a later double-free. */
+  if (!newlist) {
+#ifdef DF_WARN_NULL_LIST
+    fprintf(stderr, "Attempt to add null list\n");
+#endif
+    return;
   }
 
-  if (!newlist) {
-    fprintf(stderr, "Attempt to add null list\n");
-    return;
+  if (DYN_LIST_N(dynlist) == DYN_LIST_MAX(dynlist)) {
+    DYN_LIST_MAX(dynlist) += DYN_LIST_INCREMENT(dynlist);
+    vals = (DYN_LIST **)
+      realloc(vals, sizeof(DYN_LIST *)*DYN_LIST_MAX(dynlist));
   }
 
   vals[DYN_LIST_N(dynlist)] = dfuCopyDynList(newlist);
@@ -3686,15 +3700,20 @@ void dfuMoveDynListList(DYN_LIST *dynlist, DYN_LIST *newlist)
 {
   DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dynlist);
 
-  if (DYN_LIST_N(dynlist) == DYN_LIST_MAX(dynlist)) {
-    DYN_LIST_MAX(dynlist) += DYN_LIST_INCREMENT(dynlist);
-    vals = (DYN_LIST **) 
-      realloc(vals, sizeof(DYN_LIST *)*DYN_LIST_MAX(dynlist));
+  /* Check for null BEFORE growing/realloc: an early return after realloc()
+     would leave DYN_LIST_VALS() pointing at the just-freed old buffer (the
+     new pointer is only stored back at the end), causing a later double-free. */
+  if (!newlist) {
+#ifdef DF_WARN_NULL_LIST
+    fprintf(stderr, "Attempt to add null list\n");
+#endif
+    return;
   }
 
-  if (!newlist) {
-    fprintf(stderr, "Attempt to add null list\n");
-    return;
+  if (DYN_LIST_N(dynlist) == DYN_LIST_MAX(dynlist)) {
+    DYN_LIST_MAX(dynlist) += DYN_LIST_INCREMENT(dynlist);
+    vals = (DYN_LIST **)
+      realloc(vals, sizeof(DYN_LIST *)*DYN_LIST_MAX(dynlist));
   }
 
   vals[DYN_LIST_N(dynlist)] = newlist;
