@@ -181,7 +181,35 @@ proc traj::pendulum::landmarks { p } {
     return $m
 }
 
+# ------------------------------------------------------------------
+# Convenience: DURATION-anchored construction. A pendulum's natural free
+# parameters are (theta0, length, g); design work usually wants to fix the
+# SWING DURATION instead (turn-to-turn flight time T) and let length float --
+# the pendulum analogue of traj::ballistic::symmetric's land_time. Given
+# theta0 and T, the half-period identity (half period = 2*K(k)/w0) solves w0,
+# then L = g/w0^2. T should equal that half period (turn to turn) for the
+# swing to land exactly at the mirror amplitude, matching symmetric's
+# fixed-endpoint convention.
+# ------------------------------------------------------------------
+proc traj::pendulum::solve_length { theta0 T g } {
+    set k  [expr {sin($theta0/2.0)}]
+    set qK [traj::pendulum::ellipK $k]
+    set w0 [expr {2.0*$qK/$T}]
+    return [expr {$g/($w0*$w0)}]
+}
+
+proc traj::pendulum::make_by_duration { theta0 T g args } {
+    set L [traj::pendulum::solve_length $theta0 $T $g]
+    return [traj::pendulum::make $theta0 $L $g $T {*}$args]
+}
+
+# traj::extent's generic fallback resamples the whole path to find max |x|/|y|;
+# make{} already computes the exact value at construction (maxext), so expose
+# it directly instead of paying for a redundant resample.
+proc traj::pendulum::extent { p } { return [dict get $p maxext] }
+
 traj::register pendulum \
     -pos       traj::pendulum::pos \
     -vel       traj::pendulum::vel \
-    -landmarks traj::pendulum::landmarks
+    -landmarks traj::pendulum::landmarks \
+    -extent    traj::pendulum::extent

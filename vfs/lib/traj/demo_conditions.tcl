@@ -74,10 +74,8 @@ proc condviz::build_matched {} {
     set Tb 1.5      ;# ballistic (pilot): wide, shallow, fast
     set Tp 3.0      ;# pendulum: half-swing lasts Tp; speed-anchored to the ballistic
     set th0 [condviz::d2r 105]
-    set qK [traj::pendulum::ellipK [expr {sin($th0/2.0)}]]
-    set w0 [expr {2.0*$qK/$Tp}] ; set L [expr {$g/($w0*$w0)}]
-    set pen  [traj::pendulum::make $th0 $L $g $Tp -pivot_y 0.0]
-    set anti [traj::pendulum::make $th0 $L $g $Tp -pivot_y 0.0 -invert 1]
+    set pen  [traj::pendulum::make_by_duration $th0 $Tp $g -pivot_y 0.0]
+    set anti [traj::pendulum::make_by_duration $th0 $Tp $g -pivot_y 0.0 -invert 1]
     set defs [list \
       [list "Ballistic HILL   (+g, consistent)"     "#4da6ff" \
           [traj::ballistic::symmetric 9.0 $Tb $g 0 0.0]        ballistic $Tb] \

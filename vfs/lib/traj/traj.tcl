@@ -98,6 +98,14 @@ proc traj::pos       { params t } { return [traj::_call $params pos $t] }
 proc traj::vel       { params t } { return [traj::_call $params vel $t] }
 proc traj::landmarks { params }   { return [traj::_call $params landmarks] }
 
+# |v(t)| -- the single number most per-frame drivers actually want (internal
+# dot speed, coherence-tween endpoints, ...). A thin convenience over vel, not
+# a new model hook.
+proc traj::speed { params t } {
+    lassign [traj::vel $params $t] vx vy
+    return [expr {hypot($vx,$vy)}]
+}
+
 proc traj::duration { params } {
     set m [traj::landmarks $params]
     if { ![dict exists $m end] } { error "traj: model reports no 'end' landmark" }

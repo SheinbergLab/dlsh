@@ -74,6 +74,15 @@ proc traj::inverted_pendulum::make { theta_top length g duration args } {
         s_x $sx s_y $sy s_vx $svx s_vy $svy]
     lassign [traj::inverted_pendulum::pos $p $duration] lx ly
     dict set p land_x $lx ; dict set p land_y $ly
+    # on-screen half-extent, from the ALREADY-SAMPLED path (a single pass over
+    # sx/sy here is cheaper than traj::extent's generic fallback, which would
+    # resample the whole path a second time via pos()).
+    set mx 0.0
+    foreach x $sx y $sy {
+        set m [expr {max(abs($x), abs($y))}]
+        if { $m > $mx } { set mx $m }
+    }
+    dict set p maxext $mx
     return $p
 }
 
@@ -121,7 +130,10 @@ proc traj::inverted_pendulum::landmarks { p } {
     return $m
 }
 
+proc traj::inverted_pendulum::extent { p } { return [dict get $p maxext] }
+
 traj::register inverted_pendulum \
     -pos       traj::inverted_pendulum::pos \
     -vel       traj::inverted_pendulum::vel \
-    -landmarks traj::inverted_pendulum::landmarks
+    -landmarks traj::inverted_pendulum::landmarks \
+    -extent    traj::inverted_pendulum::extent
