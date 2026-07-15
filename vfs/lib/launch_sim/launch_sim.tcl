@@ -47,8 +47,22 @@
 package provide launch_sim 0.2
 package require dlsh
 
+# The trajectory MODEL (position/velocity per motion_type) lives in `traj` --
+# ONE definition, shared with the ESS loaders and the stim's per-frame replay.
+# launch_sim keeps the POLICY that sits on top of it: rejection sampling, scene
+# geometry, endpoint clamping and sample interpolation.
+package require traj 1.0
+
 namespace eval launch_sim {
     variable pi 3.14159265358979323846
+}
+
+# Build the traj params dict for a ballistic arc. Hoisted out of the sampling
+# and bisection loops (built once per candidate, not per timestep).
+proc launch_sim::_ballistic { launcher_x launcher_y vx vy gravity } {
+    return [dict create motion_type ballistic \
+                launcher_x $launcher_x launcher_y $launcher_y \
+                vx $vx vy $vy gravity $gravity]
 }
 
 # ------------------------------------------------------------------
@@ -199,19 +213,18 @@ proc launch_sim::sample_trajectory { {params {}} {side -1} } {
         if { $linear_dur <= 0.0 && ($land_x < $target_lo || $land_x > $target_hi) } continue
 
         # land_y is the analytic ENDPOINT, ALWAYS present: floor_y for +g, the
-        # mirror 2*launcher_y-floor_y for -g, launcher_y+vy*T for the line.
-        # y(t) = launcher_y + vy_out*t - 0.5*gravity*t^2 holds for all three, so
-        # the analytic replay (ball_pos_at_time / ball_vel_at_time) needs no
-        # special-casing for any regime.
-        set land_y [expr {$launcher_y + $vy_out*$land_time - 0.5*$gravity*$land_time*$land_time}]
-        set ang    [expr {$inverted ? -$rad : $rad}]
+        # mirror 2*launcher_y-floor_y for -g, launcher_y+vy*T for the line. One
+        # model (traj, ballistic) covers all three regimes, so neither the
+        # endpoint nor the analytic replay needs special-casing.
+        set bp [launch_sim::_ballistic $launcher_x $launcher_y $vx $vy_out $gravity]
+        lassign [traj::pos $bp $land_time] _lx land_y
+        set ang [expr {$inverted ? -$rad : $rad}]
 
         # success -- sample the path at fixed dt, then the exact land point
         set tlist {}; set xlist {}; set ylist {}
         for { set t 0.0 } { $t < $land_time } { set t [expr {$t+$dt}] } {
-            lappend tlist $t
-            lappend xlist [expr {$launcher_x + $vx*$t}]
-            lappend ylist [expr {$launcher_y + $vy_out*$t - 0.5*$gravity*$t*$t}]
+            lassign [traj::pos $bp $t] px py
+            lappend tlist $t ; lappend xlist $px ; lappend ylist $py
         }
         lappend tlist $land_time; lappend xlist $land_x; lappend ylist $land_y
 
@@ -264,15 +277,14 @@ proc launch_sim::sample_trajectory_circle { p side } {
         # crossing -- works for line and parabola alike, no quartic algebra
         set tlist {}; set xlist {}; set ylist {}
         set exit_t {}
+        set bp [launch_sim::_ballistic $launcher_x $launcher_y $vx $vy $gravity]
         for { set t 0.0 } { $t <= $max_sim_time } { set t [expr {$t+$dt}] } {
-            set x [expr {$launcher_x + $vx*$t}]
-            set y [expr {$launcher_y + $vy*$t - 0.5*$gravity*$t*$t}]
+            lassign [traj::pos $bp $t] x y
             if { $t > 0.0 && hypot($x-$circle_cx,$y-$circle_cy) >= $circle_r } {
                 set ta [expr {$t-$dt}]; set tb $t
                 for { set b 0 } { $b < 40 } { incr b } {
                     set tm [expr {0.5*($ta+$tb)}]
-                    set xm [expr {$launcher_x+$vx*$tm}]
-                    set ym [expr {$launcher_y+$vy*$tm-0.5*$gravity*$tm*$tm}]
+                    lassign [traj::pos $bp $tm] xm ym
                     if { hypot($xm-$circle_cx,$ym-$circle_cy) >= $circle_r } { set tb $tm } else { set ta $tm }
                 }
                 set exit_t $tb
@@ -282,8 +294,7 @@ proc launch_sim::sample_trajectory_circle { p side } {
         }
         if { $exit_t eq {} || $exit_t < $min_visible } continue
 
-        set land_x [expr {$launcher_x + $vx*$exit_t}]
-        set land_y [expr {$launcher_y + $vy*$exit_t - 0.5*$gravity*$exit_t*$exit_t}]
+        lassign [traj::pos $bp $exit_t] land_x land_y
         # left/right balance + a discrete `side` for the 2AFC scaffolding
         set s [expr {$land_x < $circle_cx ? 0 : 1}]   ;# realized side (left/right)
         if { $side == 0 && $s != 0 } continue
@@ -399,15 +410,14 @@ proc launch_sim::sample_trajectory_arc { p side } {
 
         # fly until first crossing of radius R from the launcher; bisect to refine
         set tlist {}; set xlist {}; set ylist {}; set exit_t {}
+        set bp [launch_sim::_ballistic $launcher_x $launcher_y $vx $vy $gravity]
         for { set t 0.0 } { $t <= $max_sim_time } { set t [expr {$t+$dt}] } {
-            set x [expr {$launcher_x + $vx*$t}]
-            set y [expr {$launcher_y + $vy*$t - 0.5*$gravity*$t*$t}]
+            lassign [traj::pos $bp $t] x y
             if { $t > 0.0 && hypot($x-$launcher_x,$y-$launcher_y) >= $R } {
                 set ta [expr {$t-$dt}]; set tb $t
                 for { set b 0 } { $b < 40 } { incr b } {
                     set tm [expr {0.5*($ta+$tb)}]
-                    set xm [expr {$launcher_x+$vx*$tm}]
-                    set ym [expr {$launcher_y+$vy*$tm-0.5*$gravity*$tm*$tm}]
+                    lassign [traj::pos $bp $tm] xm ym
                     if { hypot($xm-$launcher_x,$ym-$launcher_y) >= $R } { set tb $tm } else { set ta $tm }
                 }
                 set exit_t $tb
@@ -417,8 +427,7 @@ proc launch_sim::sample_trajectory_arc { p side } {
         }
         if { $exit_t eq {} || $exit_t < $min_visible } continue
 
-        set land_x [expr {$launcher_x + $vx*$exit_t}]
-        set land_y [expr {$launcher_y + $vy*$exit_t - 0.5*$gravity*$exit_t*$exit_t}]
+        lassign [traj::pos $bp $exit_t] land_x land_y
         set exit_angle [expr {atan2($land_y-$launcher_y, $land_x-$launcher_x)}]
         # signed deviation from heading, wrapped to (-pi,pi]
         set dev [expr {atan2(sin($exit_angle-$heading), cos($exit_angle-$heading))}]
@@ -485,10 +494,7 @@ proc launch_sim::ball_pos_at_time { tr t {mode auto} } {
         set mode [expr {[dict exists $tr vx] ? "analytic" : "interp"}]
     }
     if { $mode eq "analytic" } {
-        set x [expr {[dict get $tr launcher_x] + [dict get $tr vx]*$t}]
-        set y [expr {[dict get $tr launcher_y] + [dict get $tr vy]*$t \
-                     - 0.5*[dict get $tr gravity]*$t*$t}]
-        return [list $x $y]
+        return [traj::pos $tr $t]          ;# shared model (see `traj`)
     }
     # interp: linear between the samples bracketing t (lists are short, so a
     # forward scan is fine; switch to bisection if trajectories get long)
@@ -521,7 +527,7 @@ proc launch_sim::ball_vel_at_time { tr t {mode auto} } {
         set mode [expr {[dict exists $tr vx] ? "analytic" : "interp"}]
     }
     if { $mode eq "analytic" } {
-        return [list [dict get $tr vx] [expr {[dict get $tr vy] - [dict get $tr gravity]*$t}]]
+        return [traj::vel $tr $t]          ;# shared model (see `traj`)
     }
     set h  [expr {$lt*0.01 + 1e-4}]
     set ta [expr {$t-$h < 0.0 ? 0.0 : $t-$h}]

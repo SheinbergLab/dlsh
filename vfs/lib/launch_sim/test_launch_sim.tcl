@@ -10,6 +10,13 @@
 if {![info exists ::__launch_sim_test_loaded]} {
     source /usr/local/dlsh/dlsh_setup.tcl
     package require dlsh
+    # launch_sim now depends on `traj` (the shared trajectory model). Source the
+    # ON-DISK traj too -- until dlsh.zip is rebuilt it isn't in the VFS at all,
+    # and even after, we want to test the copy we just edited. Sourcing runs its
+    # `package provide traj 1.0`, satisfying launch_sim's `package require`.
+    catch {package forget traj}
+    catch {namespace delete ::traj}
+    source [file join [file dirname [file dirname [info script]]] traj traj.tcl]
     # Source the ON-DISK launch_sim directly. auto_path front-loading does NOT
     # reliably shadow a copy already in dlsh.zip (dlsh's package scan caches the
     # zip's `package ifneeded` first), so source the sibling file to be sure we
