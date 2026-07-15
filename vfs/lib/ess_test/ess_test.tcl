@@ -659,8 +659,19 @@ proc ess_test::stub_stim2 {} {
         lappend ::ess_test::thisframe $script
     }
 
-    # -- events ------------------------------------------------------------
+    # -- events --------------------------------------------------------------
+    # dserv_send_evt (sync-header, timing-critical marker) and dserv_send
+    # (plain typed datapoint, no sync header -- for bulk/post-hoc pushes that
+    # don't need per-call timing correction, e.g. a whole trial's trajectory
+    # sent once at stim_off) both land in the same captured `events` list;
+    # ess_test doesn't model the wire-format difference (evtPack vs a typed
+    # dl send), only that a named push with a payload happened.
     proc ::dserv_send_evt {name {payload {}}} { ess_test::_event $name $payload }
+    # dl is a dlsh list handle -- an unnamed/inline one (not dl_local'd by the
+    # caller) is only guaranteed to live for the current statement, so snapshot
+    # its VALUES now (dl_tcllist) rather than storing the handle for later
+    # inspection, which can outlive the object ("dynlist ... not found").
+    proc ::dserv_send     {name {dl {}}}      { ess_test::_event $name [dl_tcllist $dl] }
 
     # -- dserv comm boundary (kept headless) ------------------------------
     ess_test::stub_dserv

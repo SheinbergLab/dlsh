@@ -1,4 +1,4 @@
-package provide qpcs 3.41
+package provide qpcs 3.42
 
 package require dlsh
 
@@ -599,7 +599,16 @@ namespace eval qpcs {
 	set dtype [dl_datatype $dl]
 	set fmt  [dict get $_binfmt $dtype]
 	set data [binary format ${fmt}* [dl_tcllist $dl]]
-	dsSocketSendBytes $sock $varname $data [dict get $_dtypes $dtype]
+	set type [dict get $_dtypes $dtype]
+	# The fixed 128-byte '>' frame carries 19 bytes of header, leaving 109
+	# for varname+data. Anything larger goes via the variable-length '}'
+	# message (no size cap) — same fire-and-forget path, chosen per-payload
+	# so small sync events keep the fast fixed frame.
+	if { [string length $varname] + [string length $data] <= 109 } {
+	    dsSocketSendBytes $sock $varname $data $type
+	} else {
+	    dsSocketSendBytesVar $sock $varname $data $type
+	}
     }
 
     # Send raw, already-encoded bytes as a typed datapoint over a pre-opened
@@ -623,6 +632,23 @@ namespace eval qpcs {
 	    csa${varlen}wiia${datalen}x${pad} \
 	    0x3E $varlen $varname 0 $type $datalen $data]
 
+	puts -nonewline $sock $msg
+	flush $sock
+    }
+
+    # Variable-length companion to dsSocketSendBytes: pushes a typed datapoint
+    # of ANY size over the same pre-opened binary socket, with no base64 and no
+    # '@set' handshake. Fire-and-forget (no reply), so it composes freely with
+    # dsSocketSendBytes/dsSocketSendBinary on a shared socket.
+    #
+    # Layout: '}' + varlen(u16) + type(u32) + datalen(u32) + timestamp(u64=0)
+    #         + varname + data. Little-endian, matching the '>' frame; the
+    #         server reads the 18-byte header then the name and data by length.
+    proc dsSocketSendBytesVar { sock varname data { type 0 } } {
+	set varlen  [string length $varname]
+	set datalen [string length $data]
+	set msg [binary format csiiwa${varlen}a${datalen} \
+	    0x7D $varlen $type $datalen 0 $varname $data]
 	puts -nonewline $sock $msg
 	flush $sock
     }
