@@ -585,14 +585,11 @@ namespace eval qpcs {
 	return $status
     }
 
-    # Send a dl_list to dserv using the '>' fixed-length binary
-    # protocol over a pre-opened persistent socket. No base64,
-    # no handshake — single 128-byte write per call.
-    #
-    # Socket must be configured: -translation binary -buffering full
-    #
-    # Payload limit: varname + data must fit in ~100 bytes
-    # (128 - header overhead). For larger payloads use dsSocketPutData.
+    # Send a dl_list to dserv over a pre-opened persistent socket. No base64,
+    # no handshake. Auto-routes by payload size: varname+data <= 109 bytes uses
+    # the fixed 128-byte '>' frame (one write); anything larger uses the
+    # variable-length 0x7D-lead message via dsSocketSendBytesVar (still one
+    # write, no cap). Socket must be -translation binary -buffering full.
     proc dsSocketSendBinary { sock varname dl } {
 	variable _binfmt
 	variable _dtypes
@@ -601,9 +598,9 @@ namespace eval qpcs {
 	set data [binary format ${fmt}* [dl_tcllist $dl]]
 	set type [dict get $_dtypes $dtype]
 	# The fixed 128-byte '>' frame carries 19 bytes of header, leaving 109
-	# for varname+data. Anything larger goes via the variable-length '}'
-	# message (no size cap) — same fire-and-forget path, chosen per-payload
-	# so small sync events keep the fast fixed frame.
+	# for varname+data. Anything larger goes via the variable-length
+	# (0x7D-lead) message, which has no size cap -- same fire-and-forget
+	# path, chosen per-payload so small sync events keep the fast fixed frame.
 	if { [string length $varname] + [string length $data] <= 109 } {
 	    dsSocketSendBytes $sock $varname $data $type
 	} else {
@@ -641,7 +638,7 @@ namespace eval qpcs {
     # '@set' handshake. Fire-and-forget (no reply), so it composes freely with
     # dsSocketSendBytes/dsSocketSendBinary on a shared socket.
     #
-    # Layout: '}' + varlen(u16) + type(u32) + datalen(u32) + timestamp(u64=0)
+    # Layout: 0x7D lead + varlen(u16) + type(u32) + datalen(u32) + ts(u64=0)
     #         + varname + data. Little-endian, matching the '>' frame; the
     #         server reads the 18-byte header then the name and data by length.
     proc dsSocketSendBytesVar { sock varname data { type 0 } } {
@@ -685,28 +682,11 @@ namespace eval qpcs {
 	return [list $swapcount $stimticksf $vals]
     }
 
-    # Like dsPutData but uses a pre-opened persistent socket.
-    # Uses the '@set' framed protocol with explicit lengths and
-    # multi-step handshake. Data is base64-encoded for transport.
-    proc dsSocketPutData { sock varname dl } {
-	set d [dict create char 0 float 2 short 4 long 5]
-	set dtype [dl_datatype $dl]
-	set type [dict get $d $dtype]
-	set d [dict create char 1 float 4 short 2 long 4]
-	set eltsize [dict get $d $dtype]
-	set len [dl_toString64 $dl _v64]
-	set datalen [expr {$eltsize * [dl_length $dl]}]
-
-	set varlen [expr {[string len $varname] + 2}]
-	puts $sock "@set $varlen $type $datalen"
-	gets $sock
-	puts $sock $varname
-	gets $sock
-	puts $sock $_v64
-	set status [gets $sock]
-	unset _v64
-	return $status
-    }
+    # (Removed dsSocketPutData: a persistent-socket '@set' base64 handshake
+    # that was never called and was broken on a -translation binary socket
+    # (bare \n vs the +2 \r\n the server expects; no flush on -buffering full).
+    # Large binary pushes now go through dsSocketSendBinary, which auto-routes
+    # oversized payloads to dsSocketSendBytesVar -- raw binary, no handshake.)
 
     proc dsSocketGet { sock var } {
 	puts $sock "%get $var"

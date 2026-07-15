@@ -145,7 +145,8 @@ endforeach()
 
 # Packages from pkgs/ that are pure Tcl
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/pkgs/hex DESTINATION lib COMPONENT vfs)
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/pkgs/qpcs DESTINATION lib COMPONENT vfs)
+# qpcs now lives solely in vfs/lib/qpcs (installed by the base-layer copy above);
+# its former pkgs/qpcs copy was removed to end the vfs/pkgs version drift.
 
 ###############################
 # Our C/C++ packages (from pkgs/)
