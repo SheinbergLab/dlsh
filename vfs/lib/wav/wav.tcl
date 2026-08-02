@@ -116,9 +116,11 @@ namespace eval wav {
     # file i/o (RIFF wav)
     #########################################################################
 
-    # write samples (flat float dl list, interleaved if -channels > 1) as
-    # 16-bit PCM; wav::write path samples ?-rate r? ?-channels n?
-    proc write { path samples args } {
+    # render samples (flat float dl list, interleaved if -channels > 1) as
+    # a complete 16-bit PCM wav file image, returned as a binary string.
+    # Feed it to the dserv sound module's wavLoadData (no disk involved),
+    # or hand it to wav::write. wav::render samples ?-rate r? ?-channels n?
+    proc render { samples args } {
         variable default_rate
         set o [_opts [list -rate $default_rate -channels 1] $args]
         set rate [dict get $o -rate]
@@ -135,10 +137,15 @@ namespace eval wav {
                      "fmt " 16 1 $nchan $rate $byterate $align 16 \
                      "data" $nbytes]
 
+        return $hdr$data
+    }
+
+    # write samples as a 16-bit PCM wav file (render + save);
+    # wav::write path samples ?-rate r? ?-channels n?
+    proc write { path samples args } {
         set f [open $path w]
         fconfigure $f -translation binary
-        puts -nonewline $f $hdr
-        puts -nonewline $f $data
+        puts -nonewline $f [render $samples {*}$args]
         close $f
         return $path
     }
