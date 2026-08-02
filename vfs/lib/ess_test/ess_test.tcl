@@ -54,7 +54,16 @@ namespace eval ess_test {
 
     # Seed values for dserv datapoint reads (dservGet). Loaders/stim that read
     # a datapoint at run time get these instead of touching a live dserv.
+    # Under the ESS harness this doubles as the live datapoint table: every
+    # dservSet lands here (and is appended to dserv_log).
     variable dserv_data {ess/screen_refresh_rate 60}
+
+    # --- ESS-harness state (real ess-2.0.tm against stubbed dserv) ----------
+    variable dserv_log      {}   ;# ordered list of {key value} writes
+    variable ess_lib        {}   ;# dir holding ess-2.0.tm ("" = auto-detect)
+    variable real_ess_loaded 0   ;# real_ess has booted the genuine package
+    variable stubbed        {}   ;# command names stub_command installed
+    variable autostubbed    {}   ;# names caught by the opt-in autostub
 
     # Extra Tcl module (.tm) directories to put on the module path so a script's
     # `package require` finds system-local libs. `<systems_root>/lib` (where
@@ -122,6 +131,7 @@ proc ess_test::config {args} {
             -ambient      { set ambient [dict merge $ambient $v] }
             -dserv        { set dserv_data [dict merge $dserv_data $v] }
             -tm_path      { lappend tm_paths $v }
+            -ess_lib      { variable ess_lib; set ess_lib $v }
             default { error "ess_test::config: unknown option $k" }
         }
     }
@@ -163,8 +173,88 @@ proc ess_test::fake_ess {{version 2.0}} {
     if {![info exists ::ess::last_touch_press]} { set ::ess::last_touch_press {} }
     ess_test::_ensure_tm_paths
     ess_test::stub_dserv
+    ess_test::stub_ess_api
     return
 }
+
+# The slice of the real ess-2.0.tm API that LOADERS are expected to call.
+# Without these a loader that follows the ESS loader contract (report a
+# missing external dependency instead of throwing) cannot be run headless.
+# Logging goes to stdout; the data-file lookup is implemented for real
+# against systems_root so path resolution is actually exercised.
+proc ess_test::stub_ess_api {} {
+    namespace eval ::ess {}
+
+    foreach lvl {error warning info debug} {
+        if {[info commands ::ess::ess_$lvl] eq ""} {
+            proc ::ess::ess_$lvl [list message [list category system]] \
+                [format {puts "ess_%s(${category}): ${message}"} $lvl]
+        }
+    }
+
+    # loader contract: reason recorded, not thrown. Inspect with
+    # ess_test::degraded_reason after running a loader.
+    if {[info commands ::ess::loader_no_trials] eq ""} {
+        namespace eval ::ess { variable loader_degraded {} }
+        proc ::ess::clear_loader_degraded {} {
+            variable loader_degraded; set loader_degraded {}
+        }
+        proc ::ess::get_loader_degraded {} {
+            variable loader_degraded; return $loader_degraded
+        }
+        proc ::ess::loader_no_trials {reason} {
+            variable loader_degraded
+            set loader_degraded $reason
+            ::ess::ess_warning "loader produced no trials: $reason" loader
+        }
+    }
+
+    if {[info commands ::ess::data_search_paths] eq ""} {
+        proc ::ess::data_search_paths {name {system {}} {protocol {}}} {
+            variable current
+            if {$system eq {}}   { set system   $current(system) }
+            if {$protocol eq {}} { set protocol $current(protocol) }
+            set root [file join $::ess::system_path $current(project)]
+            set paths {}
+            if {$system ne {}} {
+                if {$protocol ne {}} {
+                    lappend paths [file join $root $system $protocol data $name]
+                }
+                lappend paths [file join $root $system data $name]
+            }
+            lappend paths [file join $root data $name]
+            return $paths
+        }
+        proc ::ess::find_data_file {name args} {
+            set extra {}; set system {}; set protocol {}
+            foreach {opt val} $args {
+                switch -- $opt {
+                    -paths    { set extra $val }
+                    -system   { set system $val }
+                    -protocol { set protocol $val }
+                    default   { error "find_data_file: unknown option '$opt'" }
+                }
+            }
+            foreach p [concat $extra [::ess::data_search_paths $name $system $protocol]] {
+                if {$p ne {} && [file readable $p] && ![file isdirectory $p]} { return $p }
+            }
+            return {}
+        }
+        proc ::ess::data_file_problem {path {label "data file"}} {
+            if {$path eq {}} { return "no $label found on this host" }
+            if {![file readable $path] || [file isdirectory $path]} {
+                return "$label is missing or unreadable: $path"
+            }
+            if {[file size $path] == 0} { return "$label is empty: $path" }
+            return {}
+        }
+    }
+    return
+}
+
+# Reason the last loader gave for producing no trials ("" if it produced
+# trials, or never called ::ess::loader_no_trials).
+proc ess_test::degraded_reason {} { return [::ess::get_loader_degraded] }
 
 # ==========================================================================
 # 2. Capturing "system object" (shared by loader + protocol harnesses)
@@ -390,40 +480,92 @@ proc ess_test::_bind_args {name spec} {
 # sibling loader (a variant loader that delegates, e.g. `my setup_trials ...`)
 # or, failing that, forwards to the captured system object as a method call.
 # dserv reads are already stubbed by fake_ess. Idempotent.
-proc ess_test::_install_loader_env {} {
-    if {[info commands ::my] eq ""} {
-        proc ::my {sub args} {
-            if {[dict exists $::ess_test::loaders $sub]} {
-                return [ess_test::_run_loader_body $sub $args]
-            }
-            if {$::ess_test::cur_sys ne "" && [info commands $::ess_test::cur_sys] ne ""} {
-                return [$::ess_test::cur_sys $sub {*}$args]
-            }
-            return {}
-        }
-    }
-    return
-}
-
-# Execute a loader body via `apply` from the GLOBAL namespace :: (NOT the
-# loader's sys::proto namespace) to match the real oo-method execution context.
-# Ambient system variables (screen_halfx, ...) are injected as locals first --
-# ESS supplies them in the method scope on the rig -- except any whose name is
-# already a loader parameter (the param wins).
-proc ess_test::_run_loader_body {name vals} {
+# Bind every registered loader as a REAL proc under ::ess_test::_l, then
+# expose them as the `my` ENSEMBLE.
+#
+# Why an ensemble and not `proc ::my {sub args} {...}`: ensemble dispatch
+# replaces the command word without pushing a stack frame, exactly like
+# TclOO method dispatch. A proc-based `my` inserts frames between the
+# caller and the callee, and `dl_return` -- which hands its dynlist UP ONE
+# frame -- then drops the list into the wrapper instead of the calling
+# loader. The symptom is `dynlist ">0<" not found` from any loader that
+# does `dl_append ... [my other_loader ...]`, which is a harness artifact
+# with no counterpart on the rig. Same reason `apply` is not used to run a
+# body: it is a frame too.
+#
+# Bodies are (re)bound on each top-level run_loader so a `config` change
+# to the ambient variables takes effect.
+proc ess_test::_bind_loader_procs {} {
     variable loaders
     variable ambient
     variable runtime_ambient
-    set params [dict get $loaders $name params]
-    set body   [dict get $loaders $name body]
-    # inject captured system/protocol params+variables, then config ambient
-    # (config wins); a name that is a loader parameter is left to the arg value.
-    set inject [dict merge $runtime_ambient $ambient]
-    set pre ""
-    dict for {k v} $inject {
-        if {[lsearch -exact $params $k] < 0} { append pre "set [list $k] [list $v]\n" }
+
+    namespace eval ::ess_test::_l {}
+    foreach c [info commands ::ess_test::_l::*] { rename $c {} }
+
+    # (re)seed the shared system-variable namespace from the declared
+    # defaults, so each top-level run starts from a known state the way a
+    # freshly created system object would
+    namespace eval ::ess_test::_v {}
+    foreach v [info vars ::ess_test::_v::*] { unset $v }
+    dict for {k val} [dict merge $runtime_ambient $ambient] {
+        set ::ess_test::_v::$k $val
     }
-    return [apply [list $params $pre$body] {*}$vals]
+
+    # System params/variables are LINKED, not copied. ESS's add_variable does
+    # `oo::objdefine [self] variable $var`, so every loader method shares one
+    # set of object variables: a loader that does `set n_choices $n_targets`
+    # changes what a SIBLING loader sees afterwards. hapticvis/transfer relies
+    # on exactly that -- setup_visual_cued calls `my setup_trials` (which sets
+    # n_choices) and then reads $n_choices. Copying them in as plain locals
+    # made that read the stale declared default and fail in the harness only.
+    set map {}
+    dict for {name spec} $loaders {
+        set params [dict get $spec params]
+        set body   [dict get $spec body]
+        # a name that is also a loader parameter is left to the arg value
+        set inject [dict merge $runtime_ambient $ambient]
+        set pre ""
+        dict for {k v} $inject {
+            if {[lsearch -exact $params $k] < 0} {
+                append pre "namespace upvar ::ess_test::_v [list $k] [list $k]\n"
+            }
+        }
+        proc ::ess_test::_l::$name $params $pre$body
+        dict set map $name ::ess_test::_l::$name
+    }
+
+    catch { rename ::my {} }
+    namespace ensemble create -command ::my -map $map \
+        -unknown ::ess_test::_my_unknown
+    return
+}
+
+# Ensemble fallback: `my <method>` for something that is NOT a loader is a
+# call on the system object (n_obs, add_method-defined helpers, ...).
+# Returning a command prefix keeps dispatch frame-free.
+proc ess_test::_my_unknown {ens sub args} {
+    variable cur_sys
+    if {$cur_sys ne "" && [info commands $cur_sys] ne ""} {
+        return [list $cur_sys $sub]
+    }
+    return [list ::ess_test::_my_noop]
+}
+
+proc ess_test::_my_noop {args} { return {} }
+
+proc ess_test::_install_loader_env {} {
+    ess_test::_bind_loader_procs
+    return
+}
+
+# Execute a loader body from the GLOBAL namespace :: (NOT the loader's
+# sys::proto namespace) to match the real oo-method execution context.
+proc ess_test::_run_loader_body {name vals} {
+    variable loaders
+    if {![dict exists $loaders $name]} { error "ess_test: no loader '$name'" }
+    if {[info commands ::ess_test::_l::$name] eq ""} { ess_test::_bind_loader_procs }
+    return [::ess_test::_l::$name {*}$vals]
 }
 
 # Run a loader body with args and return the stimdg handle.
@@ -445,6 +587,8 @@ proc ess_test::run_loader {args} {
     set vals [ess_test::_bind_args $name $spec]
     ess_test::_install_loader_env
     if {[dg_exists stimdg]} { dg_delete stimdg }
+    # so degraded_reason reflects THIS run only (ESS clears it per loader call)
+    catch { ::ess::clear_loader_degraded }
     return [ess_test::_run_loader_body $name $vals]
 }
 
@@ -685,14 +829,22 @@ proc ess_test::stub_stim2 {} {
 # (dsGet returns "" -- there is no dserv to read). This is the spec's "stub
 # dserv" boundary: reads/writes go nowhere, so nothing connects or hangs.
 proc ess_test::stub_dserv {} {
-    if {![info exists ::dservhost]} { set ::dservhost localhost }
-    if {![info exists ::dservport]} { set ::dservport 4620 }
     catch {package forget qpcs}
     package provide qpcs 0.0
     namespace eval ::qpcs {}
     proc ::qpcs::dsSet {args} {}
     proc ::qpcs::dsGet {args} { return {} }
     proc ::qpcs::dsStimAddMatch {args} {}
+    ess_test::stub_datapoints
+    return
+}
+
+# The datapoint half of stub_dserv, without faking the qpcs package.
+# The ESS harness needs this but must let the REAL qpcs load, because
+# ess-2.0.tm hard-requires qpcs 3.42 for its stim-event sync.
+proc ess_test::stub_datapoints {} {
+    if {![info exists ::dservhost]} { set ::dservhost localhost }
+    if {![info exists ::dservport]} { set ::dservport 4620 }
     # dserv datapoint access: reads come from the seed dict (ess_test::config
     # -dserv {key value ...}); writes update it; nothing connects.
     proc ::dservGet {key} {
@@ -700,10 +852,313 @@ proc ess_test::stub_dserv {} {
         return {}
     }
     proc ::dservExists {key} { return [dict exists $::ess_test::dserv_data $key] }
-    proc ::dservSet {key val} { dict set ::ess_test::dserv_data $key $val; return $val }
+    # every write is also appended to dserv_log, so a test can assert on the
+    # SEQUENCE of publishes (e.g. ess/status went loading -> stopped), which a
+    # final-value check cannot see
+    proc ::dservSet {key val} {
+        dict set ::ess_test::dserv_data $key $val
+        lappend ::ess_test::dserv_log [list $key $val]
+        return $val
+    }
     proc ::dservTouch {args} {}
+    # Must return REAL data: ess-2.0.tm iterates dservKeys to discover
+    # already-present hardware (box/joystick/level datapoints). A no-op stub
+    # returning {} is fine, but the command has to exist and yield a list --
+    # leaving it out made five joystick/targets variants look broken when
+    # nothing was wrong with them.
+    proc ::dservKeys {{pattern *}} {
+        set out {}
+        dict for {k v} $::ess_test::dserv_data {
+            if {[string match $pattern $k]} { lappend out $k }
+        }
+        return $out
+    }
     return
 }
+
+# ==========================================================================
+# ESS harness -- the REAL ess-2.0.tm against a stubbed dserv
+# ==========================================================================
+#
+# The loader and stim harnesses above FAKE the ess package: they source a
+# loader/stim file in isolation and never execute ess-2.0.tm itself. That
+# leaves the whole load pipeline -- load_system, protocol_init, variant_init,
+# the loader-arg plumbing, the datapoints ESS publishes, and its error
+# handling -- untestable outside a running dserv.
+#
+# This harness closes that gap. It loads the real ess-2.0.tm and replaces
+# only the dserv/hardware C commands with recording stubs, so:
+#
+#   ess_test::real_ess
+#   set r [ess_test::load_system match_to_sample phd VV]
+#   ess_test::assert {[dict get $r trials] == 100} "100 trials"
+#   ess_test::assert {[ess_test::datapoint ess/status] eq "stopped"} "usable"
+#
+# What is real: every line of ess-2.0.tm, the system/protocol/loaders/variants
+# scripts, and the stimdg they build. What is stubbed: the dserv datapoint
+# table (recorded in-process), the stim connection (rmtOpen returns 0, i.e.
+# "no stim host", so configure_stim takes its no-connection path), timers,
+# events, and hardware I/O.
+#
+# NOT covered: the running state machine, real timing, and anything that
+# needs an actual stim2 or rig. This tests LOADING, not RUNNING.
+#
+# Mutually exclusive with the loader harness in one interp: load_loaders
+# installs the FAKE ess package. Use real_ess in its own dlsh invocation.
+
+# Where ess-2.0.tm and its sibling .tm files live.
+proc ess_test::_default_ess_lib {} {
+    foreach d [list [file join $::env(HOME) src dserv lib] /usr/local/dserv/lib] {
+        if {[file exists [file join $d ess-2.0.tm]]} { return $d }
+    }
+    return {}
+}
+
+# Define a no-op (or fixed-result) stand-in for a dserv/hardware command.
+# Never clobbers a command that already exists -- dlsh's own commands and
+# any stub a test installed first win.
+proc ess_test::stub_command {name {result {}}} {
+    variable stubbed
+    if {[info commands ::$name] ne ""} { return 0 }
+    proc ::$name {args} [list return $result]
+    lappend stubbed $name
+    return 1
+}
+
+# The dserv/hardware commands ess-2.0.tm and the system scripts reach for.
+# Harvested by running load_system over every system in ~/systems/ess; the
+# hardware entries are included pre-emptively so protocol_init callbacks
+# (juicer/sound/touch/joystick init) do not need per-test stubbing.
+variable ess_test::dserv_commands {
+    dservAddExactMatch dservAddMatch dservRemoveExactMatch dservRemoveMatch
+    dservRemoveAllMatches dservClear dservSetData dservSetData64
+    dservLoggerClient dservLoggerAddMatch dservLoggerRemoveMatch
+    dservLoggerOpen dservLoggerClose
+    dpointSetScript dpointRemoveScript dpointRemoveAllScripts
+    timerSetScript timerTick timerExpired
+    evtNameSet evtPut evtPack evtUnpack
+    rmtSend rmtClose
+    touchSetProcessor touchSetParam touchSetIndexedParam
+    ainSetProcessor ainSetParam ainSetIndexedParam
+    samplerConfigure samplerStart samplerStop
+    gpioLineRequestInput gpioLineRequestOutput gpioLineSetValue
+    joystick_init joystick_deinit
+    juicerJuice soundPlay soundReset processSetParam
+    dsSocketSendBytes dsSocketSendBytesVar dsSocketSendBinary
+    triggerAdd triggerRemove usbioSetLevel print send
+}
+
+# Boot the real ess package against stubbed dserv/hardware.
+#   -ess_lib DIR    where ess-2.0.tm lives (default: ~/src/dserv/lib, then
+#                   /usr/local/dserv/lib)
+#   -systems_root D as ess_test::config
+#   -data_dir DIR   ESS_DATA_DIR (default: a temp dir; never the real one)
+#   -autostub 1     silently stub any other lowercase command ESS reaches for,
+#                   recording it in ess_test::autostubbed. OFF by default: it
+#                   would also swallow a genuine typo in a system script.
+# Returns the ess package version.
+proc ess_test::real_ess {args} {
+    variable systems_root
+    variable ess_lib
+    variable dserv_commands
+    variable stubbed
+    variable autostubbed
+    variable real_ess_loaded
+
+    set data_dir [file join [_tmpdir] ess_test_data]
+    set autostub 0
+    foreach {k v} $args {
+        switch -- $k {
+            -ess_lib      { set ess_lib $v }
+            -systems_root { set systems_root $v }
+            -data_dir     { set data_dir $v }
+            -autostub     { set autostub $v }
+            default { error "ess_test::real_ess: unknown option $k" }
+        }
+    }
+    if {$ess_lib eq ""} { set ess_lib [ess_test::_default_ess_lib] }
+    if {$ess_lib eq ""} {
+        error "ess_test::real_ess: cannot find ess-2.0.tm; pass -ess_lib DIR"
+    }
+
+    if {[info commands ::ess::load_system] ne "" && !$real_ess_loaded} {
+        error "ess_test::real_ess: the FAKE ess package is already installed in\
+ this interp (load_loaders/fake_ess ran). The two harnesses cannot share an\
+ interp -- run real_ess in its own dlsh invocation."
+    }
+
+    # ESS reads its roots from the environment at package load time.
+    set ::env(ESS_SYSTEM_PATH)  [file dirname $systems_root]
+    set ::env(ESS_DATA_DIR)     $data_dir
+    set ::env(ESS_STIM_REQUIRED) 0
+    if {![file exists $data_dir]} { file mkdir $data_dir }
+
+    # globals the dserv Tcl interp provides
+    if {![info exists ::nTimers]} { set ::nTimers 8 }
+
+    # datapoints only -- the real qpcs must load (ess-2.0.tm needs 3.42)
+    ess_test::stub_datapoints
+    set stubbed {}
+    set autostubbed {}
+    foreach c $dserv_commands { ess_test::stub_command $c }
+
+    # rmtOpen 0 == "no stim host": configure_stim then takes its
+    # not-connected path and installs default screen geometry.
+    if {[info commands ::rmtOpen] eq ""} { proc ::rmtOpen {args} { return 0 } }
+    # monotonic microsecond-ish clock; ESS only needs it to advance
+    if {[info commands ::now] eq ""} {
+        set ::ess_test::_now 0
+        proc ::now {} { return [incr ::ess_test::_now 1000] }
+    }
+
+    if {$autostub} { ess_test::_install_autostub }
+
+    tcl::tm::add $ess_lib
+    ess_test::_ensure_tm_paths
+    set v [package require ess]
+    set real_ess_loaded 1
+    ::ess::set_project [file tail $systems_root]
+    return $v
+}
+
+# Re-point the harness -- and, when real_ess is running, the LIVE ESS --
+# at a different systems tree. ess-2.0.tm caches system_path at package
+# load time and ess::paths keeps its own copy, so setting ess_test's
+# systems_root alone silently leaves ESS looking at the old tree.
+# Use this (not `config -systems_root`) to switch trees mid-suite.
+proc ess_test::use_systems_root {root} {
+    variable systems_root
+    variable real_ess_loaded
+    set systems_root $root
+    if {$real_ess_loaded} {
+        set base [file dirname $root]
+        set proj [file tail $root]
+        set ::ess::system_path $base
+        ess::paths::configure -system_path $base -project $proj
+        ::ess::set_project $proj
+    }
+    return $root
+}
+
+proc ess_test::_tmpdir {} {
+    foreach v {TMPDIR TMP TEMP} {
+        if {[info exists ::env($v)]} { return $::env($v) }
+    }
+    return /tmp
+}
+
+# Opt-in: stub anything else ESS reaches for, so a dserv that has grown a new
+# C command does not stop the harness dead. Everything caught is recorded.
+proc ess_test::_install_autostub {} {
+    if {[info commands ::_ess_test_orig_unknown] ne ""} { return }
+    rename ::unknown ::_ess_test_orig_unknown
+    proc ::unknown {cmd args} {
+        if {[string match {[a-z]*} $cmd] && ![string match {* *} $cmd]} {
+            lappend ::ess_test::autostubbed $cmd
+            proc ::$cmd {args} { return {} }
+            return {}
+        }
+        return [::_ess_test_orig_unknown $cmd {*}$args]
+    }
+    return
+}
+
+proc ess_test::stubbed_commands {} { variable stubbed; return [lsort $stubbed] }
+proc ess_test::autostubbed {}      { variable autostubbed; return [lsort -unique $autostubbed] }
+
+# Run a real ess::load_system. Returns a dict:
+#   ok      1 if the load completed, 0 if it threw
+#   trials  rows in stimdg (0 if none)
+#   error   the exception message ("" when ok)
+# It does NOT rethrow -- a failing load is a result to assert on, which is
+# the whole point of testing the failure paths.
+proc ess_test::load_system {system {protocol {}} {variant {}}} {
+    set err ""
+    if {[catch {::ess::load_system $system $protocol $variant} err]} {
+        set ok 0
+    } else {
+        set ok 1; set err ""
+    }
+    set trials 0
+    if {[dg_exists stimdg]} { catch {set trials [dl_length stimdg:stimtype]} }
+    return [dict create ok $ok trials $trials error $err]
+}
+
+proc ess_test::reload_variant {} {
+    set err ""
+    if {[catch {::ess::reload_variant} err]} { set ok 0 } else { set ok 1; set err "" }
+    set trials 0
+    if {[dg_exists stimdg]} { catch {set trials [dl_length stimdg:stimtype]} }
+    return [dict create ok $ok trials $trials error $err]
+}
+
+# Structural complaints about the current stimdg, as a list of strings
+# ({} == well formed). A loader can return perfectly happily and still hand
+# back a stimdg that breaks at RUN time -- a column of the wrong length is
+# the classic one, and it is invisible to any "did the load throw?" check.
+proc ess_test::stimdg_problems {} {
+    if {![dg_exists stimdg]} { return {{no stimdg was created}} }
+    set cols [dg_tclListnames stimdg]
+    if {[llength $cols] == 0} { return {{stimdg has no columns}} }
+    if {[lsearch -exact $cols stimtype] < 0} {
+        return {{stimdg has no stimtype column}}
+    }
+    set n [dl_length stimdg:stimtype]
+    set out {}
+    if {$n == 0} { lappend out "stimdg has 0 trials" }
+    foreach c $cols {
+        set len [dl_length stimdg:$c]
+        if {$len != $n} {
+            lappend out "column '$c' has $len rows, expected $n"
+        }
+    }
+    return $out
+}
+
+# ── Datapoint inspection ──────────────────────────────────────────────
+
+proc ess_test::datapoint {key} {
+    variable dserv_data
+    if {![dict exists $dserv_data $key]} {
+        error "ess_test: datapoint '$key' was never set"
+    }
+    return [dict get $dserv_data $key]
+}
+
+proc ess_test::datapoint_exists {key} {
+    variable dserv_data
+    return [dict exists $dserv_data $key]
+}
+
+# All datapoints, optionally filtered by glob (ess_test::datapoints ess/*).
+proc ess_test::datapoints {{pattern *}} {
+    variable dserv_data
+    set out [dict create]
+    dict for {k v} $dserv_data {
+        if {[string match $pattern $k]} { dict set out $k $v }
+    }
+    return $out
+}
+
+# Ordered history of dservSet calls as {key value} pairs, optionally filtered.
+# Use it to assert on transitions: the values ess/status passed through.
+proc ess_test::dserv_log {{pattern *}} {
+    variable dserv_log
+    set out {}
+    foreach e $dserv_log {
+        if {[string match $pattern [lindex $e 0]]} { lappend out $e }
+    }
+    return $out
+}
+
+# The sequence of values a single datapoint took.
+proc ess_test::dserv_history {key} {
+    set out {}
+    foreach e [ess_test::dserv_log $key] { lappend out [lindex $e 1] }
+    return $out
+}
+
+proc ess_test::clear_dserv_log {} { variable dserv_log; set dserv_log {} }
 
 # Source a <proto>_stim.tcl with stubs installed (stub_stim2 must run first, so
 # top-level calls like `load_Impro` exist). The stim's `package require mp_sim`

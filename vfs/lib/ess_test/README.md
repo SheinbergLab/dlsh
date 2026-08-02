@@ -86,6 +86,69 @@ ess_test::config -systems_root /path/to/systems/ess
 
 ---
 
+## The three harnesses
+
+| harness | what is real | what it tests |
+|---|---|---|
+| **loader** (`load_loaders` / `run_loader`) | the loader file + dlsh | loader → `stimdg` |
+| **stim** (`stub_stim2` / `stim_source` / `play`) | the stim file + dlsh | per-frame numbers handed to stim2 |
+| **ESS** (`real_ess` / `load_system`) | **all of `ess-2.0.tm`** + every system script | the load pipeline and the datapoints it publishes |
+
+The loader and stim harnesses **fake** the `ess` package — they source one file
+in isolation. The ESS harness does the opposite: it loads the genuine
+`ess-2.0.tm` and stubs only the dserv/hardware C commands, so `load_system`,
+`protocol_init`, `variant_init`, the loader-arg plumbing and ESS's error
+handling all execute for real.
+
+```tcl
+package require ess_test
+ess_test::real_ess                                   ;# real ess-2.0.tm, stubbed dserv
+
+set r [ess_test::load_system match_to_sample phd VV]
+ess_test::assert {[dict get $r ok]}                  "loaded"
+ess_test::assert {[dict get $r trials] == 100}       "100 trials"
+
+# assert on what ESS published
+ess_test::assert {[ess_test::datapoint ess/status] eq "stopped"}  "usable"
+ess_test::datapoints ess/*                           ;# every datapoint, as a dict
+
+# ...and on the ORDER it published in, which a final-value check cannot see
+ess_test::assert {[ess_test::dserv_history ess/status] eq {loading stopped}} \
+    "status entered and left loading"
+```
+
+`load_system` returns `{ok trials error}` and **does not rethrow** — a failing
+load is a result to assert on, which is the whole point of testing failure
+paths. See `test_ess_harness.tcl` for the worked example: it pins down the
+load-failure contract (status never stuck at `loading`, `ess/load_error`
+published with the failing stage, `ess::load_last_good` recovers) using the
+fixture system in `fixtures/`, then runs the same checks against a real system
+with and without its external data file.
+
+Useful bits:
+
+- `ess_test::use_systems_root DIR` — switch trees **mid-suite**. ESS caches
+  `system_path` at package load, so `config -systems_root` alone would leave it
+  looking at the old tree.
+- `ess_test::stub_command NAME ?result?` — add a dserv/hardware command the
+  built-in list is missing (it never clobbers an existing command).
+- `ess_test::real_ess -autostub 1` — stub anything else ESS reaches for and
+  record it in `ess_test::autostubbed`. Off by default: it would also swallow a
+  genuine typo in a system script.
+- `-ess_lib DIR` — which `ess-2.0.tm` to load (default `~/src/dserv/lib`, then
+  `/usr/local/dserv/lib`). Point it at a copy to test against another version.
+
+**Scope:** this tests LOADING, not RUNNING. `rmtOpen` returns 0 ("no stim
+host"), so `configure_stim` takes its not-connected path; timers, events and
+hardware I/O are inert. The state machine, real timing, and anything needing a
+live stim2 or rig are out of reach.
+
+**One harness per interp.** `load_loaders` installs the fake `ess` package and
+`real_ess` the genuine one; `real_ess` errors if the fake is already loaded.
+Run them in separate `dlsh` invocations.
+
+---
+
 ## Writing tests for a NEW loader / stim
 
 The workflow that catches the most bugs, in value order:
@@ -105,8 +168,14 @@ puts [ess_test::dg_summary $g]                    ;# eyeball all columns + sampl
 ```
 
 `load_loaders` sources the file **inside `namespace eval ::ess`**, exactly as the
-rig does, and `run_loader` executes the loader body via `apply` from the global
-namespace `::` — matching the real oo-method context. This is deliberate: it
+rig does, and `run_loader` executes the loader body from the global namespace
+`::` — matching the real oo-method context. Loaders are bound as real procs and
+`my` is a **namespace ensemble** over them, so `my other_loader ...` dispatches
+without pushing a stack frame, exactly like TclOO. That matters: `dl_return`
+hands its dynlist up one frame, so a proc- or `apply`-based `my` would drop the
+result in the wrapper and you would see `dynlist ">0<" not found` from any
+loader that calls a helper loader — a harness artifact with no counterpart on
+the rig. This is deliberate: it
 reproduces the execution context in which absolute-name helper calls
 (`::ess::sys::proto::my_helper`) must resolve, so a namespace-resolution bug
 surfaces *here* instead of on the rig.
