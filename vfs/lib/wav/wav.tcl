@@ -246,22 +246,48 @@ namespace eval wav {
         noise_burst { noise 200 -rate $rate }
     }
 
-    # Materialize the demo set as real wav files in `dir` (created if
-    # needed). Existing files are left alone unless -force 1. Returns the
-    # list of names. wav::make_demo_sounds dir ?-rate r? ?-force 0/1?
-    proc make_demo_sounds { dir args } {
+    proc demo_names {} {
+        variable demo_sounds
+        set names {}
+        foreach {name script} $demo_sounds { lappend names $name }
+        return $names
+    }
+
+    # Render one demo sound by name, returning the complete wav file
+    # image as a binary string -- feed it to the dserv sound module's
+    # wavLoadData (or the ::ess::wav_load_data wrapper); no file is
+    # involved. wav::demo_sound name ?-rate r?
+    proc demo_sound { name args } {
         variable default_rate
         variable demo_sounds
+        set o [_opts [list -rate $default_rate] $args]
+        set rate [dict get $o -rate]
+        if { ![dict exists $demo_sounds $name] } {
+            error "wav::demo_sound: unknown demo sound \"$name\"\
+                   (available: [demo_names])"
+        }
+        dl_local s [eval [subst -nocommands [dict get $demo_sounds $name]]]
+        return [render $s -rate $rate]
+    }
+
+    # Materialize the demo set as real wav files in `dir` (created if
+    # needed) -- e.g. as visible examples to imitate, or for tools that
+    # want files. Existing files are left alone unless -force 1. Returns
+    # the list of names. wav::make_demo_sounds dir ?-rate r? ?-force 0/1?
+    proc make_demo_sounds { dir args } {
+        variable default_rate
         set o [_opts [list -rate $default_rate -force 0] $args]
         set rate [dict get $o -rate]
 
         file mkdir $dir
         set names {}
-        foreach {name script} $demo_sounds {
+        foreach name [demo_names] {
             set path [file join $dir ${name}.wav]
             if { [dict get $o -force] || ![file exists $path] } {
-                dl_local s [eval [subst -nocommands $script]]
-                write $path $s -rate $rate
+                set f [open $path w]
+                fconfigure $f -translation binary
+                puts -nonewline $f [demo_sound $name -rate $rate]
+                close $f
             }
             lappend names $name
         }
