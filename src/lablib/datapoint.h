@@ -5,6 +5,10 @@
 
 #include <stdint.h>
 
+/* Must track dserv's src/Datapoint.h exactly: this header decodes what the
+   logger wrote.  It was frozen at DSERV_NONE for years, which silently
+   turned every JPEG/PPM/INT64 payload in a log into an empty list (the
+   decoders' default: case). */
 typedef enum {
   DSERV_BYTE = 0,
   DSERV_STRING,
@@ -17,6 +21,12 @@ typedef enum {
   DSERV_TRIGGER_SCRIPT,		/* will always be delivered to trigger thread */
   DSERV_EVT,
   DSERV_NONE,
+  DSERV_JSON,
+  DSERV_ARROW,
+  DSERV_MSGPACK,
+  DSERV_JPEG,
+  DSERV_PPM,
+  DSERV_INT64,
   DSERV_UNKNOWN,
 } ds_datatype_t;
 

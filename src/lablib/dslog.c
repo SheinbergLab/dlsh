@@ -29,12 +29,78 @@
 #define E_BEGINOBS 19
 #define E_ENDOBS   20
 
+/*
+ * Per-conversion state.  These fields used to be function statics, which
+ * poisoned every file after the first in a long-lived process (the df
+ * subprocess converts hundreds per day): time zeros and first-obs anchors
+ * were latched once per process, so obs_times was only ever correct for
+ * the first file read.
+ */
+typedef struct essdg_ctx_s {
+  int have_t0;          /* seen the first record yet?                   */
+  uint64_t file_t0;     /* very first record's timestamp (never moves)  */
+  uint64_t time_zero;   /* e_pre anchor: first record or last BEGINOBS  */
+  int got_first_obs;
+  uint64_t first_obs;   /* first BEGINOBS timestamp                     */
+  DYN_LIST *obs_start_ms; /* per-obs BEGINOBS ms from file_t0 (or NULL) */
+} essdg_ctx_t;
+
+/* Blob datatypes are opaque binary payloads (one unit per datapoint, e.g.
+   a JPEG frame).  They get file-level <blob>/<blobt> columns rather than
+   per-obs concatenation: a frame requested late in an obs can be encoded
+   asynchronously and logged after ENDOBS, so log POSITION cannot assign it
+   to an obs -- its capture TIMESTAMP can, and extraction does the pairing
+   (df::File camera helpers). */
+static int is_blob_dstype(int type)
+{
+  return (type == DSERV_JPEG || type == DSERV_PPM);
+}
+
+/* ds_datatype_t and DF_* are different enum spaces.  Empty-obs placeholder
+   sublists used to be created with the raw ds type (DSERV_FLOAT -> DF_CHAR,
+   DSERV_INT -> DF_FLOAT, ...), making columns type-heterogeneous whenever
+   an obs had no samples. */
+static int df_type_for_dstype(int type)
+{
+  switch (type) {
+  case DSERV_BYTE:   return DF_CHAR;
+  case DSERV_STRING: return DF_STRING;
+  case DSERV_JSON:   return DF_STRING;
+  case DSERV_FLOAT:  return DF_FLOAT;
+  case DSERV_DOUBLE: return DF_FLOAT;
+  case DSERV_SHORT:  return DF_SHORT;
+  case DSERV_JPEG:   return DF_CHAR;
+  case DSERV_PPM:    return DF_CHAR;
+  case DSERV_INT:    return DF_LONG;
+  default:           return DF_LONG;
+  }
+}
+
+/* Number of decoded values add_dpoint_to_list() appends for a record --
+   what lets a reader split a per-obs concatenated <ds> column back into
+   its records (paired with the per-record <dst> timestamps). */
+static int dpoint_val_count(ds_datapoint_t *d)
+{
+  switch (d->data.type) {
+  case DSERV_BYTE:   return d->data.len;
+  case DSERV_FLOAT:  return d->data.len / sizeof(float);
+  case DSERV_SHORT:  return d->data.len / sizeof(short);
+  case DSERV_INT:    return d->data.len / sizeof(int);
+  case DSERV_DOUBLE: return d->data.len / sizeof(double);
+  case DSERV_STRING: return 1;
+  case DSERV_JSON:   return 1;
+  default:           return 0;
+  }
+}
+
 static int addDservObsPeriod(
 			     FILE *fp,        /* open data file FP   */
 			     int nvars,       /* number of dpoints   */
 			     char **varnames, /* name of datapoints  */
 			     int *vartypes,   /* type of datapoints  */
-			     int *columns,    /* column ids in dg    */
+			     int *val_cols,   /* <ds> column ids     */
+			     int *time_cols,  /* <dst> column ids    */
+			     int *cnt_cols,   /* <dsn> column ids    */
 			     DYN_GROUP *dg);   /* output dg          */
 
 /*****************************************************************************/
@@ -243,20 +309,21 @@ int dpoint_read(FILE *fp, ds_datapoint_t **dpoint)
 
 static int addObsPeriod(DYN_GROUP *dg,
 		 DYN_LIST *evt_names,
-		 DYN_LIST *evt_types, 
+		 DYN_LIST *evt_types,
 		 DYN_LIST *evt_subtypes,
 		 DYN_LIST *evt_times,
 		 DYN_LIST *evt_params,
 		 DYN_LIST *misc,
-		 DYN_LIST *ems, 
-		 DYN_LIST *ems2, 
-		 DYN_LIST *sp_types, 
-		 DYN_LIST *sp_channels, 
-		 DYN_LIST *sp_inputs, 
+		 DYN_LIST *ems,
+		 DYN_LIST *ems2,
+		 DYN_LIST *sp_types,
+		 DYN_LIST *sp_channels,
+		 DYN_LIST *sp_inputs,
 		 DYN_LIST *sp_times,
 		 int fileindx, int obsindx,
-		 FILE *fp, 
-		 DYN_LIST *obs_times);
+		 FILE *fp,
+		 DYN_LIST *obs_times,
+		 essdg_ctx_t *ctx);
 
 static int addSeparatedEvent(DYN_LIST *types, DYN_LIST *subtypes, DYN_LIST *times, 
 		      DYN_LIST *params, ds_datapoint_t *ev, uint64_t evtime);
@@ -274,9 +341,9 @@ static DYN_LIST *create_val_list(ds_datatype_t type, int len, unsigned char *buf
   if (!len) {
     switch (type) {
     case DSERV_DG:
-      dl = dfuCreateDynList(DF_CHAR, 1);
-      break;
     case DSERV_BYTE:
+    case DSERV_JPEG:
+    case DSERV_PPM:
       dl = dfuCreateDynList(DF_CHAR, 1);
       break;
     case DSERV_DOUBLE:
@@ -291,6 +358,7 @@ static DYN_LIST *create_val_list(ds_datatype_t type, int len, unsigned char *buf
       dl = dfuCreateDynList(DF_LONG, 1);
       break;
     case DSERV_STRING:
+    case DSERV_JSON:
       dl = dfuCreateDynList(DF_STRING, 1);
       break;
     default:
@@ -300,11 +368,10 @@ static DYN_LIST *create_val_list(ds_datatype_t type, int len, unsigned char *buf
   else {
     switch(type) {
     case DSERV_DG:
-      vals = malloc(len);
-      memcpy(vals, buf, len);
-      dl = dfuCreateDynListWithVals(DF_CHAR, len, vals);
-      break;
     case DSERV_BYTE:
+    case DSERV_JPEG:
+    case DSERV_PPM:
+      /* opaque bytes: a DF_CHAR vector of the raw payload */
       vals = malloc(len);
       memcpy(vals, buf, len);
       dl = dfuCreateDynListWithVals(DF_CHAR, len, vals);
@@ -331,21 +398,25 @@ static DYN_LIST *create_val_list(ds_datatype_t type, int len, unsigned char *buf
       d = (double *) buf;
       n = len/sizeof(double);
       dl = dfuCreateDynList(DF_FLOAT, n);
-      
-      for (i = 0; i < len; i++) {
+
+      /* was `i < len`: read 8x past the buffer and appended 8x too many */
+      for (i = 0; i < n; i++) {
 	dfuAddDynListFloat(dl, (float) d[i]);
       }
       break;
     case DSERV_STRING:
+    case DSERV_JSON:
       dl = dfuCreateDynList(DF_STRING, 1);
       vals = malloc(len+1);
       memcpy(vals, buf, len);
       vals[len] = '\0';
       dfuAddDynListString(dl, (char *) vals);
       free(vals);
-      
+
       break;
     default:
+      /* DSERV_INT64 and friends: no 64-bit dg type exists, so these fall
+	 through to the empty placeholder below rather than truncating. */
       break;
     }
   }
@@ -367,6 +438,8 @@ static DYN_LIST *add_dpoint_to_list(DYN_LIST *dl, ds_datapoint_t *dpoint)
 
   switch(dpoint->data.type) {
   case DSERV_BYTE:
+  case DSERV_JPEG:
+  case DSERV_PPM:
     if (!dl) dl = dfuCreateDynList(DF_CHAR, dpoint->data.len);
     if (!dl) return NULL;
     for (i = 0; i < dpoint->data.len; i++) {
@@ -407,9 +480,11 @@ static DYN_LIST *add_dpoint_to_list(DYN_LIST *dl, ds_datapoint_t *dpoint)
     }
     break;
   case DSERV_STRING:
-    if (!dl) dl = dfuCreateDynList(DF_STRING, dpoint->data.len);
+  case DSERV_JSON:
+    /* used to unconditionally create a fresh list here, leaking the old
+       one and keeping only the LAST string of the obs */
+    if (!dl) dl = dfuCreateDynList(DF_STRING, 1);
     if (!dl) return NULL;
-    dl = dfuCreateDynList(DF_STRING, 1);
     vals = malloc(dpoint->data.len+1);
     memcpy(vals, dpoint->data.buf, dpoint->data.len);
     vals[dpoint->data.len] = '\0';
@@ -524,6 +599,7 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
     else {
       dfuMoveDynListList(values, vallist);
     }
+    dpoint_free(d);
   }
 
   fclose(fp);
@@ -591,24 +667,21 @@ static int addObsPeriod(DYN_GROUP *dg,
 		 DYN_LIST *evt_types, DYN_LIST *evt_subtypes,
 		 DYN_LIST *evt_times,
 		 DYN_LIST *evt_params,
-		 DYN_LIST *misc, DYN_LIST *ems, DYN_LIST *ems2, 
-		 DYN_LIST *spk_types, 
-		 DYN_LIST *spk_channels, 
-		 DYN_LIST *spk_inputs, 
+		 DYN_LIST *misc, DYN_LIST *ems, DYN_LIST *ems2,
+		 DYN_LIST *spk_types,
+		 DYN_LIST *spk_channels,
+		 DYN_LIST *spk_inputs,
 		 DYN_LIST *spk_times,
 		 int fileindx, int obsindx,
-		 FILE *fp, 
-		 DYN_LIST *obs_times)
+		 FILE *fp,
+		 DYN_LIST *obs_times,
+		 essdg_ctx_t *ctx)
 {
   ds_datapoint_t *d;
-  static int been_here = 0;
   int i;
-  static uint64_t time_zero;
-  static uint64_t first_obs;
-  static int got_first_obs = 0;
   uint64_t evtime;
-  int thisobs;
-  
+  int64_t thisobs;
+
   DYN_LIST *types, *subtypes, *times, *params;
   DYN_LIST *emdata, *emdata2, *h, *v, *info;
 #ifdef HAVE_SPIKES
@@ -617,9 +690,10 @@ static int addObsPeriod(DYN_GROUP *dg,
 #endif
   int nchan = 2;
   int interval = 5;
-  
+  int moved_em = 0;
+
   char getting_trial = 0;
-  
+
   types = dfuCreateDynList(DF_LONG, 10);
   subtypes = dfuCreateDynList(DF_LONG, 10);
   times = dfuCreateDynList(DF_LONG, 10);
@@ -632,10 +706,10 @@ static int addObsPeriod(DYN_GROUP *dg,
   v = dfuCreateDynList(DF_SHORT, 1024);
 
   /*
-   * This is the dpoint_read() loop for the program.  It is the 
+   * This is the dpoint_read() loop for the program.  It is the
    * main worker, filling up arrays with em and spikes, filling up the
    * recording buffers with tags and values, etc.  This is called once per
-   * observation period. 
+   * observation period.
    */
 
   while (dpoint_read(fp, &d) > 0) {
@@ -650,13 +724,13 @@ static int addObsPeriod(DYN_GROUP *dg,
 	snprintf(listname, sizeof(listname), "<%s>%s",
 		 d->varname, DYN_LIST_NAME(DYN_GROUP_LIST(subdg, i)));
 	dfuCopyDynGroupExistingList(dg, listname,
-				    DYN_GROUP_LIST(subdg, i));		
+				    DYN_GROUP_LIST(subdg, i));
       }
       dfuFreeDynGroup(subdg);
       dpoint_free(d);
       continue;
     }
-    
+
     // event names
     if (d->data.type == DSERV_STRING &&
 	!strcmp(d->varname, "eventlog/names")) {
@@ -664,7 +738,7 @@ static int addObsPeriod(DYN_GROUP *dg,
       dpoint_free(d);
       continue;
     }
-    
+
     // eye movements
     if (!strcmp(d->varname, "ain/vals")) {
       add_emdata(info, h, v, interval, nchan,
@@ -675,28 +749,30 @@ static int addObsPeriod(DYN_GROUP *dg,
       dpoint_free(d);
       continue;
     }
-    
-    if (!been_here) {
-      time_zero = d->timestamp;
-      been_here = 1;
+
+    if (!ctx->have_t0) {
+      ctx->file_t0 = d->timestamp;
+      ctx->time_zero = d->timestamp;
+      ctx->have_t0 = 1;
     }
 
-    evtime = d->timestamp-time_zero;
+    evtime = d->timestamp - ctx->time_zero;
 
     if (d->data.e.dtype == DSERV_EVT) {
       if (d->data.e.type == E_BEGINOBS) {
 	if (getting_trial++) {
 	  fprintf(stderr, "WARNING: BeginObs found with no EndObs\n");
+	  dpoint_free(d);
 	  goto done;
 	}
 
-	if (!got_first_obs) {
-	  first_obs = d->timestamp;
-	  got_first_obs = 1;
+	if (!ctx->got_first_obs) {
+	  ctx->first_obs = d->timestamp;
+	  ctx->got_first_obs = 1;
 	}
-	time_zero = d->timestamp;
+	ctx->time_zero = d->timestamp;
 	evtime = 0;
-      
+
 	dfuResetDynList(types);
 	dfuResetDynList(subtypes);
 	dfuResetDynList(times);
@@ -708,41 +784,57 @@ static int addObsPeriod(DYN_GROUP *dg,
 	dfuResetDynList(h);
 	dfuResetDynList(v);
       }
-    
+
       if (getting_trial) {
 	addSeparatedEvent(types, subtypes, times, params, d, evtime);
       }
       else
 	addEvent(misc, d, evtime);
-    
+
       if (d->data.e.type == E_ENDOBS) {
 	if (getting_trial) {	/* can be false if user quit before next beginobs */
 	  dfuAddDynListList(evt_types, types);
 	  dfuAddDynListList(evt_subtypes, subtypes);
 	  dfuAddDynListList(evt_times, times);
 	  dfuAddDynListList(evt_params, params);
-	  
+
 	  dfuMoveDynListList(emdata, info);
 	  dfuMoveDynListList(emdata, h);
 	  dfuMoveDynListList(emdata, v);
-	  
+
 	  dfuMoveDynListList(ems, emdata);
 	  if (nchan > 2 && ems2) {
 	    dfuMoveDynListList(ems2, emdata2);
+	  } else {
+	    dfuFreeDynList(emdata2);
 	  }
+	  moved_em = 1;
 #if 0
 	  dfuMoveDynListList(spk_types, s_types);
 	  dfuMoveDynListList(spk_channels, s_channels);
 	  dfuMoveDynListList(spk_inputs, s_inputs);
 	  dfuMoveDynListList(spk_times, s_times);
-#endif	
-	  thisobs = time_zero-first_obs;
-	  dfuAddDynListLong(obs_times, thisobs/1000); /* add in ms */
+#endif
+	  /* both in ms, anchored so they stay correct across files and
+	     past 2^31 us (~36 min) into a session */
+	  thisobs = (int64_t)(ctx->time_zero - ctx->first_obs);
+	  dfuAddDynListLong(obs_times, (int)(thisobs/1000));
+	  if (ctx->obs_start_ms) {
+	    int64_t from_t0 = (int64_t)(ctx->time_zero - ctx->file_t0);
+	    dfuAddDynListLong(ctx->obs_start_ms, (int)(from_t0/1000));
+	  }
 	}
 	dfuFreeDynList(types);
 	dfuFreeDynList(subtypes);
 	dfuFreeDynList(times);
 	dfuFreeDynList(params);
+	if (!moved_em) {
+	  dfuFreeDynList(emdata);
+	  dfuFreeDynList(emdata2);
+	  dfuFreeDynList(info);
+	  dfuFreeDynList(h);
+	  dfuFreeDynList(v);
+	}
 
 	dpoint_free(d);
 
@@ -752,13 +844,25 @@ static int addObsPeriod(DYN_GROUP *dg,
 	dpoint_free(d);
       }
     }
+    else {
+      /* non-event, non-special datapoint: handled by the later <ds>/
+	 <session>/<blob> passes -- this pass leaked one copy of every
+	 such record (em, extio, ...): tens of MB per file in the
+	 long-lived df subprocess */
+      dpoint_free(d);
+    }
   }
-  
+
  done:
   dfuFreeDynList(types);
   dfuFreeDynList(subtypes);
   dfuFreeDynList(times);
   dfuFreeDynList(params);
+  dfuFreeDynList(emdata);
+  dfuFreeDynList(emdata2);
+  dfuFreeDynList(info);
+  dfuFreeDynList(h);
+  dfuFreeDynList(v);
 
   return(0);
 }
@@ -816,9 +920,15 @@ static int addSeparatedEvent(DYN_LIST *types, DYN_LIST *subtypes, DYN_LIST *time
  *  Also finds "session" variables - datapoints that occur outside of obs periods
  *  (before first E_BEGINOBS or after last E_ENDOBS). These are returned in
  *  session_varnames and session_types if non-NULL.
+ *
+ *  Blob-typed variables (JPEG/PPM payloads, e.g. camera frames) are
+ *  collected separately in blob_varnames -- whole-file, not split by obs
+ *  position -- and excluded from the <ds>/<session> lists (see
+ *  dslog_add_blob_vars).
  */
 static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
-			     DYN_LIST **session_varnames, DYN_LIST **session_types)
+			     DYN_LIST **session_varnames, DYN_LIST **session_types,
+			     DYN_LIST **blob_varnames)
 {
   int i;
   int nvars = 0;
@@ -828,9 +938,10 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
   ds_datapoint_t *d;
   DYN_LIST *typelist, *specialvars, *namelist;
   DYN_LIST *session_namelist, *session_typelist;
+  DYN_LIST *blob_namelist;
   int special = 0, existing = 0;
   char *string;
-  
+
   /* start at beginning */
   rewind(fp);
 
@@ -847,14 +958,24 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
   session_namelist = dfuCreateDynList(DF_STRING, 10);
   session_typelist = dfuCreateDynList(DF_LONG, 10);
 
-  /* these are handled by the main conversion function or are internal */
+  /* blob variables, in or out of obs */
+  blob_namelist = dfuCreateDynList(DF_STRING, 4);
+
+  /* these are handled by the main conversion function or are internal.
+     NOTE the logger writes its synthetic obs markers with a COLON
+     ("logger:beginobs", LogClient.h) -- the slash spellings here never
+     matched, so every modern file grew two spurious empty <session>
+     columns.  Both spellings are filtered to keep old and new readers
+     quiet. */
   specialvars = dfuCreateDynList(DF_STRING, 10);
   dfuAddDynListString(specialvars, "eventlog/names");
   dfuAddDynListString(specialvars, "eventlog/events");
   dfuAddDynListString(specialvars, "ain/vals");
   dfuAddDynListString(specialvars, "logger/beginobs");
   dfuAddDynListString(specialvars, "logger/endobs");
-  
+  dfuAddDynListString(specialvars, "logger:beginobs");
+  dfuAddDynListString(specialvars, "logger:endobs");
+
   while (dpoint_read(fp, &d) > 0) {
     if (d->data.e.dtype == DSERV_EVT) {
       if (d->data.e.type == E_BEGINOBS) {
@@ -865,9 +986,16 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
 	  dfuFreeDynList(typelist);
 	  dfuFreeDynList(session_namelist);
 	  dfuFreeDynList(session_typelist);
+	  dfuFreeDynList(blob_namelist);
 	  dfuFreeDynList(specialvars);
 	  rewind(fp);
 	  dslog_read_header(fp, NULL, NULL);
+	  /* outputs must not dangle on the error path */
+	  if (varnames) *varnames = NULL;
+	  if (types) *types = NULL;
+	  if (session_varnames) *session_varnames = NULL;
+	  if (session_types) *session_types = NULL;
+	  if (blob_varnames) *blob_varnames = NULL;
 	  return -1;
 	}
 	had_first_obs = 1;
@@ -897,10 +1025,26 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
       continue;
     }
 
+    /* blobs get their own file-level columns, wherever they occur */
+    if (is_blob_dstype(d->data.type)) {
+      for (existing = 0, i = 0; i < DYN_LIST_N(blob_namelist); i++) {
+	string = ((char **) DYN_LIST_VALS(blob_namelist))[i];
+	if (!strcmp(d->varname, string)) {
+	  existing = 1;
+	  break;
+	}
+      }
+      if (!existing) {
+	dfuAddDynListString(blob_namelist, d->varname);
+      }
+      dpoint_free(d);
+      continue;
+    }
+
     /* see if this is an "extra" varname we want to log */
     if (getting_trial) {
       /* Trial-oriented variable */
-      
+
       /* does it match a variable already added? */
       for (existing = 0, i = 0; i < DYN_LIST_N(namelist); i++) {
 	string = ((char **) DYN_LIST_VALS(namelist))[i];
@@ -919,7 +1063,7 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
     }
     else {
       /* Session variable - outside obs periods */
-      
+
       /* does it match a session variable already added? */
       for (existing = 0, i = 0; i < DYN_LIST_N(session_namelist); i++) {
 	string = ((char **) DYN_LIST_VALS(session_namelist))[i];
@@ -944,10 +1088,10 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
   dslog_read_header(fp, NULL, NULL);
 
   dfuFreeDynList(specialvars);
-  
+
   if (varnames) *varnames = namelist;
   else dfuFreeDynList(namelist);
-  
+
   if (types) *types = typelist;
   else dfuFreeDynList(typelist);
 
@@ -956,7 +1100,10 @@ static int dslog_find_dsvars(FILE *fp, DYN_LIST **varnames, DYN_LIST **types,
 
   if (session_types) *session_types = session_typelist;
   else dfuFreeDynList(session_typelist);
-  
+
+  if (blob_varnames) *blob_varnames = blob_namelist;
+  else dfuFreeDynList(blob_namelist);
+
   return nvars;
 }
 
@@ -1064,26 +1211,37 @@ static int dslog_add_session_vars(FILE *fp, DYN_LIST *namelist,
 }
 
 
+/* build a column name: <prefix>varname with ':' translated to '/' */
+static char *make_ds_listname(const char *prefix, const char *varname)
+{
+  int i, len = strlen(varname), plen = strlen(prefix);
+  char *listname = calloc(len + plen + 1, sizeof(char));
+  memcpy(listname, prefix, plen);
+  for (i = 0; i < len; i++) {
+    if (varname[i] == ':')
+      listname[i+plen] = '/';
+    else
+      listname[i+plen] = varname[i];
+  }
+  return listname;
+}
+
 static int dslog_add_dsvars(FILE *fp, DYN_LIST *namelist,
 			    DYN_LIST *typelist, DYN_GROUP *dg)
-{  
-  int i, j, len;
-  ds_datapoint_t *d;
-  
+{
+  int i;
   int result;
-  int version;
-  uint64_t timestamp;
-  DYN_LIST *dl = NULL;
   int obsindx = 0;
   int nvars;
-  
-  static char *name, dgname[64], *listname, **listnames;
+
+  char *listname;
   char **varnames;
-  int *vartypes, *columnlist;
-  
+  int *vartypes, *val_cols, *time_cols, *cnt_cols;
+
+  if (!namelist || !typelist) return 0;
   if (DYN_LIST_N(namelist) != DYN_LIST_N(typelist)) return 0;
   nvars = DYN_LIST_N(namelist);
-  
+
   rewind(fp);
   if ((result = dslog_read_header(fp, NULL, NULL)) != 1) {
     if (result == -1) {
@@ -1098,40 +1256,116 @@ static int dslog_add_dsvars(FILE *fp, DYN_LIST *namelist,
   varnames = (char **) DYN_LIST_VALS(namelist);
   vartypes = (int *) DYN_LIST_VALS(typelist);
 
-  /* create listnames for output dg */
-  listnames = calloc(nvars, sizeof(char *));
-  
-  /* convert ':' to '/' in point names to be compatible with dlsh dgs */
-  for (j = 0; j < nvars; j++) { 
-    len = strlen(varnames[j]);
-    // make space for <ds> prefix and NULL
-    listnames[j] = calloc(len+4+1, sizeof(char));
-    memcpy(listnames[j], "<ds>", 4);
-    for (i = 0; i < len; i++) {
-      if (varnames[j][i] == ':')
-	listnames[j][i+4] = '/';
-      else
-	listnames[j][i+4] = varnames[j][i];
-    }
+  val_cols = (int *) calloc(nvars, sizeof(int));
+  time_cols = (int *) calloc(nvars, sizeof(int));
+  cnt_cols = (int *) calloc(nvars, sizeof(int));
+
+  /* Three parallel columns per variable, each one sublist per obs:
+   *   <ds>name   the decoded values, concatenated across the obs's records
+   *              (unchanged from the historical format)
+   *   <dst>name  per-RECORD timestamps, ms from that obs's BEGINOBS --
+   *              the same clock and anchor as e_times, so datapoint
+   *              records and events sort on one axis
+   *   <dsn>name  per-RECORD value counts, which split the concatenated
+   *              <ds> values back into records (log buffering coalesces
+   *              several datapoints into one record; extio ain blocks
+   *              carry many samples per record)
+   */
+  for (i = 0; i < nvars; i++) {
+    listname = make_ds_listname("<ds>", varnames[i]);
+    val_cols[i] = dfuAddDynGroupNewList(dg, listname, DF_LIST, 32);
+    free(listname);
+    listname = make_ds_listname("<dst>", varnames[i]);
+    time_cols[i] = dfuAddDynGroupNewList(dg, listname, DF_LIST, 32);
+    free(listname);
+    listname = make_ds_listname("<dsn>", varnames[i]);
+    cnt_cols[i] = dfuAddDynGroupNewList(dg, listname, DF_LIST, 32);
+    free(listname);
   }
 
-  columnlist = (int *) calloc(nvars, sizeof(int));
-
-  /* add new columns to dg and track indices */
-  for (i = 0, j = 0; i < nvars; i++) {
-    columnlist[j++] = dfuAddDynGroupNewList(dg, listnames[i], DF_LIST, 32);
-    free(listnames[i]);
-  }
-
-  
-  free(listnames);
-  
-  //  while (addDservObsPeriod(fp, nvars, varnames, dg)) {
-  while (addDservObsPeriod(fp, nvars, varnames, vartypes, columnlist, dg)) {
+  while (addDservObsPeriod(fp, nvars, varnames, vartypes,
+			   val_cols, time_cols, cnt_cols, dg)) {
     obsindx++;
   }
 
-  free(columnlist);
+  free(val_cols);
+  free(time_cols);
+  free(cnt_cols);
+  return 0;
+}
+
+/*
+ * dslog_add_blob_vars
+ *
+ *  File-level columns for blob-typed variables (JPEG/PPM frames):
+ *
+ *    <blob>name   DF_LIST -- one DF_CHAR byte vector per record
+ *    <blobt>name  DF_LONG -- per-record ms from the file's first record
+ *                 (same anchor as obs_start_ms, so per-obs request events
+ *                  can be paired with capture times: request_abs_ms =
+ *                  obs_start_ms[obs] + e_time)
+ *
+ *  Deliberately NOT split per obs by log position: a frame requested near
+ *  the end of an obs is encoded asynchronously and can be written after
+ *  ENDOBS (or into the next obs's span).  The record's TIMESTAMP is the
+ *  capture time; assignment to obs/trials happens at extraction, by
+ *  pairing with the request events.
+ */
+static int dslog_add_blob_vars(FILE *fp, DYN_LIST *namelist, DYN_GROUP *dg,
+			       essdg_ctx_t *ctx)
+{
+  int i, result, nvars;
+  ds_datapoint_t *d;
+  char *listname;
+  char **varnames;
+  int *val_cols, *time_cols;
+  DYN_LIST *payload;
+
+  if (!namelist) return 0;
+  nvars = DYN_LIST_N(namelist);
+  if (nvars == 0) return 0;
+
+  rewind(fp);
+  if ((result = dslog_read_header(fp, NULL, NULL)) != 1) {
+    return result == -1 ? DSLOG_FileUnreadable : DSLOG_InvalidFormat;
+  }
+
+  varnames = (char **) DYN_LIST_VALS(namelist);
+  val_cols = (int *) calloc(nvars, sizeof(int));
+  time_cols = (int *) calloc(nvars, sizeof(int));
+
+  for (i = 0; i < nvars; i++) {
+    listname = make_ds_listname("<blob>", varnames[i]);
+    val_cols[i] = dfuAddDynGroupNewList(dg, listname, DF_LIST, 8);
+    free(listname);
+    listname = make_ds_listname("<blobt>", varnames[i]);
+    time_cols[i] = dfuAddDynGroupNewList(dg, listname, DF_LONG, 8);
+    free(listname);
+  }
+
+  while (dpoint_read(fp, &d) > 0) {
+    /* a file with no events still needs a time anchor */
+    if (!ctx->have_t0) {
+      ctx->file_t0 = d->timestamp;
+      ctx->time_zero = d->timestamp;
+      ctx->have_t0 = 1;
+    }
+    if (is_blob_dstype(d->data.type)) {
+      for (i = 0; i < nvars; i++) {
+	if (!strcmp(d->varname, varnames[i])) {
+	  payload = create_val_list(d->data.type, d->data.len, d->data.buf);
+	  dfuMoveDynListList(DYN_GROUP_LIST(dg, val_cols[i]), payload);
+	  dfuAddDynListLong(DYN_GROUP_LIST(dg, time_cols[i]),
+			    (int)((int64_t)(d->timestamp - ctx->file_t0)/1000));
+	  break;
+	}
+      }
+    }
+    dpoint_free(d);
+  }
+
+  free(val_cols);
+  free(time_cols);
   return 0;
 }
 
@@ -1233,9 +1467,12 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
     DYN_LIST *evt_names, *evt_types, *evt_subtypes, *evt_times, *evt_params;
     DYN_LIST *ems, *ems2, *misc;
     DYN_LIST *spk_types, *spk_channels, *spk_times, *spk_inputs;
-    DYN_LIST *obs_times;
+    DYN_LIST *obs_times, *obs_start_ms;
 
     DYN_LIST *extra_vars, *extra_types;
+
+    essdg_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
 
     dg = dfuCreateNamedDynGroup(dgname, 12);
     
@@ -1278,30 +1515,41 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
     j = dfuAddDynGroupNewList(dg, "obs_times", DF_LONG, 64);
     obs_times = DYN_GROUP_LIST(dg, j);
 
+    /* each obs's BEGINOBS in ms from the file's FIRST record -- the common
+       axis that lets per-obs event times (ms from BEGINOBS) be compared
+       with file-level <blobt> capture times */
+    j = dfuAddDynGroupNewList(dg, "obs_start_ms", DF_LONG, 64);
+    obs_start_ms = DYN_GROUP_LIST(dg, j);
+    ctx.obs_start_ms = obs_start_ms;
+
     while(addObsPeriod(dg, evt_names, evt_types, evt_subtypes,
-		       evt_times, evt_params, 
+		       evt_times, evt_params,
 		       misc, ems, ems2,
 		       spk_types, spk_channels, spk_inputs, spk_times,
-		       fileindx, obsindx, fp, obs_times)) {
+		       fileindx, obsindx, fp, obs_times, &ctx)) {
       obsindx++;
       if (endindx > 0 && obsindx >= endindx) break;
     }
 
     /* now go back and add extra vars */
     {
-      DYN_LIST *session_vars, *session_types;
+      DYN_LIST *session_vars, *session_types, *blob_vars;
 
       dslog_find_dsvars(fp, &extra_vars, &extra_types,
-			&session_vars, &session_types);
+			&session_vars, &session_types, &blob_vars);
       dslog_add_dsvars(fp, extra_vars, extra_types, dg);
 
       /* add session-level variables (outside obs periods) */
       dslog_add_session_vars(fp, session_vars, session_types, dg);
 
-      dfuFreeDynList(extra_vars);
-      dfuFreeDynList(extra_types);
-      dfuFreeDynList(session_vars);
-      dfuFreeDynList(session_types);
+      /* file-level blob columns (camera frames), paired by timestamp */
+      dslog_add_blob_vars(fp, blob_vars, dg, &ctx);
+
+      if (extra_vars) dfuFreeDynList(extra_vars);
+      if (extra_types) dfuFreeDynList(extra_types);
+      if (session_vars) dfuFreeDynList(session_vars);
+      if (session_types) dfuFreeDynList(session_types);
+      if (blob_vars) dfuFreeDynList(blob_vars);
     }
   }
 
@@ -1324,29 +1572,37 @@ static int addDservObsPeriod(
 			     int nvars,       /* number of dpoints   */
 			     char **varnames, /* name of datapoints  */
 			     int *vartypes,   /* type of datapoints  */
-			     int *listids,    /* id list colums      */
+			     int *val_cols,   /* <ds> column ids     */
+			     int *time_cols,  /* <dst> column ids    */
+			     int *cnt_cols,   /* <dsn> column ids    */
 			     DYN_GROUP *dg)   /* output dg           */
 {
   ds_datapoint_t *d;
-  static int been_here = 0;
-  static int got_first_obs = 0;
   char getting_trial = 0;
-  int matched;
-  
-  /* create array lists to hold results */
+  int i, matched;
+  uint64_t obs_t0 = 0;
+
+  /* per-var accumulators: values (concatenated), record times, counts */
   DYN_LIST **dls = (DYN_LIST **) calloc(nvars, sizeof(DYN_LIST *));
+  DYN_LIST **tls = (DYN_LIST **) calloc(nvars, sizeof(DYN_LIST *));
+  DYN_LIST **nls = (DYN_LIST **) calloc(nvars, sizeof(DYN_LIST *));
 
   /*
    * Call dpoint_read() to move through next obs period
    */
-  
+
   while (dpoint_read(fp, &d) > 0) {
     matched = 0;
     /* check for varname match */
     if (getting_trial) {
-      for (int i = 0; i < nvars; i++) {
+      for (i = 0; i < nvars; i++) {
 	if (!strcmp(d->varname, varnames[i])) {
 	  dls[i] = add_dpoint_to_list(dls[i], d);
+	  if (!tls[i]) tls[i] = dfuCreateDynList(DF_LONG, 8);
+	  dfuAddDynListLong(tls[i],
+			    (int)((int64_t)(d->timestamp - obs_t0)/1000));
+	  if (!nls[i]) nls[i] = dfuCreateDynList(DF_LONG, 8);
+	  dfuAddDynListLong(nls[i], dpoint_val_count(d));
 	  dpoint_free(d);
 	  matched = 1;
 	  break;
@@ -1354,40 +1610,62 @@ static int addDservObsPeriod(
       }
       if (matched) continue;
     }
-    
+
     if (d->data.e.dtype == DSERV_EVT) {
       if (d->data.e.type == E_BEGINOBS) {
 	if (getting_trial++) {
 	  fprintf(stderr, "WARNING: BeginObs found with no EndObs\n");
 	  dpoint_free(d);
-	  for (int i = 0; i < nvars; i++) {
+	  for (i = 0; i < nvars; i++) {
 	    if (dls[i]) dfuFreeDynList(dls[i]);
+	    if (tls[i]) dfuFreeDynList(tls[i]);
+	    if (nls[i]) dfuFreeDynList(nls[i]);
 	  }
-	  free(dls);
+	  free(dls); free(tls); free(nls);
 	  return 0;
 	}
+	obs_t0 = d->timestamp;
+	dpoint_free(d);
       }
       else if (d->data.e.type == E_ENDOBS) {
 	dpoint_free(d);
-	for (int i = 0; i < nvars; i++) {
+	for (i = 0; i < nvars; i++) {
 	  if (dls[i]) {
-	    dfuMoveDynListList(DYN_GROUP_LIST(dg, listids[i]), dls[i]);
+	    dfuMoveDynListList(DYN_GROUP_LIST(dg, val_cols[i]), dls[i]);
+	    dfuMoveDynListList(DYN_GROUP_LIST(dg, time_cols[i]), tls[i]);
+	    dfuMoveDynListList(DYN_GROUP_LIST(dg, cnt_cols[i]), nls[i]);
 	  }
 	  else {
-	    /* this obs was empty, so add empty list of correct type */
-	    DYN_LIST *empty = dfuCreateDynList(vartypes[i], 1);
-	    dfuMoveDynListList(DYN_GROUP_LIST(dg, listids[i]), empty);
+	    /* this obs was empty: empty sublists, correctly typed (the
+	       raw ds type was fed to dfuCreateDynList here before --
+	       a different enum space, so empty obs got wrongly-typed
+	       placeholders and columns went type-heterogeneous) */
+	    DYN_LIST *empty = dfuCreateDynList(df_type_for_dstype(vartypes[i]), 1);
+	    dfuMoveDynListList(DYN_GROUP_LIST(dg, val_cols[i]), empty);
+	    dfuMoveDynListList(DYN_GROUP_LIST(dg, time_cols[i]),
+			       dfuCreateDynList(DF_LONG, 1));
+	    dfuMoveDynListList(DYN_GROUP_LIST(dg, cnt_cols[i]),
+			       dfuCreateDynList(DF_LONG, 1));
 	  }
 	}
-	free(dls);
+	free(dls); free(tls); free(nls);
 	return 1;
       }
       else {
 	dpoint_free(d);
       }
     }
+    else {
+      dpoint_free(d);   /* non-matching, non-event record (was leaked) */
+    }
   }
 
+  for (i = 0; i < nvars; i++) {
+    if (dls[i]) dfuFreeDynList(dls[i]);
+    if (tls[i]) dfuFreeDynList(tls[i]);
+    if (nls[i]) dfuFreeDynList(nls[i]);
+  }
+  free(dls); free(tls); free(nls);
   return 0;
 }
 
