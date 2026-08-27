@@ -759,7 +759,13 @@ proc ess_test::stub_stim2 {} {
     proc ::motionpatch {args} { return [incr ::ess_test::handle_seq] }
 
     # -- inert: structural no-ops -----------------------------------------
+    # polyverts/polytype/polylinewidth are how an OUTLINE is built (a circle
+    # stroked as a line_loop, a polygon from explicit vertices); without them
+    # any stim that draws one -- joystick/forage's arena wall,
+    # hapticvis/transfer's open circles, match_to_sample/fractal -- dies on
+    # `invalid command name "polyverts"` before nexttrial finishes.
     foreach c {glistInit resetObjList shaderImageReset shaderSetPath polycirc \
+               polyverts polytype polylinewidth \
                scaleObj metagroupAdd glistAddObject glistSetDynamic priorityObj \
                glistSetCurGroup glistSetVisible redraw load_Impro img_delete \
                masksoftness motionpatch_logBegin motionpatch_logEnd \
