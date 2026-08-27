@@ -816,7 +816,7 @@ proc ess_test::stub_stim2 {} {
     # sent once at stim_off) both land in the same captured `events` list;
     # ess_test doesn't model the wire-format difference (evtPack vs a typed
     # dl send), only that a named push with a payload happened.
-    proc ::dserv_send_evt {name {payload {}}} { ess_test::_event $name $payload }
+    proc ::dserv_send_evt {name {payload {}} {flipwall 0} {tag {}}} { ess_test::_event $name $payload }
     # dl is a dlsh list handle -- an unnamed/inline one (not dl_local'd by the
     # caller) is only guaranteed to live for the current statement, so snapshot
     # its VALUES now (dl_tcllist) rather than storing the handle for later
@@ -847,7 +847,7 @@ proc ess_test::stub_dserv {} {
 
 # The datapoint half of stub_dserv, without faking the qpcs package.
 # The ESS harness needs this but must let the REAL qpcs load, because
-# ess-2.0.tm hard-requires qpcs 3.42 for its stim-event sync.
+# ess-2.0.tm hard-requires qpcs 3.43 for its stim-event sync.
 proc ess_test::stub_datapoints {} {
     if {![info exists ::dservhost]} { set ::dservhost localhost }
     if {![info exists ::dservport]} { set ::dservport 4620 }

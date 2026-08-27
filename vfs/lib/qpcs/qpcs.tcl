@@ -1,4 +1,4 @@
-package provide qpcs 3.42
+package provide qpcs 3.43
 
 package require dlsh
 
@@ -651,35 +651,54 @@ namespace eval qpcs {
     }
 
     # ----------------------------------------------------------------------
-    # Stim-event sync transport (3.41)
+    # Stim-event sync transport (3.41; header extended 3.43)
     #
     # Compact wire format for marking timed stimulus events pushed from a
     # remote stim2 process. A sync header -- SwapCount (u64) + StimTicksF
-    # (double, free-running ms), captured at the buffer flip -- precedes an
-    # optional float payload, sent as one DSERV_BYTE datapoint via
-    # dsSocketSendBytes. The receiver (ESS) reconstructs the event's
-    # dserv-clock time from a per-trial anchor; see ess-2.0.tm.
+    # (double, free-running ms) + FlipWallUs (u64) + a short tag string --
+    # precedes an optional float payload, sent as one DSERV_BYTE datapoint
+    # via dsSocketSendBytes. The receiver (ESS) places the event on the
+    # dserv clock; see ess-2.0.tm (stim_evt_time).
+    #
+    # FlipWallUs (3.43) is the hardware buffer-flip time on the stim host's
+    # CLOCK_REALTIME in microseconds (stim2's swapStats `flipwall`), 0 =
+    # unknown. On PTP-disciplined sites this places each marker absolutely
+    # to microseconds with no per-trial anchor; StimTicksF remains the
+    # anchor-relative fallback. The tag (<= 255 bytes, typically
+    # "TYPE SUBTYPE" event names) lets self-describing markers share one
+    # datapoint name instead of one dpoint match per marker.
     #
     # evtPack / evtUnpack are the SINGLE definition of the layout: both the
     # stim sender and the dserv receiver call them, so the format cannot
-    # drift. Header is 16 bytes (w=u64 little-endian, d=native double); the
-    # double preserves free-running StimTicksF to full sub-ms precision where
-    # a float would quantize after ~1 h of uptime.
+    # drift -- but BOTH ends must therefore run the same qpcs (require
+    # 3.43); a 3.42 peer misparses the extended header. Fixed header is 25
+    # bytes (w=u64 little-endian, d=native double, w=u64, c=tag length);
+    # the double preserves free-running StimTicksF to full sub-ms precision
+    # where a float would quantize after ~1 h of uptime.
     # ----------------------------------------------------------------------
 
-    # Pack a sync header (SwapCount, StimTicksF) + optional float values.
-    proc evtPack { swapcount stimticksf { vals {} } } {
-	set blob [binary format wd $swapcount $stimticksf]
+    # Pack a sync header (SwapCount, StimTicksF, FlipWallUs, tag) + optional
+    # float values. Extra fields are optional so 3.41-era callers
+    # (evtPack $swap $ticksF $vals) produce a valid 3.43 blob unchanged.
+    proc evtPack { swapcount stimticksf { vals {} } { flipwall 0 } { tag {} } } {
+	set taglen [string length $tag]
+	if { $taglen > 255 } { error "evtPack: tag longer than 255 bytes" }
+	set blob [binary format wdwca* \
+		      $swapcount $stimticksf $flipwall $taglen $tag]
 	if { [llength $vals] } { append blob [binary format f* $vals] }
 	return $blob
     }
 
-    # Unpack a stim-event blob -> {swapcount stimticksf {vals...}}.
+    # Unpack a stim-event blob -> {swapcount stimticksf {vals...} flipwall tag}.
+    # The first three positions match the 3.41 return, so existing
+    # `lassign ... swap ticksF vals` callers keep working.
     proc evtUnpack { blob } {
-	binary scan $blob wd swapcount stimticksf
-	binary scan [string range $blob 16 end] f* vals
+	binary scan $blob wdwc swapcount stimticksf flipwall taglen
+	set taglen [expr {$taglen & 0xff}]
+	set tag [string range $blob 25 [expr {25 + $taglen - 1}]]
+	binary scan [string range $blob [expr {25 + $taglen}] end] f* vals
 	if { ![info exists vals] } { set vals {} }
-	return [list $swapcount $stimticksf $vals]
+	return [list $swapcount $stimticksf $vals $flipwall $tag]
     }
 
     # (Removed dsSocketPutData: a persistent-socket '@set' base64 handshake
