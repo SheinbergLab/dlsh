@@ -752,6 +752,7 @@ proc ess_test::stub_stim2 {} {
 
     # -- factory: unique handles ------------------------------------------
     foreach c {polygon metagroup shaderImageCreate shaderImageID \
+               shaderBuild shaderObj \
                img_create img_drawPolygon img_drawPolygonFast img_imgtolist} {
         proc ::$c {args} { return [incr ::ess_test::handle_seq] }
     }
@@ -764,7 +765,15 @@ proc ess_test::stub_stim2 {} {
     # any stim that draws one -- joystick/forage's arena wall,
     # hapticvis/transfer's open circles, match_to_sample/fractal -- dies on
     # `invalid command name "polyverts"` before nexttrial finishes.
+    # shaderObjSetSampler/SetUniform are how a shader-based stim parameterises
+    # its object (a rasterised outline bound as a texture, a grating's
+    # cycles/sigma); shaderDeleteAll is the per-trial reset. These live inside
+    # nexttrial/draw procs rather than at file scope, so a shader stim
+    # SOURCES fine without them and only dies once a test drives a trial --
+    # match_to_sample/shapematch, remap/shapes, hapticvis/identify +
+    # transfer, prf/drifting-gratings, video/play-or-skip all use the idiom.
     foreach c {glistInit resetObjList shaderImageReset shaderSetPath polycirc \
+               shaderObjSetSampler shaderObjSetUniform shaderDeleteAll \
                polyverts polytype polylinewidth \
                scaleObj metagroupAdd glistAddObject glistSetDynamic priorityObj \
                glistSetCurGroup glistSetVisible redraw load_Impro img_delete \
