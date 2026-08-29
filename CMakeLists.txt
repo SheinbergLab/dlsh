@@ -641,13 +641,21 @@ OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
         test_mp_sim_kinematics
         test_dg_concat
         test_leak_dl_foreach)
+    # Labelled `dlsh` so CI can run exactly these with `ctest -L dlsh`: a bare
+    # ctest would also pick up tests registered by FetchContent dependencies
+    # (zlib's `example`, libpng's suite), and a hardcoded -R list in the
+    # workflow silently skips any test added here later.
     foreach(_name ${DLSH_INTERP_TESTS})
         set(_t ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_name}.tcl)
         if(EXISTS ${_t})
             add_test(NAME ${_name} COMMAND dlsh_interp ${_t})
             set_tests_properties(${_name} PROPERTIES
+                LABELS dlsh
                 TIMEOUT 120
                 FAIL_REGULAR_EXPRESSION "FAIL;FAILURE;LEAK SUSPECTED")
+        else()
+            message(WARNING "DLSH_INTERP_TESTS lists ${_name} but "
+                "tests/${_name}.tcl does not exist -- it will not run")
         endif()
     endforeach()
 endif()
