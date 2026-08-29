@@ -204,6 +204,7 @@ static int tclCreateDynList           (ClientData, Tcl_Interp *, int, char **);
 static int tclSetDynList              (ClientData, Tcl_Interp *, int, char **);
 static int tclLocalDynList            (ClientData, Tcl_Interp *, int, char **);
 static int tclReturnDynList           (ClientData, Tcl_Interp *, int, char **);
+static int tclYieldDynList            (ClientData, Tcl_Interp *, int, char **);
 static int tclGetPutDynList           (ClientData, Tcl_Interp *, int, char **);
 static int tclDeleteDynList           (ClientData, Tcl_Interp *, int, char **);
 static int tclDeleteTraceDynList      (ClientData, Tcl_Interp *, int, char **);
@@ -331,8 +332,10 @@ static TCL_COMMANDS DLcommands[] = {
       "rename existing dynList to new name" },
   { "dl_local",            tclLocalDynList,       NULL, 
       "create a locally scoped dynList" },
-  { "dl_return",           tclReturnDynList,      NULL, 
+  { "dl_return",           tclReturnDynList,      NULL,
       "make a dynlist the current return value" },
+  { "dl_yield",            tclYieldDynList,       NULL,
+      "return a dynlist from the enclosing proc" },
   { "dl_delete",           tclDeleteDynList,      NULL, 
       "delete a dynList" },
   { "dl_deleteTrace",      tclDeleteTraceDynList,    NULL, 
@@ -4103,25 +4106,39 @@ static int tclLocalDynList (ClientData data, Tcl_Interp *interp,
  *
  *****************************************************************************/
 
-static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
-			     int argc, char *argv[])
+/* Bind a >#< name in the caller's frame with a delete trace, so the list is
+ * freed when that frame exits.  At the top level there is no frame to hang it
+ * on and the list simply persists until dl_clean.  */
+
+static void dlTraceReturnList (Tcl_Interp *interp, const char *name)
+{
+  char tracecmd[256];
+  snprintf(tracecmd, sizeof(tracecmd),
+	   "if {[info level]} {uplevel \"set %s %s; trace add variable %s {write unset} dl_deleteTrace\"}",
+	   name, name, name);
+  Tcl_Eval(interp, tracecmd);
+}
+
+/* Shared by dl_return and dl_yield: turn the list named by "name" into a fresh
+ * >#< return list traced in the caller's frame, and leave that name in
+ * "newname".  When mayConsume is false the source list is always copied, so
+ * the caller's list survives; dl_return passes true to keep its historical
+ * behavior of consuming anything it finds in the dlTable.  */
+
+static int dlMakeReturnList (Tcl_Interp *interp, char *name, int mayConsume,
+			     char *newname, size_t newnamesz)
 {
   Tcl_HashEntry *entryPtr;
   int newentry;
   DYN_LIST *dl;
-  char newname[256];
 
   DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
   if (!dlinfo) return TCL_ERROR;
-  
-  if (argc != 2) {
-    Tcl_AppendResult(interp, "usage: ", argv[0], " dynlist", NULL);
-    return TCL_ERROR;
-  }
-  if (tclFindDynList(interp, argv[1], &dl) != TCL_OK) 
+
+  if (tclFindDynList(interp, name, &dl) != TCL_OK)
     return TCL_ERROR;
 
-  snprintf(newname, sizeof(newname), ">%d<", dlinfo->returnCount++);
+  snprintf(newname, newnamesz, ">%d<", dlinfo->returnCount++);
 
   /* A temporary list that's in the dlTable can be renamed */
   /*   (temporary lists not in the dlTable are elements of */
@@ -4129,13 +4146,13 @@ static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
   /* This *doesn't* apply to lists that have already been  */
   /*   dl_return'ed, though!                               */
 
-  if (argv[1][0] != '>' &&
+  if (mayConsume && name[0] != '>' &&
       (entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, DYN_LIST_NAME(dl)))) {
     Tcl_DeleteHashEntry(entryPtr);
-    
-    if (Tcl_GetVar(interp, DYN_LIST_NAME(dl), 0)) 
+
+    if (Tcl_GetVar(interp, DYN_LIST_NAME(dl), 0))
       Tcl_UnsetVar(interp, DYN_LIST_NAME(dl), 0);
-    
+
     strncpy(DYN_LIST_NAME(dl), newname, DYN_LIST_NAME_SIZE-1);
     entryPtr = Tcl_CreateHashEntry(&dlinfo->dlTable, newname, &newentry);
     Tcl_SetHashValue(entryPtr, dl);
@@ -4149,24 +4166,188 @@ static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
 
   /* This traces the dl_return'ed variable one level up, such that when */
   /* it goes out of scope, the trace causes dl_deleteTrace to free it   */
-  /* If we're at the top level, don't set the trace (not a normal case) */
-  {
-    char tracecmd[256];
-    snprintf(tracecmd, sizeof(tracecmd),
-	    "if {[info level]} {uplevel \"set %s %s; trace add variable %s {write unset} dl_deleteTrace\"}",
-	    newname, newname, newname);
-    Tcl_Eval(interp, tracecmd);
+  dlTraceReturnList(interp, newname);
+
+  return TCL_OK;
+}
+
+static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
+			     int argc, char *argv[])
+{
+  char newname[256];
+
+  if (argc != 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " dynlist", NULL);
+    return TCL_ERROR;
   }
+
+  if (dlMakeReturnList(interp, argv[1], 1, newname, sizeof(newname)) != TCL_OK)
+    return TCL_ERROR;
 
   Tcl_SetResult(interp, newname, TCL_VOLATILE);
   return TCL_OK;
+}
+
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    tclYieldDynList
+ *
+ * ARGS
+ *    Tcl Args
+ *
+ * TCL FUNCTION
+ *    dl_yield
+ *
+ * DESCRIPTION
+ *    Return a dynlist from the enclosing proc.  This is what dl_return is
+ * almost always meant to be:
+ *
+ *       proc mk {} { dl_yield [dl_add $a $b] }      ;# no "return" needed
+ *
+ * Two differences from dl_return:
+ *
+ *   1) It actually returns.  dl_return only sets the interp result, so
+ *      "dl_return $x; return" silently yields "" and the list is freed
+ *      unnamed.  dl_yield sets return options (-code ok -level 1) so the
+ *      *calling* proc returns with the list as its result, exactly as if
+ *      "return [dl_return $x]" had been written.  It is therefore a control
+ *      flow command like return: use it inside a proc/method, not at the
+ *      top level of a script.
+ *
+ *   2) Passing a list further up costs nothing.  dl_return on an existing
+ *      >#< list falls into the dfuCopyDynList branch, so a value handed up
+ *      through N frames is deep copied N times.  When dl_yield is given a
+ *      >#< that is traced in the current frame, it instead *promotes* it:
+ *      the list is renamed into the caller's frame and the data is untouched,
+ *      making a hand-off O(1) rather than O(length).
+ *
+ *   3) It never consumes a list it did not make.  dl_return renames anything
+ *      it finds in the dlTable, so "dl_return mylist" silently destroys
+ *      mylist.  dl_yield takes ownership only of %#% temporaries and of the
+ *      >#< / &var_#& lists this frame itself owns and is about to drop --
+ *      so "dl_local out ...; dl_yield $out" is still free.  A caller's named
+ *      list, a group column, or a list belonging to another frame is copied
+ *      and left intact.
+ *
+ * Ownership is decided by dlFrameOwnsList, so a stashed or forged name can
+ * never move a trace it does not own; the worst case is an extra copy.
+ *
+ *****************************************************************************/
+
+static int isReturnListName(const char *s)
+{
+  const char *p = s;
+  if (*p++ != '>') return 0;
+  if (*p < '0' || *p > '9') return 0;
+  while (*p >= '0' && *p <= '9') p++;
+  return (p[0] == '<' && p[1] == '\0');
+}
+
+/* True when the CURRENT frame is the one that will free this list, so
+ * dl_yield may hand it upward by renaming instead of copying:
+ *
+ *   >#<     a dl_return'ed list is owned by the frame holding a variable of
+ *           that same name (dl_return sets one when it installs the trace).
+ *   &v_#&   a dl_local list is owned by the frame whose variable v carries
+ *           dl_local's delete trace for this exact name.  The name encodes
+ *           v, so recover it and ask for the trace: a variable that merely
+ *           happens to be spelled v -- a parameter holding the caller's
+ *           list, say -- has no such trace and is therefore not ours.
+ *
+ * Anything else -- a caller's named list, a group column, a list belonging
+ * to some other frame -- returns 0, and dl_yield copies instead.  */
+
+static int dlFrameOwnsList(Tcl_Interp *interp, const char *name)
+{
+  const char *p;
+  char var[DYN_LIST_NAME_SIZE];
+  ClientData owner;
+  size_t n;
+
+  if (name[0] == '>')
+    return isReturnListName(name) && Tcl_GetVar(interp, (char *) name, 0) != NULL;
+
+  if (name[0] != '&') return 0;
+  n = strlen(name);
+  if (n < 5 || name[n-1] != '&') return 0;
+
+  p = name + n - 2;                       /* last char before the closing & */
+  if (*p < '0' || *p > '9') return 0;
+  while (p > name + 1 && *p >= '0' && *p <= '9') p--;
+  if (*p != '_') return 0;
+
+  n = (size_t)(p - (name + 1));           /* length of the variable name */
+  if (n == 0 || n >= sizeof(var)) return 0;
+  memcpy(var, name + 1, n);
+  var[n] = 0;
+
+  owner = Tcl_VarTraceInfo(interp, var, 0,
+			   (Tcl_VarTraceProc *) tclDeleteLocalDynList, NULL);
+  return owner && !strcmp((char *) owner, name);
+}
+
+static int tclYieldDynList (ClientData data, Tcl_Interp *interp,
+			    int argc, char *argv[])
+{
+  Tcl_HashEntry *entryPtr;
+  DYN_LIST *dl;
+  Tcl_Obj *opts;
+  char name[DYN_LIST_NAME_SIZE];
+  int code, newentry;
+
+  DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
+  if (!dlinfo) return TCL_ERROR;
+
+  if (argc != 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " dynlist", NULL);
+    return TCL_ERROR;
+  }
+
+  if (dlFrameOwnsList(interp, argv[1]) &&
+      (entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, argv[1])) &&
+      (dl = Tcl_GetHashValue(entryPtr))) {
+
+    /* This frame owns the list, and this frame is about to end: hand it  */
+    /* up a level by renaming it to a fresh >#< traced in the caller's    */
+    /* frame.  The old name's variable and trace stay behind and fire on  */
+    /* frame exit, at which point the delete trace finds no list of that  */
+    /* name and does nothing.                                            */
+    snprintf(name, sizeof(name), ">%d<", dlinfo->returnCount++);
+    Tcl_DeleteHashEntry(entryPtr);
+    strncpy(DYN_LIST_NAME(dl), name, DYN_LIST_NAME_SIZE-1);
+    entryPtr = Tcl_CreateHashEntry(&dlinfo->dlTable, name, &newentry);
+    Tcl_SetHashValue(entryPtr, dl);
+    dlTraceReturnList(interp, name);
+  }
+  else {
+    /* Only %#% temporaries are ours to consume; everything the caller named
+       (or dl_local'd, or reached through a group) gets copied. */
+    if (dlMakeReturnList(interp, argv[1], argv[1][0] == '%',
+			 name, sizeof(name)) != TCL_OK)
+      return TCL_ERROR;
+  }
+
+  /* Make the enclosing proc return with this list, so that callers can't */
+  /* forget the "return" that dl_return has always silently required.     */
+  opts = Tcl_NewListObj(0, NULL);
+  Tcl_ListObjAppendElement(NULL, opts, Tcl_NewStringObj("-code", -1));
+  Tcl_ListObjAppendElement(NULL, opts, Tcl_NewIntObj(TCL_OK));
+  Tcl_ListObjAppendElement(NULL, opts, Tcl_NewStringObj("-level", -1));
+  Tcl_ListObjAppendElement(NULL, opts, Tcl_NewIntObj(1));
+  Tcl_IncrRefCount(opts);
+  code = Tcl_SetReturnOptions(interp, opts);
+  Tcl_DecrRefCount(opts);
+
+  Tcl_SetResult(interp, name, TCL_VOLATILE);
+  return code;
 }
 
 static int tclNoOp (ClientData data, Tcl_Interp *interp,
 			   int argc, char *argv[])
 {
   return TCL_OK;
-}     
+}
 
 /*****************************************************************************
  *
