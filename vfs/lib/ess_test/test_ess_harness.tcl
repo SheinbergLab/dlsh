@@ -24,7 +24,10 @@ package require ess_test
 set here [file dirname [file normalize [info script]]]
 
 # ── the ESS harness: real ess-2.0.tm, stubbed dserv ──────────────────
-puts "ess [ess_test::real_ess -systems_root [file join $here fixtures ess]]\
+# ESS_TEST_ESS_LIB overrides where ess-2.0.tm comes from (e.g. the
+# ~/src/dserv/lib source tree, to verify a fix before it is deployed)
+set esslib [expr {[info exists ::env(ESS_TEST_ESS_LIB)] ? $::env(ESS_TEST_ESS_LIB) : ""}]
+puts "ess [ess_test::real_ess -ess_lib $esslib -systems_root [file join $here fixtures ess]]\
  ([llength [ess_test::stubbed_commands]] commands stubbed)"
 
 ess_test::test {a clean load} {
@@ -95,6 +98,29 @@ ess_test::test {recovery to the last good system} {
     ess_test::assert {[ess_test::datapoint ess/status] eq "stopped"} "status stopped"
     ess_test::assert {[ess_test::datapoint ess/load_error] eq ""}    "load_error cleared"
     ess_test::assert {[dl_length stimdg:stimtype] == 4}              "good trials restored"
+}
+
+ess_test::test {unpaired state methods are refused at load} {
+    # parkstate has `limbo` (add_transition, no add_action) and `deadend`
+    # (add_action, no add_transition).  Pre-validator, both loaded fine and
+    # then threw a SWALLOWED method-lookup error mid-update at runtime,
+    # parking the machine in the state (the remap 2026-08-29 bug).  The
+    # load must now refuse it, naming both states and the fix.
+    ess_test::clear_dserv_log
+    set r [ess_test::load_system parkstate works basic]
+    ess_test::assert {![dict get $r ok]} "load reported failure"
+    ess_test::assert {[string match {*limbo has a transition but no action*} \
+                           [dict get $r error]]} "names the transition-only state"
+    ess_test::assert {[string match {*deadend has an action but no transition*} \
+                           [dict get $r error]]} "names the action-only state"
+    ess_test::assert {[string match {*add_action limbo*} [dict get $r error]]} \
+        "says the fix"
+    ess_test::assert {[ess_test::datapoint ess/status] eq "stopped"} "status usable"
+    set e [ess_test::datapoint ess/load_error]
+    ess_test::assert {$e ne ""}                             "load_error published"
+    ess_test::assert {[string match {*system_init*} $e]}    "stage names system_init"
+    ess_test::assert {[ess_test::datapoint ess/last_good_system] ne ""} \
+        "last_good survived"
 }
 
 # ── Part 2: a real system, with and without its external data ────────

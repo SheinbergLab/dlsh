@@ -13,7 +13,9 @@ namespace eval brokensys {
 
         $sys set_start start
         $sys add_state start { return stop }
-        $sys add_state stop {}
+        # both args: a one-arg add_state defines only the action, and the
+        # load-time validate_state_methods check refuses unpaired states
+        $sys add_state stop {} {}
         $sys set_end stop
         return $sys
     }
