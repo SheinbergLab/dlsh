@@ -13,15 +13,15 @@ package provide dlsh 1.2
 # are just one form of dl_mult / dl_div
 
 proc dl_multRows { args } {
-    dl_return [dl_mult $args]
+    dl_yield [dl_mult $args]
 }
 
 proc dl_divRows { args } {
-    dl_return [dl_div $args]
+    dl_yield [dl_div $args]
 }
 
 
 proc dl_equal { a b } {
-    dl_return [dl_eq $a $b]
+    dl_yield [dl_eq $a $b]
 }
 

@@ -39,7 +39,7 @@ proc dl_closeto { dl val {epsilon .0001} } {
     #dl_return [dl_between $dl [dl_sub $val $epsilon] [dl_add $val $epsilon]]
 
     # this algorithm for calculating dl_closeto is 40% faster than the current algorithm, which uses [dl_between [dl_lt] [dl_gt]]
-    dl_return [dl_lt [dl_abs [dl_sub $dl $val]] $epsilon]
+    dl_yield [dl_lt [dl_abs [dl_sub $dl $val]] $epsilon]
 }
 
 proc dl_to_dg { l } { 
@@ -76,7 +76,7 @@ proc dl_medians { l } {
     foreach i [dl_tcllist [dl_fromto 0 [dl_length $l]]] {
 	dl_append $retlist [dl_median $l:$i]
     }
-    dl_return $retlist
+    dl_yield $retlist
 }
 
 proc dl_getPercentile { dl percentile } {
@@ -137,7 +137,7 @@ proc dl_getPercentiles { dl percentile } {
 	    dl_local ret [dl_unpack [dl_select [dl_sort $dl] $ref]]
 	}
     }
-    dl_return $ret
+    dl_yield $ret
 }
 
 #
@@ -204,7 +204,7 @@ proc dl_combineLists { args } {
     } else {
 	dl_local ret [dl_transpose $combined]
     }
-    dl_return $ret
+    dl_yield $ret
 }
 #  proc dl_combineLists { args } {
 #      dl_local combined [dl_llist]
@@ -294,7 +294,7 @@ proc dl_distance { xy1 xy2 } {
     dl_local y1 [dl_unpack [dl_select $xy1 [dl_llist "0 1"]]]
     dl_local x2 [dl_unpack [dl_select $xy2 [dl_llist "1 0"]]]
     dl_local y2 [dl_unpack [dl_select $xy2 [dl_llist "0 1"]]]
-    dl_return [dl_sqrt [dl_add [dl_pow [dl_sub $x1 $x2] 2] \
+    dl_yield [dl_sqrt [dl_add [dl_pow [dl_sub $x1 $x2] 2] \
 			    [dl_pow [dl_sub $y1 $y2] 2]]]
 }
 
@@ -342,7 +342,7 @@ proc dl_remap { dl_tomap dl_oldval dl_newval } {
 	    dl_append $new [dl_get $dl_tomap $i]
 	}
     }
-    dl_return $new
+    dl_yield $new
 }
 
 
@@ -378,12 +378,12 @@ proc dl_paste { dl1 dl2 args } {
 	    set newlist [lmap x [dl_tcllist $dl1] y [dl_tcllist $dl2] \
 			     { string cat $x$y }];
 	}
-	dl_return [dl_slist {*}$newlist]
+	dl_yield [dl_slist {*}$newlist]
     }
 
     dl_local pasted [do_paste $dl1 $dl2]
     foreach l $args {
 	dl_local pasted [do_paste $pasted $l]
     }
-    dl_return $pasted
+    dl_yield $pasted
 }

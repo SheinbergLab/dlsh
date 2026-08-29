@@ -141,7 +141,7 @@ namespace eval ::spec {
 	    dl_local getsamp [dl_series $sampstart $sampstop]
 	    puts "start is $sampstart, end is $sampstop"
 	}
-	dl_return [dl_llist $power $start $stop [dl_series 0. [expr $fs /2.] [expr double($fs) / double($nfft)]]]
+	dl_yield [dl_llist $power $start $stop [dl_series 0. [expr $fs /2.] [expr double($fs) / double($nfft)]]]
     }
     
 

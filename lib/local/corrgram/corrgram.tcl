@@ -250,7 +250,7 @@ namespace eval ::helpcorrgram { } {
 	    set label2 [lindex $sb 1]
 	    dl_local split_vals2 $g:$label2
 	}
-	dl_return [dl_llist [dl_llist [dl_slist $label1] $split_vals1] [dl_llist [dl_slist $label2] $split_vals2]]
+	dl_yield [dl_llist [dl_llist [dl_slist $label1] $split_vals1] [dl_llist [dl_slist $label2] $split_vals2]]
     }
 
     proc CorrSpikes { g } {
@@ -508,7 +508,7 @@ namespace eval ::helpcorrgram { } {
 	}
 		
 	#do the actual cross-correlation
-	dl_return [dl_sums [dl_mult $ts1 $ts2_shifted]]
+	dl_yield [dl_sums [dl_mult $ts1 $ts2_shifted]]
     }
     
     proc CreateSpikeAnalGroup {g chans sortlists} {
@@ -619,7 +619,7 @@ namespace eval ::helpcorrgram { } {
     proc spike_extract { g channel } {
 	dl_local spk_selector [dl_eq $g:spk_channels $channel]
 	dl_local all_spk_times [dl_select $g:spk_times $spk_selector]
-	dl_return $all_spk_times
+	dl_yield $all_spk_times
     }
     
     #extract the desired raw LFP signal
@@ -655,7 +655,7 @@ namespace eval ::helpcorrgram { } {
 	    dl_local zr [dl_choose $alleeg_raw $get_zero]
 	    dl_local alleeg [dl_sub $alleeg [dl_means $zr]]
 	}
-	dl_return $alleeg 
+	dl_yield $alleeg 
     }
 }
 

@@ -81,7 +81,7 @@ namespace eval ::helpspikes { } {
 	    set label2 [lindex $sb 1]
 	    dl_local split_vals2 $g:$label2
 	}
-	dl_return [dl_llist [dl_llist [dl_slist $label1] $split_vals1] [dl_llist [dl_slist $label2] $split_vals2]]
+	dl_yield [dl_llist [dl_llist [dl_slist $label1] $split_vals1] [dl_llist [dl_slist $label2] $split_vals2]]
     }
 
     proc CreateSpikeAnalGroup {g chans sortlists} {
@@ -184,12 +184,12 @@ namespace eval ::helpspikes { } {
     proc spike_extract { g channel } {
 	dl_local spk_selector [dl_eq $g:spk_channels $channel]
 	dl_local all_spk_times [dl_select $g:spk_times $spk_selector]
-	dl_return $all_spk_times
+	dl_yield $all_spk_times
     }
 
     proc smooth_spikes { s } {
 	dl_local smoothed [dl_mult [eval dl_$::spikes::Args(function) $s $::spikes::Args(pretime) \
 			       $::spikes::Args(posttime) $::spikes::Args(sd) $::spikes::Args(nsd) $::spikes::Args(res)] 1000.]
-	dl_return $smoothed
+	dl_yield $smoothed
     }
 }

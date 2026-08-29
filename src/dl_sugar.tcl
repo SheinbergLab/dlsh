@@ -31,7 +31,7 @@ proc dl_randchooseLists { l n } {
     if { [dl_datatype $l] != "list" } {
         error "dl_randchooseLists: list must be a list of lists"
     }
-    dl_return [dl_choose $l [dl_randchoose [dl_lengths $l] $n]]
+    dl_yield [dl_choose $l [dl_randchoose [dl_lengths $l] $n]]
 }
 
 # dl_shuffleLists l
@@ -41,13 +41,13 @@ proc dl_shuffleLists { l } {
     if { [dl_datatype $l] != "list" } {
         error "dl_shuffleLists: list must be a list of lists"
     }
-    dl_return [dl_choose $l [dl_randfill [dl_lengths $l]]]
+    dl_yield [dl_choose $l [dl_randfill [dl_lengths $l]]]
 }
 
 # dl_between* -- elementwise range predicates, returning a 0/1 mask.
 # low/high may be scalars or same-length lists (they broadcast like dl_lt/dl_gt).
 # The suffix says which end(s) are INCLUSIVE. (Was in lib/dlbasic.tcl.)
-proc dl_between        { dl low high } { dl_return [dl_and [dl_lt  $dl $high] [dl_gt  $dl $low]] }
-proc dl_betweenEq      { dl low high } { dl_return [dl_and [dl_lte $dl $high] [dl_gte $dl $low]] }
-proc dl_betweenEqLow   { dl low high } { dl_return [dl_and [dl_lt  $dl $high] [dl_gte $dl $low]] }
-proc dl_betweenEqHigh  { dl low high } { dl_return [dl_and [dl_lte $dl $high] [dl_gt  $dl $low]] }
+proc dl_between        { dl low high } { dl_yield [dl_and [dl_lt  $dl $high] [dl_gt  $dl $low]] }
+proc dl_betweenEq      { dl low high } { dl_yield [dl_and [dl_lte $dl $high] [dl_gte $dl $low]] }
+proc dl_betweenEqLow   { dl low high } { dl_yield [dl_and [dl_lt  $dl $high] [dl_gte $dl $low]] }
+proc dl_betweenEqHigh  { dl low high } { dl_yield [dl_and [dl_lte $dl $high] [dl_gt  $dl $low]] }

@@ -63,20 +63,21 @@ namespace eval mp_sim {
 #   composition well-defined.
 proc mp_sim::eval_envelope {env ts} {
     set kind [dict get $env kind]
-    # dl_return at every dispatch level: the inner _env_* procs return
-    # dl-return-named lists (>#<) that live only in their caller's
-    # scope; passing them through this dispatcher with a plain `return`
-    # would let them be reaped before compile_spec consumes them.
+    # dl_yield at every dispatch level: the inner _env_* procs hand back
+    # >#< lists that live only in their caller's scope, so passing one
+    # through this dispatcher with a plain `return` would let it be reaped
+    # before compile_spec consumes it. dl_yield re-homes it in our caller's
+    # frame by renaming, so the dispatch costs nothing regardless of length.
     switch -- $kind {
-        flat              { dl_return [mp_sim::_env_flat              $env $ts] }
-        sum_gaussians     { dl_return [mp_sim::_env_sum_gaussians     $env $ts] }
-        cosine_ramp       { dl_return [mp_sim::_env_cosine_ramp       $env $ts] }
-        gate              { dl_return [mp_sim::_env_gate              $env $ts] }
-        sigmoid           { dl_return [mp_sim::_env_sigmoid           $env $ts] }
-        trapezoid_train   { dl_return [mp_sim::_env_trapezoid_train   $env $ts] }
-        product           { dl_return [mp_sim::_env_product           $env $ts] }
-        sum               { dl_return [mp_sim::_env_sum               $env $ts] }
-        callback          { dl_return [mp_sim::_env_callback          $env $ts] }
+        flat              { dl_yield [mp_sim::_env_flat              $env $ts] }
+        sum_gaussians     { dl_yield [mp_sim::_env_sum_gaussians     $env $ts] }
+        cosine_ramp       { dl_yield [mp_sim::_env_cosine_ramp       $env $ts] }
+        gate              { dl_yield [mp_sim::_env_gate              $env $ts] }
+        sigmoid           { dl_yield [mp_sim::_env_sigmoid           $env $ts] }
+        trapezoid_train   { dl_yield [mp_sim::_env_trapezoid_train   $env $ts] }
+        product           { dl_yield [mp_sim::_env_product           $env $ts] }
+        sum               { dl_yield [mp_sim::_env_sum               $env $ts] }
+        callback          { dl_yield [mp_sim::_env_callback          $env $ts] }
         default           { error "mp_sim::eval_envelope: unknown kind '$kind'" }
     }
 }
@@ -124,7 +125,7 @@ proc mp_sim::_env_base_coh {env {default 1.0}} {
 
 proc mp_sim::_env_flat {env ts} {
     set base [mp_sim::_env_base_coh $env]
-    dl_return [dl_mult $base [dl_ones [dl_length $ts]]]
+    dl_yield [dl_mult $base [dl_ones [dl_length $ts]]]
 }
 
 proc mp_sim::_env_sum_gaussians {env ts} {
@@ -155,7 +156,7 @@ proc mp_sim::_env_sum_gaussians {env ts} {
     dl_local v  [dl_add [dl_mult [dl_sub 1.0 $hi] $v] [dl_mult $hi $base]]
     dl_local lo [dl_lt $v 0.0]
     dl_local v  [dl_mult [dl_sub 1.0 $lo] $v]
-    dl_return $v
+    dl_yield $v
 }
 
 # Raised cosine: rises from 0 to base over [t0, t1], stays at base
@@ -182,7 +183,7 @@ proc mp_sim::_env_cosine_ramp {env ts} {
     # raised cosine: 0.5 * (1 - cos(pi * phase))
     dl_local v [dl_mult [expr {0.5 * $base}] \
                        [dl_sub 1.0 [dl_cos [dl_mult $pi $phase]]]]
-    dl_return $v
+    dl_yield $v
 }
 
 proc mp_sim::_env_gate {env ts} {
@@ -192,7 +193,7 @@ proc mp_sim::_env_gate {env ts} {
     dl_local hi [dl_gte $ts $t0]
     dl_local lo [dl_lt  $ts $t1]
     dl_local mask [dl_mult $hi $lo]
-    dl_return [dl_mult $base $mask]
+    dl_yield [dl_mult $base $mask]
 }
 
 proc mp_sim::_env_sigmoid {env ts} {
@@ -206,7 +207,7 @@ proc mp_sim::_env_sigmoid {env ts} {
     }
     dl_local z [dl_div [dl_sub $ts $t0] $tau]
     dl_local v [dl_div 1.0 [dl_add 1.0 [dl_exp [dl_mult -1.0 $z]]]]
-    dl_return [dl_mult $base $v]
+    dl_yield [dl_mult $base $v]
 }
 
 # Trapezoidal pulse train: each pulse is a raised-cosine rise of
@@ -274,7 +275,7 @@ proc mp_sim::_env_trapezoid_train {env ts} {
     dl_local v [dl_add [dl_mult [dl_sub 1.0 $hi] $v] [dl_mult $hi $base]]
     dl_local lo [dl_lt $v 0.0]
     dl_local v [dl_mult [dl_sub 1.0 $lo] $v]
-    dl_return $v
+    dl_yield $v
 }
 
 # ---- Compositors ---------------------------------------------------
@@ -289,7 +290,7 @@ proc mp_sim::_env_product {env ts} {
         dl_local sub [mp_sim::eval_envelope $p $ts]
         dl_local v [dl_mult $v $sub]
     }
-    dl_return $v
+    dl_yield $v
 }
 
 proc mp_sim::_env_sum {env ts} {
@@ -305,13 +306,13 @@ proc mp_sim::_env_sum {env ts} {
     dl_local v [dl_add [dl_mult [dl_sub 1.0 $hi] $v] [dl_mult $hi $base]]
     dl_local lo [dl_lt $v 0.0]
     dl_local v [dl_mult [dl_sub 1.0 $lo] $v]
-    dl_return $v
+    dl_yield $v
 }
 
 proc mp_sim::_env_callback {env ts} {
     set p [dict get $env proc]
     set args_dict [expr {[dict exists $env args] ? [dict get $env args] : [dict create]}]
-    dl_return [{*}$p $ts $args_dict]
+    dl_yield [{*}$p $ts $args_dict]
 }
 
 # ---- Envelope duration resolution ---------------------------------
@@ -373,7 +374,7 @@ proc mp_sim::eval_trajectory {traj ts duration} {
             set sy [expr {[dict exists $traj y] ? [dict get $traj y] : 0.0}]
             dl_local mox [dl_mult $sx [dl_ones $n]]
             dl_local moy [dl_mult $sy [dl_ones $n]]
-            dl_return [dl_llist $mox $moy]
+            dl_yield [dl_llist $mox $moy]
         }
         sweep {
             set x0 [dict get $traj x0]
@@ -381,7 +382,7 @@ proc mp_sim::eval_trajectory {traj ts duration} {
             set y  [expr {[dict exists $traj y] ? [dict get $traj y] : 0.0}]
             dl_local mox [dl_add $x0 [dl_mult $ts [expr {($x1 - $x0) / $duration}]]]
             dl_local moy [dl_mult $y [dl_ones $n]]
-            dl_return [dl_llist $mox $moy]
+            dl_yield [dl_llist $mox $moy]
         }
         callback {
             # The user proc is called once per frame as {*}$cb $t and
@@ -413,9 +414,9 @@ proc mp_sim::eval_trajectory {traj ts duration} {
             if {$have_vel} {
                 dl_local mvx [dl_flist {*}$vxs]
                 dl_local mvy [dl_flist {*}$vys]
-                dl_return [dl_llist $mox $moy $mvx $mvy]
+                dl_yield [dl_llist $mox $moy $mvx $mvy]
             } else {
-                dl_return [dl_llist $mox $moy]
+                dl_yield [dl_llist $mox $moy]
             }
         }
         step_sequence {
@@ -444,7 +445,7 @@ proc mp_sim::eval_trajectory {traj ts duration} {
             }
             dl_local mox [dl_flist {*}$xs]
             dl_local moy [dl_flist {*}$ys]
-            dl_return [dl_llist $mox $moy]
+            dl_yield [dl_llist $mox $moy]
         }
         default { error "mp_sim::eval_trajectory: unknown kind '$kind'" }
     }
@@ -507,7 +508,7 @@ proc mp_sim::trajectory_kinematics {traj_pair ts} {
     dl_local dy [dl_div [dl_sub [dl_choose $moy $inx] [dl_choose $moy $ipv]] $gap]
     dl_local speed [dl_sqrt [dl_add [dl_mult $dx $dx] [dl_mult $dy $dy]]]
     dl_local dir   [dl_atan2 $dy $dx]
-    dl_return [dl_llist $speed $dir]
+    dl_yield [dl_llist $speed $dir]
 }
 
 # ============================================================
@@ -617,7 +618,7 @@ proc mp_sim::envelope_sum_gaussians {ts centers sigma_s base_coh} {
     dl_local v  [dl_add [dl_mult [dl_sub 1.0 $hi] $v] [dl_mult $hi $base_coh]]
     dl_local lo [dl_lt $v 0.0]
     dl_local v  [dl_mult [dl_sub 1.0 $lo] $v]
-    dl_return $v
+    dl_yield $v
 }
 
 # mp_sim::evenly_spaced_pulse_centers n_pulses duration
@@ -1118,7 +1119,7 @@ proc mp_sim::colorize_to_image {values args} {
     dl_local g [dl_choose $heatmap:1 $indices]
     dl_local b [dl_choose $heatmap:2 $indices]
     # Interleave RGB triplets and pack as char.
-    dl_return [dl_char [dl_collapse [dl_transpose [dl_llist $r $g $b]]]]
+    dl_yield [dl_char [dl_collapse [dl_transpose [dl_llist $r $g $b]]]]
 }
 
 # mp_sim::draw_heatmap cx cy values width height nx ny ?-cmap M? ?-vmin V? ?-vmax V?
@@ -1235,7 +1236,7 @@ proc mp_sim::_wrap_pos {p} {
     dl_local p [dl_add $p 0.5]
     dl_local p [dl_sub $p [dl_floor $p]]
     dl_local p [dl_sub $p 0.5]
-    dl_return $p
+    dl_yield $p
 }
 
 # Dot state is held in a persistent scratch dg with columns

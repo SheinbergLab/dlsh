@@ -59,7 +59,7 @@ namespace eval ::helpmtspec { } {
 	dl_local freqs [dl_select $freqs $fpass]
 	dl_local S [dl_select $S [dl_llist $fpass]]
 	dl_local J [dl_select $J [dl_llist [dl_llist [dl_llist $fpass]]]]
-	dl_return [dl_llist $S $J $freqs]
+	dl_yield [dl_llist $S $J $freqs]
     }
 
     proc mtcoherence { dynlist1 dynlist2 flag1 flag2} {
@@ -127,7 +127,7 @@ namespace eval ::helpmtspec { } {
 	dl_local J1 [dl_select $J1 [dl_llist [dl_llist [dl_llist $fpass]]]]
 	dl_local J2 [dl_select $J2 [dl_llist [dl_llist [dl_llist $fpass]]]]
 
-	dl_return [dl_llist $cohmag $cohphase $S12r $S12i $S1 $S2 $J1 $J2 $freqs]
+	dl_yield [dl_llist $cohmag $cohphase $S12r $S12i $S1 $S2 $J1 $J2 $freqs]
     }
 
     proc mtspecgram { dynlist stepsize winsize flag} {
@@ -191,7 +191,7 @@ namespace eval ::helpmtspec { } {
 	dl_local fpass [dl_and [dl_gte $freqs $fmin] [dl_lte $freqs $fmax]]
 	dl_local freqs [dl_select $freqs $fpass]
 	dl_local S [dl_select $S [dl_llist [dl_llist $fpass]]]
-	dl_return [dl_llist $S $freqs $times]
+	dl_yield [dl_llist $S $freqs $times]
     }
 
     #########################################################################
@@ -250,7 +250,7 @@ namespace eval ::helpmtspec { } {
 	    error "Invalid method for confidence bar calculation"
 	}
 
-	dl_return [dl_llist $Serrl $Serru]
+	dl_yield [dl_llist $Serrl $Serru]
     }
 
     proc coherror {mean_cohmag ind_mtfft1 ind_mtfft2 ntrials p type {numspks1 ""} {numspks2 ""}} {
@@ -283,7 +283,7 @@ namespace eval ::helpmtspec { } {
 	    dl_local temp [dl_sqrt [dl_mult [dl_div 2. [dl_select $dfs $idx]] \
 					[dl_sub [dl_div 1. [dl_pow [dl_select $mean_cohmag $idx] 2]] 1]]]
 	    dl_local phistd [dl_replace $phistd $idx [dl_select $temp $idx]]
-	    dl_return [dl_llist $confC [dl_llist [dl_slist "specify jackknife"] \
+	    dl_yield [dl_llist $confC [dl_llist [dl_slist "specify jackknife"] \
 					    [dl_slist "specify jackknife"]] $phistd]
 	} elseif {$type == 2} {; # jacknife confidence bars for magnitude and jacknife phase standard deviation
 	    set ncond [dl_length $ntrials]
@@ -348,7 +348,7 @@ namespace eval ::helpmtspec { } {
 						      [dl_mult $mphasefactori $mphasefactori]]]
 		dl_append $phistd [dl_mult [expr 2*$n-2] [dl_sub 1 $phasefactormag]]
 	    }
-	    dl_return [dl_llist $confC [dl_llist $Cerrl $Cerru] $phistd]
+	    dl_yield [dl_llist $confC [dl_llist $Cerrl $Cerru] $phistd]
 	} else { 
 	    error "Invalid method for statistics calculation"
 	}
@@ -1047,7 +1047,7 @@ namespace eval ::helpmtspec { } {
 	    set label2 [lindex $sb 1]
 	    dl_local split_vals2 $g:$label2
 	}
-	dl_return [dl_llist [dl_llist [dl_slist $label1] $split_vals1] [dl_llist [dl_slist $label2] $split_vals2]]
+	dl_yield [dl_llist [dl_llist [dl_slist $label1] $split_vals1] [dl_llist [dl_slist $label2] $split_vals2]]
     }
 
     #extract the desired raw LFP signal
@@ -1106,7 +1106,7 @@ namespace eval ::helpmtspec { } {
 	set stopInd [expr int($dur/$samps_per_ms)+$startInd]
 	dl_local selInd [dl_llist [dl_fromto $startInd $stopInd]]
 	
-	dl_return [dl_choose $alleeg $selInd]
+	dl_yield [dl_choose $alleeg $selInd]
     }
 
     proc get_lfp_orig { g chan } {
@@ -1141,7 +1141,7 @@ namespace eval ::helpmtspec { } {
 	    dl_local zr [dl_choose $alleeg_raw $get_zero]
 	    dl_local alleeg [dl_sub $alleeg [dl_means $zr]]
 	}
-	dl_return $alleeg
+	dl_yield $alleeg
     }
 
     proc spike_extract { g channel } {
@@ -1149,7 +1149,7 @@ namespace eval ::helpmtspec { } {
 	dl_local aligned_spikes [dl_sub [dl_select $g:spk_times $spk_selector] $g:$::mtspec::Args(align)]
 	dl_local restricted_spikes [dl_select $aligned_spikes [dl_betweenEqLow $aligned_spikes $::mtspec::Args(pretime) \
 								   $::mtspec::Args(posttime)]]
-	dl_return $restricted_spikes
+	dl_yield $restricted_spikes
     }
 
     #extract all the individual spike-triggered LFPs and leave them in raw trial from
@@ -1180,7 +1180,7 @@ namespace eval ::helpmtspec { } {
 
 	#Normalize each segment by its time-average
 	dl_local sta_snips [dl_sub $sta_snips [dl_bmeans $sta_snips]]
-	dl_return $sta_snips
+	dl_yield $sta_snips
     }
 
     #code for creating combinations
@@ -1206,7 +1206,7 @@ namespace eval ::helpmtspec { } {
 	dl_local good [dl_and $u $alldiff]
 
 	# Return selected combinations
-	dl_return [dl_llist \
+	dl_yield [dl_llist \
 		       [dl_select $l0 $good] \
 		       [dl_select $l1 $good]]
     }
@@ -1214,6 +1214,6 @@ namespace eval ::helpmtspec { } {
     proc all_doublets { l } {
 	set n [dl_length $l]
 	dl_local indices [::helpmtspec::doublets $n]
-	dl_return [dl_choose $l $indices]
+	dl_yield [dl_choose $l $indices]
     }
 }

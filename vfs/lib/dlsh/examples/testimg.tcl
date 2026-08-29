@@ -16,7 +16,7 @@ proc make_noise { { noise_size 16 } } {
     dl_local noise_g [dl_char [dl_irand $n 256]]
     dl_local noise_b [dl_char [dl_irand $n 256]]
     dl_local npix [dl_unpack [dl_combineLists $noise_r $noise_g $noise_b]]
-    dl_return [dl_llist "$noise_size $noise_size" $npix]
+    dl_yield [dl_llist "$noise_size $noise_size" $npix]
 }
 
 proc show_noise { x y scale } {
@@ -27,7 +27,7 @@ proc show_noise { x y scale } {
 proc load_image { filename } {
     scan [img_info $filename] "%d %d %d %d" w h d header
     dl_local pix [img_read $filename]
-    dl_return [dl_llist "$w $h" $pix]
+    dl_yield [dl_llist "$w $h" $pix]
 }
 
 proc makeplot {} {

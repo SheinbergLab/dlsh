@@ -183,7 +183,7 @@ namespace eval ::stimCompose {
 	if { $premult } { img_premultiplyAlpha $resultimage 128 128 128 }
 	dl_local result [img_img2list $resultimage]
 	img_delete $scaled_alpha $resultimage
-	dl_return $result
+	dl_yield $result
     }
 
     proc make_object2 { elements tx ty texture { scale 1.0 } { premult 1 } rotations} {
@@ -216,7 +216,7 @@ namespace eval ::stimCompose {
 	if { $premult } { img_premultiplyAlpha $resultimage 128 128 128 }
 	dl_local result [img_img2list $resultimage]
 	img_delete $scaled_alpha $resultimage
-	dl_return $result
+	dl_yield $result
     }
 
     proc make_silhouette_from_dg { g id } {
@@ -279,7 +279,7 @@ namespace eval ::stimCompose {
 	
 	set rotations [dl_tcllist [dl_irand $n 360]]
 	
-	dl_return [make_object $els $xoffs $yoffs $texture $scale $premult $rotations]
+	dl_yield [make_object $els $xoffs $yoffs $texture $scale $premult $rotations]
     }
 
     proc random_family { members } {

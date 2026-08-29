@@ -9,12 +9,12 @@
 package provide dlsh 1.2
 
 proc dl_sortedFunc { data categs { func dl_means } } {
-    dl_return [dl_append [eval dl_uniqueCross $categs] \
+    dl_yield [dl_append [eval dl_uniqueCross $categs] \
 	    [$func [eval dl_sortByLists $data $categs]]]
 }
 
 proc dl_selectSortedFunc { data variables selects { func dl_means } } {
-    dl_return [dl_append [eval dl_uniqueCross $selects] \
+    dl_yield [dl_append [eval dl_uniqueCross $selects] \
 	    [$func [dl_sortBySelected [subst $data] [subst $variables] \
 	    [subst $selects]]]]
 }
@@ -43,7 +43,7 @@ proc dl_multisort { args } {
 
     # Add up the recoded lists, which gives a sortable list
     dl_local sums [dl_sums [dl_transpose $recoded]]
-    dl_return [dl_sortIndices $sums]
+    dl_yield [dl_sortIndices $sums]
 }
 
 proc dg_permute { g order } {

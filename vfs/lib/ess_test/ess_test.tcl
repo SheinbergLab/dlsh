@@ -486,10 +486,10 @@ proc ess_test::_bind_args {name spec} {
 # Why an ensemble and not `proc ::my {sub args} {...}`: ensemble dispatch
 # replaces the command word without pushing a stack frame, exactly like
 # TclOO method dispatch. A proc-based `my` inserts frames between the
-# caller and the callee, and `dl_return` -- which hands its dynlist UP ONE
-# frame -- then drops the list into the wrapper instead of the calling
-# loader. The symptom is `dynlist ">0<" not found` from any loader that
-# does `dl_append ... [my other_loader ...]`, which is a harness artifact
+# caller and the callee, and `dl_yield`/`dl_return` -- which hand their
+# dynlist UP ONE frame -- then drop the list into the wrapper instead of
+# the calling loader. The symptom is `dynlist ">0<" not found` from any
+# loader that does `dl_append ... [my other_loader ...]`, a harness artifact
 # with no counterpart on the rig. Same reason `apply` is not used to run a
 # body: it is a frame too.
 #

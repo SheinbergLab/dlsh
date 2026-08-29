@@ -90,14 +90,14 @@ namespace eval curve {
     proc poly_union { p1 p2 } {
 	dl_local interped1 [curve::cubic $p1:x $p1:y $::curve::polyinterp_steps]
 	dl_local interped2 [curve::cubic $p2:x $p2:y $::curve::polyinterp_steps]
-	dl_return [curve::poly_union_interpolated $interped1 $interped2]
+	dl_yield [curve::poly_union_interpolated $interped1 $interped2]
     }
 
     proc poly_union_interpolated { p1 p2 } {
 	variable clip_scale
 	dl_local paths [dl_int [dl_mult [dl_llist [dl_llist $p1:0 $p1:1] \
 					     [dl_llist $p2:0 $p2:1]] $clip_scale]]
-	dl_return [dl_div [curve::clipper $paths] $clip_scale]
+	dl_yield [dl_div [curve::clipper $paths] $clip_scale]
     }
 
     proc poly_create { npolys nverts } {
@@ -128,6 +128,6 @@ namespace eval curve {
 	    }
 	}
 	dl_local union [dl_llist $union:0:0:0 $union:0:0:1]
-	dl_return $union
+	dl_yield $union
     }
 }

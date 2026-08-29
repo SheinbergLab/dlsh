@@ -12,61 +12,61 @@ namespace eval hex {
 	dl_local angle_rad [dl_mult [expr $::pi/180.] $angle_deg]
 	dl_local xoffs [dl_mult $size [dl_cos $angle_rad]]
 	dl_local yoffs [dl_mult $size [dl_sin $angle_rad]]
-	dl_return [dl_add $center [dl_llist $xoffs $yoffs]]
+	dl_yield [dl_add $center [dl_llist $xoffs $yoffs]]
     }
 
     # Cube: q (x), r (z) / Hex: x (q), y (-x-z), z (r)
     proc cube_to_hex { h } {
-	dl_return [dl_choose $h [dl_llist "0 2"]]
+	dl_yield [dl_choose $h [dl_llist "0 2"]]
     }
 
     proc hex_to_cube { h } {
 	dl_local x [dl_choose $h [dl_llist 0]]
 	dl_local z [dl_choose $h [dl_llist 1]]
 	dl_local y [dl_sub [dl_mult -1 $x] $z]
-	dl_return [dl_transpose [dl_llist $x $y $z]]
+	dl_yield [dl_transpose [dl_llist $x $y $z]]
     }
 
 
     proc add { a b } {
-	dl_return [dl_add $a $b]
+	dl_yield [dl_add $a $b]
     }
 
     proc sub { a b } {
-	dl_return [dl_sub $a $b]
+	dl_yield [dl_sub $a $b]
     }
 
     proc scale { a k } {
-	dl_return [dl_mult $a $k]
+	dl_yield [dl_mult $a $k]
     }
 
     proc directions {} {
 	dl_local d [dl_llist [dl_ilist 1 -1 0] [dl_ilist 1 0 -1] \
 			[dl_ilist 0 1 -1] [dl_ilist -1 1 0] \
 			[dl_ilist -1 0 1] [dl_ilist 0 -1 1]]
-	dl_return $d
+	dl_yield $d
     }
 
     proc neighbor { h d } {
 	dl_local dirs [hex::directions]
-	dl_return [hex::add $h [dl_choose $dirs $d]]
+	dl_yield [hex::add $h [dl_choose $dirs $d]]
     }
 
     proc diagonals {} {
 	dl_local d [dl_llist [dl_ilist 2 -1 -1] [dl_ilist 1 1 -2] \
 			[dl_ilist -1 2 -1] [dl_ilist -2 1 1] \
 			[dl_ilist -1 -1 2] [dl_ilist 1 -2 1]]
-	dl_return $d
+	dl_yield $d
     }
 
     proc diagonal_neighbor { h d } {
 	dl_local dirs [hex::diagonals]
-	dl_return [hex::add $h [dl_choose $dirs $d]]
+	dl_yield [hex::add $h [dl_choose $dirs $d]]
     }
 
     proc cube_distance { a b } {
 	if { [dl_datatype $a] == "list" || [dl_datatype $b] == "list" } {
-	    dl_return [dl_div [dl_sums [dl_abs [dl_sub $a $b]]] 2]
+	    dl_yield [dl_div [dl_sums [dl_abs [dl_sub $a $b]]] 2]
 	} else {
 	    return [dl_tcllist [dl_div [dl_sum [dl_abs [dl_sub $a $b]]] 2]]
 	}
@@ -81,7 +81,7 @@ namespace eval hex {
 		    dl_append $region [hex::add $center [dl_ilist $dx $dy $dz]]
 		}
 	}
-	dl_return $region
+	dl_yield $region
     }
 
     proc cube_ring { center radius } {
@@ -94,7 +94,7 @@ namespace eval hex {
 		dl_local c [hex::neighbor $c $i]
 	    }
 	}
-	dl_return [dl_unpack $ring]
+	dl_yield [dl_unpack $ring]
     }
     
     proc pointy_to_pixel { h { size 1.0 } } {
@@ -106,7 +106,7 @@ namespace eval hex {
 			[dl_add \
 			     [dl_mult [expr {$sqrt3/2}] $q] \
 			     [dl_mult $sqrt3 $r]]]
-	dl_return [dl_transpose [dl_llist $x $y]]
+	dl_yield [dl_transpose [dl_llist $x $y]]
     }
     
     proc flat_to_pixel { h { size 1.0 } } {
@@ -118,7 +118,7 @@ namespace eval hex {
 			     [dl_mult $sqrt3 $q] \
 			     [dl_mult [expr {$sqrt3/2.}] $r]]]
 	dl_local y [dl_mult $size 1.5 $r]
-	dl_return [dl_transpose [dl_llist $x $y]]
+	dl_yield [dl_transpose [dl_llist $x $y]]
     }
     
     proc test { { type pointy } } {

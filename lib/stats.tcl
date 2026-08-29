@@ -14,23 +14,23 @@ package provide dlsh 1.2
 
 proc dl_stdList { dl } {
     if ![dl_length $dl] {
-	dl_return $dl
+	dl_yield $dl
     } else {
-	dl_return [dl_stds [dl_transpose $dl]]
+	dl_yield [dl_stds [dl_transpose $dl]]
     }
 }
 proc dl_semList { dl } {
     if ![dl_length $dl] {
-	dl_return $dl
+	dl_yield $dl
     } else {
-	dl_return [dl_sems [dl_transpose $dl]]
+	dl_yield [dl_sems [dl_transpose $dl]]
     }
 }
 proc dl_95ciList { dl } {
     if ![dl_length $dl] {
-	dl_return $dl
+	dl_yield $dl
     } else {
-	dl_return [dl_95cis [dl_transpose $dl]]
+	dl_yield [dl_95cis [dl_transpose $dl]]
     }
 }
 
@@ -48,7 +48,7 @@ proc dl_95cis { lists } {
     
     # t needs to come from a table - or alternatively we could bootstrap it out of the data
     dl_local t 1.96; # dl_local t [lookup t?]
-    dl_return [dl_mult $t [dl_div $stds [dl_sqrt $ns]]]
+    dl_yield [dl_mult $t [dl_div $stds [dl_sqrt $ns]]]
 }
 proc dl_95ci { list } {
     # %HELP%
@@ -70,7 +70,7 @@ proc dl_sems { lists } {
     # %END%
     dl_local ns [dl_lengths $lists]
     dl_local stds [dl_stds $lists]
-    dl_return [dl_div $stds [dl_sqrt $ns]]
+    dl_yield [dl_div $stds [dl_sqrt $ns]]
 }
 proc dl_sem { list } {
     # %HELP%
@@ -97,7 +97,7 @@ proc dl_spearman { xs ys } {
     }
     dl_local xrank [dl_recodeWithTies $xs]
     dl_local yrank [dl_recodeWithTies $ys]
-    dl_return [dl_pearson $xrank $yrank]	  
+    dl_yield [dl_pearson $xrank $yrank]	  
 }
 
 

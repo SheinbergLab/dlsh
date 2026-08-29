@@ -516,7 +516,7 @@ namespace eval qpcs {
 	puts $tempsock "%get $var"
 	catch {gets $tempsock data}
 	close $tempsock
-	dl_return [dsData [lrange $data 1 end]]
+	dl_yield [dsData [lrange $data 1 end]]
     }
 
     
@@ -549,7 +549,7 @@ namespace eval qpcs {
 	if { [dl_length $dl] != [expr [lindex $data 3]/$eltsize] } {
 	    error "invalid data received"
 	}
-	dl_return $dl
+	dl_yield $dl
     }
 
     proc dsTimestamp { data } {

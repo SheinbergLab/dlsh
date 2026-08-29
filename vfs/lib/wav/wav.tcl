@@ -66,7 +66,7 @@ namespace eval wav {
                          0.5]
         dl_local flat [dl_float [dl_ones [expr {$n - 2 * $nr}]]]
         dl_local env [dl_combine $up $flat [dl_reverse $up]]
-        dl_return [dl_mult $s $env]
+        dl_yield [dl_mult $s $env]
     }
 
     # pure tone; wav::tone freq_hz dur_ms ?-rate r? ?-amp a? ?-ramp_ms m?
@@ -80,7 +80,7 @@ namespace eval wav {
         set w [expr {2.0 * acos(-1.0) * $freq_hz / $rate}]
         dl_local s [dl_mult [dl_sin [dl_mult [dl_float [dl_fromto 0 $n]] $w]] \
                         [dict get $o -amp]]
-        dl_return [envelope $s [dict get $o -ramp_ms] $rate]
+        dl_yield [envelope $s [dict get $o -ramp_ms] $rate]
     }
 
     # white noise burst; wav::noise dur_ms ?-rate r? ?-amp a? ?-ramp_ms m?
@@ -93,14 +93,14 @@ namespace eval wav {
 
         dl_local s [dl_mult [dl_sub [dl_mult [dl_urand $n] 2.0] 1.0] \
                         [dict get $o -amp]]
-        dl_return [envelope $s [dict get $o -ramp_ms] $rate]
+        dl_yield [envelope $s [dict get $o -ramp_ms] $rate]
     }
 
     # brief broadband click; wav::click ?-rate r? ?-amp a? ?-dur_ms d?
     proc click { args } {
         variable default_rate
         set o [_opts [list -rate $default_rate -amp 0.9 -dur_ms 2] $args]
-        dl_return [noise [dict get $o -dur_ms] \
+        dl_yield [noise [dict get $o -dur_ms] \
                        -rate [dict get $o -rate] \
                        -amp [dict get $o -amp] -ramp_ms 0.5]
     }
@@ -109,7 +109,7 @@ namespace eval wav {
         variable default_rate
         set o [_opts [list -rate $default_rate] $args]
         set n [expr {int($dur_ms * [dict get $o -rate] / 1000.0)}]
-        dl_return [dl_float [dl_zeros $n]]
+        dl_yield [dl_float [dl_zeros $n]]
     }
 
     #########################################################################
@@ -221,10 +221,10 @@ namespace eval wav {
 
         if { $fmt == 1 && $bits == 16 } {
             binary scan $data s* vals
-            dl_return [dl_flist {*}[lmap v $vals {expr {$v / 32768.0}}]]
+            dl_yield [dl_flist {*}[lmap v $vals {expr {$v / 32768.0}}]]
         } elseif { $fmt == 3 && $bits == 32 } {
             binary scan $data r* vals
-            dl_return [dl_flist {*}$vals]
+            dl_yield [dl_flist {*}$vals]
         } else {
             error "wav: \"$path\": unsupported format (fmt $fmt, $bits bits);\
                    only 16-bit PCM and 32-bit float are readable"

@@ -72,7 +72,7 @@ proc create_sample_trajectories {} {
         dl_append $trajectories [dl_llist $xs $ys]
     }
     
-    dl_return $trajectories
+    dl_yield $trajectories
 }
 
 # Generate sample data

@@ -547,14 +547,14 @@ namespace eval ::helprasts {
 	#   settings for all plots in a central location
 	
 #	dl_return [dl_mult [dl_parzens $spks $starts $stops 20 2.5 1] 1000.]
-	dl_return [dl_mult [dl_sdfs $spks $starts $stops 20 2.5 1] 1000.]
+	dl_yield [dl_mult [dl_sdfs $spks $starts $stops 20 2.5 1] 1000.]
 #	dl_return [dl_mult [dl_sdfsAsym $spks $starts $stops 20 2.5 1] 1000.]
     }
 
     proc my_sdfs2 { spks starts stops } {
 	# this is a way to quickly switch between sdfs/parzens and adjust their
 	#   settings for all plots in a central location
-	dl_return [dl_mult [dl_sdfsAsym $spks $starts $stops 15 5 2.5 1] 1000.]
+	dl_yield [dl_mult [dl_sdfsAsym $spks $starts $stops 15 5 2.5 1] 1000.]
     }
 
     proc test { } {
@@ -613,7 +613,7 @@ namespace eval ::helprasts {
 # 	set p2 [dlp_xyplot [dl_series -$n $n $res] $kern]
 # 	dlp_subplot $p2 1
 
-	dl_return $sdfs
+	dl_yield $sdfs
     }
 
     proc mark_plots { text {g ""} } {

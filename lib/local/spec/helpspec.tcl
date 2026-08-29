@@ -258,12 +258,12 @@ namespace eval ::helpspec {
 	dl_local out [dl_llist]
 	set chidx [dl_tcllist [dl_indices [dl_eq [dl_get $g:eeg_chans 0] $ch]]]
 	dl_append $out [dl_collapse [dl_choose [dl_choose $g:eeg [dl_llist [dl_ilist $chidx]]] [dl_pack $idxs2get]]]
-	dl_return $out
+	dl_yield $out
     }
     
     proc fftEeg {eeglist} {
 	dl_local leg $eeglist
-	dl_return [::fftw::1d [dl_collapse $leg]]
+	dl_yield [::fftw::1d [dl_collapse $leg]]
     }
     
     proc complexMult {in1 in2} {
@@ -277,13 +277,13 @@ namespace eval ::helpspec {
 	dl_local by [dl_mult $b $y]
 	dl_local out1 [dl_sub $ax $by]
 	dl_local out2 [dl_add $bx $ay]
-	dl_return [dl_combineLists $out1 $out2]
+	dl_yield [dl_combineLists $out1 $out2]
     }
     
     proc compPow {in1} {
 	dl_local lin1 $in1
 	dl_local prod [complexMult $lin1 $lin1]
-	dl_return [dl_collapse  [dl_means [dl_transpose [dl_choose $prod [dl_llist [dl_ilist 0]]]]]]
+	dl_yield [dl_collapse  [dl_means [dl_transpose [dl_choose $prod [dl_llist [dl_ilist 0]]]]]]
     }
 
     proc plotSpectrogram { args } {
@@ -467,13 +467,13 @@ namespace eval ::helpspec {
 	#the fz is the main frequency that changes over time at a rate of k
 	#think in terms of hertz
 	dl_local time [dl_div $tl 1000.];#assuming milliseconds
-	dl_return [dl_sin [dl_mult [dl_add [dl_div [dl_mult $time $k] 2.] $fz] $time [expr 2 * $::pi]]]
+	dl_yield [dl_sin [dl_mult [dl_add [dl_div [dl_mult $time $k] 2.] $fz] $time [expr 2 * $::pi]]]
     }
 
     proc noisychirp {tl fz k {nmag 1.0} } {
 	#same as above excepts adds noise
 	dl_local time [dl_add [dl_div $tl 1000.] [dl_mult [dl_zrand [dl_llength $tl]] $nmag]]
-	dl_return [dl_sin [dl_mult [dl_add [dl_div [dl_mult $time $k] 2.] $fz] $time [expr 2 * $::pi]]]
+	dl_yield [dl_sin [dl_mult [dl_add [dl_div [dl_mult $time $k] 2.] $fz] $time [expr 2 * $::pi]]]
     }
 
 }

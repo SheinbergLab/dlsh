@@ -77,7 +77,7 @@ proc poly_union { args } {
     }
     dl_local polys [dl_int [dl_mult $ps $s]]
     dl_local union [dl_div [curve::clipper $polys] $s]
-    dl_return $union
+    dl_yield $union
 }
 
 proc show_polygons {} {
@@ -165,7 +165,7 @@ proc make_symmetrical { v } {
     dl_local left_half [curve::clipper [dl_llist $poly] [dl_llist $clip]]
     dl_local right_half [dl_mult $left_half [dl_llist [dl_ilist -1 1]]]
     dl_local union [dl_div [curve::clipper [dl_llist $left_half:0 $right_half:0]] $s]
-    dl_return [dl_llist $union:0:0 $union:0:1]
+    dl_yield [dl_llist $union:0:0 $union:0:1]
 }
 
 #

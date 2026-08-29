@@ -13,7 +13,7 @@
 #       ternary [x if x>4 else -1 ...]       -> dl_where [dl_gt $xs 4] $xs -1
 #       reduce  sum/mean/max per row         -> dl_sums / dl_means / dl_maxs
 #
-#   All builders return a dynlist via dl_return (a ">N<" return-list), so the
+#   All builders hand back a dynlist via dl_yield (a ">N<" return-list), so the
 #   result lives in the CALLER's frame -- the standard dlsh contract. How you
 #   take the result matters:
 #
@@ -30,10 +30,14 @@
 #        return-list guard: it survives in-scope, but `unset v` won't free it,
 #        and at the top level it is never reclaimed.)
 #
-#     * Returned UP through a proc of your own -- re-protect with dl_return:
-#           proc mk {} { return [dl_return [dl_map x $xs {expr {$x*2}}]] }
+#     * Returned UP through a proc of your own -- use dl_yield:
+#           proc mk {} { dl_yield [dl_map x $xs {expr {$x*2}}] }
+#       dl_yield returns from the enclosing proc AND hands the list to the
+#       caller's frame, at O(1) regardless of length. The older spelling
+#       `return [dl_return ...]` still works but deep copies on every frame,
+#       and bare `dl_return ...; return` silently returns "".
 #
-#   Built on: dl_foreach, dl_select, dl_create, dl_ilist, dl_return, dl_local.
+#   Built on: dl_foreach, dl_select, dl_create, dl_ilist, dl_yield, dl_local.
 
 namespace eval ::dl {}
 
@@ -61,7 +65,7 @@ proc dl_map {var listname body {type auto}} {
     set out {}
     dl_foreach v $listname { lappend out [uplevel 1 $body] }
     if {$type eq "auto"} { set type [::dl::_infer_type $out] }
-    return [dl_return [dl_create $type {*}$out]]
+    dl_yield [dl_create $type {*}$out]
 }
 
 # dl_filter var listname pred
@@ -73,7 +77,7 @@ proc dl_filter {var listname pred} {
     upvar 1 $var v
     set mask {}
     dl_foreach v $listname { lappend mask [expr {[uplevel 1 $pred] ? 1 : 0}] }
-    return [dl_return [dl_select $listname [dl_ilist {*}$mask]]]
+    dl_yield [dl_select $listname [dl_ilist {*}$mask]]
 }
 
 # dl_reduce accVar elemVar listname body init
@@ -112,5 +116,5 @@ proc dl_comp {var listname args} {
         if {$mapb eq ""} { lappend out $v } else { lappend out [uplevel 1 $mapb] }
     }
     if {$type eq "auto"} { set type [::dl::_infer_type $out] }
-    return [dl_return [dl_create $type {*}$out]]
+    dl_yield [dl_create $type {*}$out]
 }

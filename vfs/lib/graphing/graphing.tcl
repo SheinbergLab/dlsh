@@ -1670,7 +1670,7 @@ namespace eval ::helpgr {
 	    }
 	    
 	}
-	dl_return $c
+	dl_yield $c
     }
 
     proc mark_plots { text } {

@@ -51,7 +51,7 @@ namespace eval em {
             dl_local x [dl_select $interleaved [dl_llist [dl_ilist 1 0]]]
             dl_local y [dl_select $interleaved [dl_llist [dl_ilist 0 1]]]
         }
-        dl_return [dl_llist $x $y]
+        dl_yield [dl_llist $x $y]
     }
     
     #
@@ -71,7 +71,7 @@ namespace eval em {
     proc compute_p1p4 {p1_x p1_y p4_x p4_y} {
         dl_local h [dl_sub $p1_x $p4_x]
         dl_local v [dl_sub $p1_y $p4_y]
-        dl_return [dl_llist $h $v]
+        dl_yield [dl_llist $h $v]
     }
     
     #
@@ -90,7 +90,7 @@ namespace eval em {
     proc compute_pupil_cr {pupil_x pupil_y cr_x cr_y} {
         dl_local h [dl_sub $pupil_x $cr_x]
         dl_local v [dl_sub $pupil_y $cr_y]
-        dl_return [dl_llist $h $v]
+        dl_yield [dl_llist $h $v]
     }
     
     #
@@ -104,7 +104,7 @@ namespace eval em {
     #
     proc normalize_timestamps {timestamps} {
         dl_local start_times [dl_choose $timestamps [dl_llist [dl_ilist 0]]]
-        dl_return [dl_sub $timestamps $start_times]
+        dl_yield [dl_sub $timestamps $start_times]
     }
     
     #
@@ -136,7 +136,7 @@ namespace eval em {
         }
         
         # Transpose and take min across streams for each trial
-        dl_return [dl_mins [dl_transpose $lengths]]
+        dl_yield [dl_mins [dl_transpose $lengths]]
     }
     
     #
@@ -156,7 +156,7 @@ namespace eval em {
         } else {
             dl_local v [dl_fromto 0 $ns]
         }
-        dl_return [dl_choose $data $v]
+        dl_yield [dl_choose $data $v]
     }
     
     ######################################################################
@@ -315,7 +315,7 @@ namespace eval em {
         dl_local h_deg [biquadratic_transform_dl $x_coeffs $h_raw $v_raw]
         dl_local v_deg [biquadratic_transform_dl $y_coeffs $h_raw $v_raw]
         
-        dl_return [dl_llist $h_deg $v_deg]
+        dl_yield [dl_llist $h_deg $v_deg]
     }
     
     ######################################################################
@@ -500,7 +500,7 @@ namespace eval em {
             [dl_mult $a7 $xy2] \
             [dl_mult $a8 $x2y2]]
         
-        dl_return $result
+        dl_yield $result
     }
     
     #
@@ -524,7 +524,7 @@ namespace eval em {
         dl_local h_cal [biquadratic_transform_dl $x_coeffs $h_raw $v_raw]
         dl_local v_cal [biquadratic_transform_dl $y_coeffs $h_raw $v_raw]
         
-        dl_return [dl_llist $h_cal $v_cal]
+        dl_yield [dl_llist $h_cal $v_cal]
     }
     
     #
