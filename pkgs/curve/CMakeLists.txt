@@ -30,7 +30,7 @@ include_directories(${TCL_INCLUDE_DIR} ${PROJECT_SOURCE_DIR})
 ###############################
 # curve
 ###############################
-add_library(curve SHARED clipper.cpp clipper_dl.cpp clipper_svg.cpp curve.c gpc.c tcl_curve.c)
+add_library(curve SHARED clipper.cpp clipper_dl.cpp clipper_svg.cpp curve.c tcl_curve.c)
 
 if(WIN32)
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)

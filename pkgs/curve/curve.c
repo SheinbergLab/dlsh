@@ -164,7 +164,7 @@ int third_order_poly(int npts, float *xvals, float *yvals, int res,
   float *uvals, *vvals;
 
   float t;
-  float tmax, precision = (float) 1.0/res;
+  int s;
 
   uvals = (float *) calloc(npts, sizeof(float));
   vvals = (float *) calloc(npts, sizeof(float));
@@ -192,8 +192,13 @@ int third_order_poly(int npts, float *xvals, float *yvals, int res,
     cy = v0;
     dy = y0;
     
-    tmax = 1 + precision;
-    for (t = 0; t<tmax; t+=precision) {
+    /* Compute t from the loop index rather than accumulating it.  Accumulating
+       t += 1.0f/res drifts in float, so the emitted point count differed from
+       the (res+1)*npts the caller allocated whenever 1/res was not exact in
+       binary -- res of 40, 100 or 200 produced the wrong count and the caller
+       reported "unable to interpolate data".  Indexing is exact for every res. */
+    for (s = 0; s <= res; s++) {
+      t = (float) s / (float) res;
       xinterp[j] = ax*t*t*t + bx*t*t + cx*t + dx;
       yinterp[j] = ay*t*t*t + by*t*t + cy*t + dy;
       j++;
@@ -289,7 +294,11 @@ int bezier_interpolate(int npts, float *x, float *y,
     bezierForm(4, &x[m], &y[m], bx, by);
     *xp++ = x[m];
     *yp++ = y[m];
-    for (j = 1, t = tstep; j <= res; t+=tstep, j++) {
+    /* t from the index, not accumulated: see the same fix in
+       third_order_poly.  The point count here was already safe, but an
+       accumulated t drifts in float and shifts the samples at high res. */
+    for (j = 1; j <= res; j++) {
+      t = (float) j / (float) res;
       bezierCurve(4, bx, by, wbx, wby, &xpos, &ypos, t);
       *xp++ = xpos;
       *yp++ = ypos;

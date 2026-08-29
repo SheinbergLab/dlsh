@@ -13,6 +13,9 @@ package provide curve 1.1
 
 namespace eval curve {
 
+    # NB: fully qualify when reading this from inside a proc in this
+    # namespace -- "$curve::polyinterp_steps" resolves to
+    # ::curve::curve::polyinterp_steps and fails.
     set polyinterp_steps 20
 
     #
@@ -67,28 +70,34 @@ namespace eval curve {
     proc show_poly { poly } {
 	set filled 1
 	setwindow -.5 -.5 .5 .5
-	dl_local interped [curve::cubic $poly:0 $poly:1 $curve::polyinterp_steps]
+	dl_local interped [curve::cubic $poly:0 $poly:1 $::curve::polyinterp_steps]
 	dlg_lines $interped:0 $interped:1 -filled $filled
 	return $poly
     }
 
     #
-    # given two polygons create union (curve::polygonUnion)
+    # given two polygons create their union
     #
+    # These used to call curve::polygonUnion, which was backed by the Generic
+    # Polygon Clipper.  gpc was removed because its licence is
+    # non-commercial-use-only and so is incompatible with dlsh's MIT licence;
+    # curve::clipper (Boost licence) does the same job.  Note the RETURN FORMAT
+    # CHANGED with that switch: these now return clipper's list of paths, each
+    # path a {xlist ylist} pair, rather than gpc's contour/hole structure.
+    #
+    variable clip_scale 10000.0
+
     proc poly_union { p1 p2 } {
-	dl_local interped1 [curve::cubic $p1:x $p1:y $curve::polyinterp_steps]
-	dl_local interped2 [curve::cubic $p2:x $p2:y $curve::polyinterp_steps]
-	dl_local poly1 [dl_llist [dl_llist $interped1] 0]
-	dl_local poly2 [dl_llist [dl_llist $interped2] 0]
-	dl_local union [curve::polygonUnion $poly1 $poly2]
-	dl_return $union
+	dl_local interped1 [curve::cubic $p1:x $p1:y $::curve::polyinterp_steps]
+	dl_local interped2 [curve::cubic $p2:x $p2:y $::curve::polyinterp_steps]
+	dl_return [curve::poly_union_interpolated $interped1 $interped2]
     }
 
     proc poly_union_interpolated { p1 p2 } {
-	dl_local poly1 [dl_llist [dl_llist [dl_llist $p1:0 $p1:1]] 0]
-	dl_local poly2 [dl_llist [dl_llist [dl_llist $p2:0 $p2:1]] 0]
-	dl_local union [curve::polygonUnion $poly1 $poly2]
-	dl_return $union
+	variable clip_scale
+	dl_local paths [dl_int [dl_mult [dl_llist [dl_llist $p1:0 $p1:1] \
+					     [dl_llist $p2:0 $p2:1]] $clip_scale]]
+	dl_return [dl_div [curve::clipper $paths] $clip_scale]
     }
 
     proc poly_create { npolys nverts } {
@@ -106,7 +115,7 @@ namespace eval curve {
 	    set done 0
 	    while { !$done } {
 		set polygons($i) [create_poly $nverts]
-		dl_local interped [curve::cubic $polygons($i):x $polygons($i):y $curve::polyinterp_steps]
+		dl_local interped [curve::cubic $polygons($i):x $polygons($i):y $::curve::polyinterp_steps]
 		dl_local union_xy [dl_llist $union:0:0:0 $union:0:0:1]
 		dl_local newunion [poly_union_interpolated $union_xy $interped]
 		if { [dl_length $newunion:0] == 1 } {

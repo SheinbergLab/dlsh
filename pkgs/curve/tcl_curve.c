@@ -32,10 +32,41 @@
 #include <math.h>
 
 #include "curve.h"
-#include "gpc.h"		/* for polygon clipping */
 
 /* From dl_clipper.cpp */
 extern int add_clipper_commands(Tcl_Interp *interp);
+
+
+/*
+ * Extract a float array from a dynlist that may hold DF_FLOAT or DF_LONG.
+ * If a conversion was needed, *tofree receives the allocated buffer and the
+ * caller must free it.  Without this, cubic/bezier accepted only DF_FLOAT and
+ * an integer x/y list failed with the same opaque "unable to interpolate data"
+ * message as a genuine numerical failure -- curve::clipper has always taken
+ * both types, so the inconsistency was a trap.
+ */
+static float *as_floats(DYN_LIST *l, float **tofree)
+{
+  int i, n = DYN_LIST_N(l);
+  int *iv;
+  float *fv;
+
+  *tofree = NULL;
+  if (DYN_LIST_DATATYPE(l) == DF_FLOAT) return (float *) DYN_LIST_VALS(l);
+  if (DYN_LIST_DATATYPE(l) != DF_LONG) return NULL;
+
+  fv = (float *) calloc(n, sizeof(float));
+  if (!fv) return NULL;
+  iv = (int *) DYN_LIST_VALS(l);
+  for (i = 0; i < n; i++) fv[i] = (float) iv[i];
+  *tofree = fv;
+  return fv;
+}
+
+static int numeric_list(DYN_LIST *l)
+{
+  return (DYN_LIST_DATATYPE(l) == DF_FLOAT || DYN_LIST_DATATYPE(l) == DF_LONG);
+}
 
 /*
  * NAME
@@ -52,18 +83,22 @@ static DYN_LIST *cubic(DYN_LIST *x, DYN_LIST *y, int res)
   if (DYN_LIST_N(x) != DYN_LIST_N(y)) return NULL;
   if (res <= 0) return NULL;
 
-  if (DYN_LIST_DATATYPE(x) == DF_FLOAT &&
-      DYN_LIST_DATATYPE(y) == DF_FLOAT) {    
+  if (numeric_list(x) && numeric_list(y)) {
+    float *fx = NULL, *fy = NULL, *xv, *yv;
+    xv = as_floats(x, &fx);
+    yv = as_floats(y, &fy);
+    if (!xv || !yv) { if (fx) free(fx); if (fy) free(fy); return NULL; }
+
     nout = (res+1)*DYN_LIST_N(x);
     interpx = (float *) calloc(nout, sizeof(float));
     interpy = (float *) calloc(nout, sizeof(float));
-    
-    ret = third_order_poly(DYN_LIST_N(x), 
-			   (float *) DYN_LIST_VALS(x), 
-			   (float *) DYN_LIST_VALS(y),
-			   res, interpx, interpy);
-    
-    if (ret != nout) return NULL;
+
+    ret = third_order_poly(DYN_LIST_N(x), xv, yv, res, interpx, interpy);
+
+    if (fx) free(fx);
+    if (fy) free(fy);
+
+    if (ret != nout) { free(interpx); free(interpy); return NULL; }
     
     newlist = dfuCreateDynList(DF_LIST, 2);
     
@@ -161,18 +196,22 @@ static DYN_LIST *bezier(DYN_LIST *x, DYN_LIST *y, int res)
   if (DYN_LIST_N(x) % 4 != 0) return NULL;
   if (res <= 0) return NULL;
 
-  if (DYN_LIST_DATATYPE(x) == DF_FLOAT &&
-      DYN_LIST_DATATYPE(y) == DF_FLOAT) {    
+  if (numeric_list(x) && numeric_list(y)) {
+    float *fx = NULL, *fy = NULL, *xv, *yv;
+    xv = as_floats(x, &fx);
+    yv = as_floats(y, &fy);
+    if (!xv || !yv) { if (fx) free(fx); if (fy) free(fy); return NULL; }
+
     nout = (res+1)*(DYN_LIST_N(x)/4);
     interpx = (float *) calloc(nout, sizeof(float));
     interpy = (float *) calloc(nout, sizeof(float));
-    
-    ret = bezier_interpolate(DYN_LIST_N(x), 
-			     (float *) DYN_LIST_VALS(x), 
-			     (float *) DYN_LIST_VALS(y),
-			     res, interpx, interpy);
-    
-    if (ret != nout) return NULL;
+
+    ret = bezier_interpolate(DYN_LIST_N(x), xv, yv, res, interpx, interpy);
+
+    if (fx) free(fx);
+    if (fy) free(fy);
+
+    if (ret != nout) { free(interpx); free(interpy); return NULL; }
     
     newlist = dfuCreateDynList(DF_LIST, 2);
     
@@ -423,154 +462,6 @@ static int polygonCloseCmd (ClientData data, Tcl_Interp *interp,
 
 /*****************************************************************************
  *
- * polygon clipping code
- *
- *****************************************************************************/
-
-static int dynListToPolygon(DYN_LIST *dl, gpc_polygon *p)
-{
-  float *xs, *ys;
-  int *holes;
-  int i, j, ncontours;
-  DYN_LIST **sublists, **contours;
-  if (DYN_LIST_DATATYPE(dl) != DF_LIST) return -1;
-  if (DYN_LIST_N(dl) > 2) {
-    return -1;
-  }
-
-  sublists = (DYN_LIST **) DYN_LIST_VALS(dl);
-
-  /* if list has two sublists, then the second represents hole status */
-  if (DYN_LIST_N(dl) == 2) {
-    if (DYN_LIST_N(sublists[0]) != DYN_LIST_N(sublists[1])) return -1;
-    if (DYN_LIST_DATATYPE(sublists[1]) != DF_LONG) return -1;
-    holes = (int *) DYN_LIST_VALS(sublists[1]);
-  }
-  else holes = NULL;
-
-  if (DYN_LIST_DATATYPE(sublists[0]) != DF_LIST) return -1;
-  ncontours = DYN_LIST_N(sublists[0]);
-
-  contours = (DYN_LIST **) DYN_LIST_VALS(sublists[0]);
-
-  /*
-   * Now check sublists
-   */
-  for (i = 0; i < ncontours; i++) {
-    if (DYN_LIST_DATATYPE(contours[i]) != DF_LIST) return -2;
-    if (DYN_LIST_N(contours[i]) != 2) return -2;
-    
-    sublists =  (DYN_LIST **) DYN_LIST_VALS(contours[i]);
-    if (DYN_LIST_DATATYPE(sublists[0]) != DF_FLOAT) return -2;
-    if (DYN_LIST_DATATYPE(sublists[1]) != DF_FLOAT) return -2;
-    if (DYN_LIST_N(sublists[0]) != DYN_LIST_N(sublists[1])) return -2;
-  }
-
-  p->num_contours = ncontours;
-  p->hole = calloc(p->num_contours, sizeof(int));
-  p->contour = calloc(p->num_contours, sizeof(gpc_vertex_list));
-
-  for (i = 0; i < ncontours; i++) {
-    sublists = (DYN_LIST **) DYN_LIST_VALS(contours[i]);
-    xs = (float *) DYN_LIST_VALS(sublists[0]);
-    ys = (float *) DYN_LIST_VALS(sublists[1]);
-    p->contour[i].num_vertices = DYN_LIST_N(sublists[0]);
-    p->contour[i].vertex = calloc(p->contour[i].num_vertices, 
-				  sizeof(gpc_vertex));
-    for (j = 0; j < p->contour[i].num_vertices; j++) {
-      p->contour[i].vertex[j].x = xs[j];
-      p->contour[i].vertex[j].y = ys[j];
-    }
-    if (holes) p->hole[i] = holes[i];
-    else p->hole[i] = 0;
-  }
-  return 1;
-}
-
-static DYN_LIST *polygonToDynList(gpc_polygon *p, int close)
-{
-  int i, j;
-  DYN_LIST *newlist, *contours, *holes, *verts, *xs, *ys;
-
-  contours = dfuCreateDynList(DF_LIST, p->num_contours);
-  holes = dfuCreateDynList(DF_LONG, p->num_contours);
-
-  for (i = 0; i < p->num_contours; i++) {
-    verts = dfuCreateDynList(DF_LIST, 2);
-    xs = dfuCreateDynList(DF_FLOAT, p->contour[i].num_vertices);
-    ys = dfuCreateDynList(DF_FLOAT, p->contour[i].num_vertices);
-    for (j = 0; j < p->contour[i].num_vertices; j++) {
-      dfuAddDynListFloat(xs, p->contour[i].vertex[j].x);
-      dfuAddDynListFloat(ys, p->contour[i].vertex[j].y);
-    }
-    if (close) {
-      dfuAddDynListFloat(xs, p->contour[i].vertex[0].x);
-      dfuAddDynListFloat(ys, p->contour[i].vertex[0].y);
-    }
-    dfuMoveDynListList(verts, xs);
-    dfuMoveDynListList(verts, ys);
-    dfuMoveDynListList(contours, verts);
-
-    dfuAddDynListLong(holes,p->hole[i]);
-  }
-
-  newlist = dfuCreateDynList(DF_LIST, 2);
-  dfuMoveDynListList(newlist, contours);
-  dfuMoveDynListList(newlist, holes);
-
-  return newlist;
-}
-
-static int polycombineCmd (ClientData data, Tcl_Interp *interp,
-			   int argc, char *argv[])
-{
-  DYN_LIST *subj, *clip, *retlist;
-  int result;
-  gpc_polygon subject_polygon, clip_polygon, result_polygon;
-
-  if (argc < 3) {
-    Tcl_AppendResult(interp, "usage: ", argv[0], " subject_poly clip_poly", 
-		     (char *) NULL);
-    return TCL_ERROR;
-  }
-  
-  if (tclFindDynList(interp, argv[1], &subj) != TCL_OK) return TCL_ERROR;
-  if (tclFindDynList(interp, argv[2], &clip) != TCL_OK) return TCL_ERROR;
-
-  result = dynListToPolygon(subj, &subject_polygon);
-  if (result < 0) {
-    Tcl_AppendResult(interp, argv[0], ": cannot create polygon from ",
-		     argv[1], (char *) NULL);
-    return TCL_ERROR;
-  }
-
-  result = dynListToPolygon(clip, &clip_polygon);
-  if (result < 0) {
-    Tcl_AppendResult(interp, argv[0], ": cannot create polygon from ",
-		     argv[1], (char *) NULL);
-    return TCL_ERROR;
-  }
-
-  gpc_polygon_clip((gpc_op) data, 
-		   &subject_polygon, &clip_polygon, &result_polygon);
-
-  retlist = polygonToDynList(&result_polygon, 1); /* convert and close */
-  if (!retlist) {
-    Tcl_AppendResult(interp, argv[0], ": cannot create dynlist from polygon",
-		     (char *) NULL);
-    return TCL_ERROR;
-  }
-
-  gpc_free_polygon(&subject_polygon);
-  gpc_free_polygon(&clip_polygon);
-  gpc_free_polygon(&result_polygon);
-
-  return(tclPutList(interp, retlist));
-}
-
-
-/*****************************************************************************
- *
  * FUNCTION
  *    polygonSelfIntersectsCmd
  *
@@ -584,6 +475,124 @@ static int polycombineCmd (ClientData data, Tcl_Interp *interp,
  *    Test for self intersection
  *
  ****************************************************************************/
+
+
+/*****************************************************************************
+ *
+ * curve::resample xvals yvals n ?closed?
+ *
+ * Resample a polyline/polygon so the returned n points are spaced uniformly in
+ * ARCLENGTH.  Returns {xlist ylist}.
+ *
+ * Clipper and the spline routines both emit vertices that are dense on tight
+ * curves and sparse on straight runs, so anything that measures a shape --
+ * curvature, Fourier descriptors, shape distance -- has to re-space the
+ * contour first.  There is no dl_interp in dlsh, so without this it cannot be
+ * done in Tcl at all.
+ *
+ *****************************************************************************/
+
+static int resampleCmd (ClientData data, Tcl_Interp *interp,
+			int argc, char *argv[])
+{
+  DYN_LIST *x, *y, *newlist, *tmplist;
+  float *xv, *yv, *fx = NULL, *fy = NULL;
+  float *outx, *outy, *cum;
+  int n, npts, i, seg, closed = 1;
+  double total, step, target, t;
+
+  if (argc < 4) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " xvals yvals n ?closed?",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+  if (tclFindDynList(interp, argv[1], &x) != TCL_OK) return TCL_ERROR;
+  if (tclFindDynList(interp, argv[2], &y) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetInt(interp, argv[3], &n) != TCL_OK) return TCL_ERROR;
+  if (argc > 4) {
+    if (Tcl_GetInt(interp, argv[4], &closed) != TCL_OK) return TCL_ERROR;
+  }
+
+  if (DYN_LIST_N(x) != DYN_LIST_N(y)) {
+    Tcl_AppendResult(interp, argv[0], ": x/y lists must be of same length",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+  if (!numeric_list(x) || !numeric_list(y)) {
+    Tcl_AppendResult(interp, argv[0], ": x/y must be float or int lists",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+  npts = DYN_LIST_N(x);
+  if (npts < 2 || n < 2) {
+    Tcl_AppendResult(interp, argv[0], ": need at least 2 input and 2 output points",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  xv = as_floats(x, &fx);
+  yv = as_floats(y, &fy);
+  if (!xv || !yv) {
+    if (fx) free(fx);
+    if (fy) free(fy);
+    Tcl_AppendResult(interp, argv[0], ": out of memory", (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  /* cumulative arclength; nseg = npts for a closed contour (the wrap segment
+     counts), npts-1 for an open one */
+  {
+    int nseg = closed ? npts : npts-1;
+    cum = (float *) calloc(nseg+1, sizeof(float));
+    cum[0] = 0.0f;
+    for (i = 0; i < nseg; i++) {
+      int k = (i+1) % npts;
+      double dx = xv[k]-xv[i], dy = yv[k]-yv[i];
+      cum[i+1] = cum[i] + (float) sqrt(dx*dx + dy*dy);
+    }
+    total = cum[nseg];
+    if (total <= 0.0) {
+      free(cum);
+      if (fx) free(fx);
+      if (fy) free(fy);
+      Tcl_AppendResult(interp, argv[0], ": zero-length contour", (char *) NULL);
+      return TCL_ERROR;
+    }
+
+    outx = (float *) calloc(n, sizeof(float));
+    outy = (float *) calloc(n, sizeof(float));
+
+    /* a closed contour is sampled over [0,total), so the last sample does not
+       land back on the first; an open one includes both endpoints */
+    step = closed ? total/n : total/(n-1);
+
+    seg = 0;
+    for (i = 0; i < n; i++) {
+      target = i*step;
+      if (target > total) target = total;
+      while (seg < nseg-1 && cum[seg+1] < target) seg++;
+      {
+	double len = cum[seg+1]-cum[seg];
+	int k = (seg+1) % npts;
+	t = (len > 0.0) ? (target-cum[seg])/len : 0.0;
+	outx[i] = (float) (xv[seg] + t*(xv[k]-xv[seg]));
+	outy[i] = (float) (yv[seg] + t*(yv[k]-yv[seg]));
+      }
+    }
+    free(cum);
+  }
+
+  if (fx) free(fx);
+  if (fy) free(fy);
+
+  newlist = dfuCreateDynList(DF_LIST, 2);
+  tmplist = dfuCreateDynListWithVals(DF_FLOAT, n, outx);
+  dfuMoveDynListList(newlist, tmplist);
+  tmplist = dfuCreateDynListWithVals(DF_FLOAT, n, outy);
+  dfuMoveDynListList(newlist, tmplist);
+
+  return(tclPutList(interp, newlist));
+}
 
 static int polygonSelfIntersectsCmd (ClientData data, Tcl_Interp *interp,
 				     int argc, char *argv[])
@@ -656,23 +665,9 @@ int Curve_Init(Tcl_Interp *interp)
 		    (Tcl_CmdProc *) closestPointCmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
-  /*
-   * GPC supported routines
-   */
-  Tcl_CreateCommand(interp, "curve::polygonUnion", 
-		    (Tcl_CmdProc *) polycombineCmd, 
-		    (ClientData) GPC_UNION, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "curve::polygonIntersection", 
-		    (Tcl_CmdProc *) polycombineCmd, 
-		    (ClientData) GPC_INT, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "curve::polygonXOR", 
-		    (Tcl_CmdProc *) polycombineCmd, 
-		    (ClientData) GPC_XOR, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "curve::polygonDifference", 
-		    (Tcl_CmdProc *) polycombineCmd, 
-		    (ClientData) GPC_DIFF, (Tcl_CmdDeleteProc *) NULL);
-
-
+  Tcl_CreateCommand(interp, "curve::resample",
+		    (Tcl_CmdProc *) resampleCmd,
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "curve::polygonSelfIntersects", 
 		    (Tcl_CmdProc *) polygonSelfIntersectsCmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);

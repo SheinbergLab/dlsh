@@ -5,6 +5,7 @@
 #include <tcl_dl.h>
 #include "clipper.hpp"
 #include <string>
+#include <string.h>
 
 using namespace ClipperLib;
 using namespace std;
@@ -152,21 +153,39 @@ int clipperCmd (ClientData data, Tcl_Interp *interp,
   DYN_LIST *subj, *clip;
   DYN_LIST **sublists;
   ClipType ct = ctIntersection;
+  PolyFillType pft = pftNonZero;
   
   if (argc < 2) {
-    Tcl_AppendResult(interp, "usage: ", argv[0], " subj ?clip? ?cliptype?", 
+    Tcl_AppendResult(interp, "usage: ", argv[0],
+		     " subj ?clip? ?cliptype? ?filltype?", 
 		     (char *) NULL);
     return TCL_ERROR;
   }
 
   if (tclFindDynList(interp, argv[1], &subj) != TCL_OK) return TCL_ERROR;  
 
-  if (argc > 2) {
+  /* An empty clip argument means "no clip" -- without it the later optional
+     args (cliptype, filltype) could not be reached for a plain union. */
+  if (argc > 2 && argv[2][0] != '\0' && strcmp(argv[2], "-") != 0) {
     if (tclFindDynList(interp, argv[2], &clip) != TCL_OK) return TCL_ERROR;
   }
-
   else clip = NULL;
   
+  if (argc > 4) {
+    /* Fill rule. NonZero (the previous hard-coded behavior) fills the whole
+       envelope of an overlapping path; EvenOdd punches out the overlaps, which
+       is how you get a shape with a hole. */
+    if (ASCII_icompare(argv[4], "EVENODD")) pft = pftEvenOdd;
+    else if (ASCII_icompare(argv[4], "NONZERO")) pft = pftNonZero;
+    else if (ASCII_icompare(argv[4], "POSITIVE")) pft = pftPositive;
+    else if (ASCII_icompare(argv[4], "NEGATIVE")) pft = pftNegative;
+    else {
+      Tcl_AppendResult(interp, argv[0], ": invalid fill type\
+ (nonzero|evenodd|positive|negative)", (char *) NULL);
+      return TCL_ERROR;
+    }
+  }
+
   if (argc > 3) {
     if (ASCII_icompare(argv[3], "XOR")) ct = ctXor;
     else if (ASCII_icompare(argv[3], "UNION")) ct = ctUnion;
@@ -189,27 +208,31 @@ int clipperCmd (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  Paths sub(DYN_LIST_N(subj));
+  /* reserve, don't size: sizing here left N empty paths in front of the real
+     ones, doubling the vector every call */
+  Paths sub;
+  sub.reserve(DYN_LIST_N(subj));
   sublists = (DYN_LIST **) DYN_LIST_VALS(subj);
   for (int i = 0; i < DYN_LIST_N(subj); i++) {
     Path p;
     if (dynListToPath(sublists[i], p) < 0) {
       Tcl_AppendResult(interp, argv[0], ": error creating paths from sub",
 		       (char *) NULL);
-      return TCL_ERROR;    
+      return TCL_ERROR;
     }
     sub.push_back(p);
   }
   clpr.AddPaths(sub, ptSubject, true);
-  
+
   if (clip) {
     /* Build clipping paths */
     if (DYN_LIST_DATATYPE(clip) != DF_LIST) {
-      Tcl_AppendResult(interp, "usage: ", "invalid clip paths specified ", 
+      Tcl_AppendResult(interp, "usage: ", "invalid clip paths specified ",
 		       (char *) NULL);
       return TCL_ERROR;
     }
-    Paths clp(DYN_LIST_N(clip));
+    Paths clp;
+    clp.reserve(DYN_LIST_N(clip));
     sublists = (DYN_LIST **) DYN_LIST_VALS(clip);
     for (int i = 0; i < DYN_LIST_N(clip); i++) {
       Path p;
@@ -227,8 +250,10 @@ int clipperCmd (ClientData data, Tcl_Interp *interp,
   }
 
   Paths solution;
-  clpr.Execute(ct, solution, pftNonZero, pftNonZero);
-  SimplifyPolygons(solution);
+  clpr.Execute(ct, solution, pft, pft);
+  /* SimplifyPolygons defaults to pftEvenOdd, which would undo the requested
+     fill rule; pass it through. */
+  SimplifyPolygons(solution, pft);
   newlist = pathsToDynList(solution);
 
   if (!newlist) {
@@ -237,6 +262,83 @@ int clipperCmd (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;    
   }
   return(tclPutList(interp, newlist));
+}
+
+/*****************************************************************************
+ *
+ * curve::polygonOffset paths delta ?jointype? ?arctolerance?
+ *
+ * Inflate (delta > 0) or deflate (delta < 0) closed polygons.  Coordinates are
+ * integers, so delta is in the same units the paths were scaled into.
+ *
+ * Offsetting by -d then +d is a morphological open: it removes filaments and
+ * necks thinner than 2d while leaving everything wider than that essentially
+ * unchanged.  That is what gives a generated shape a guaranteed minimum
+ * feature width.  The reverse order (+d then -d) closes pinholes and notches.
+ *
+ *****************************************************************************/
+
+extern "C" int polygonOffsetCmd (ClientData data, Tcl_Interp *interp,
+				 int argc, char *argv[]);
+
+int polygonOffsetCmd (ClientData data, Tcl_Interp *interp,
+		      int argc, char *argv[])
+{
+  DYN_LIST *dl, **sublists;
+  double delta, arctol = 0.25;
+  JoinType jt = jtRound;
+
+  if (argc < 3) {
+    Tcl_AppendResult(interp, "usage: ", argv[0],
+		     " paths delta ?jointype? ?arctolerance?", (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  if (tclFindDynList(interp, argv[1], &dl) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDouble(interp, argv[2], &delta) != TCL_OK) return TCL_ERROR;
+
+  if (argc > 3) {
+    if (ASCII_icompare(argv[3], "ROUND")) jt = jtRound;
+    else if (ASCII_icompare(argv[3], "SQUARE")) jt = jtSquare;
+    else if (ASCII_icompare(argv[3], "MITER")) jt = jtMiter;
+    else {
+      Tcl_AppendResult(interp, argv[0],
+		       ": invalid join type (round|square|miter)",
+		       (char *) NULL);
+      return TCL_ERROR;
+    }
+  }
+  if (argc > 4) {
+    if (Tcl_GetDouble(interp, argv[4], &arctol) != TCL_OK) return TCL_ERROR;
+  }
+
+  if (DYN_LIST_DATATYPE(dl) != DF_LIST) {
+    Tcl_AppendResult(interp, argv[0], ": invalid paths specified",
+		     (char *) NULL);
+    return TCL_ERROR;
+  }
+
+  Paths sub;
+  sub.reserve(DYN_LIST_N(dl));
+  sublists = (DYN_LIST **) DYN_LIST_VALS(dl);
+  for (int i = 0; i < DYN_LIST_N(dl); i++) {
+    Path p;
+    if (dynListToPath(sublists[i], p) < 0) {
+      Tcl_AppendResult(interp, argv[0], ": error creating paths",
+		       (char *) NULL);
+      return TCL_ERROR;
+    }
+    sub.push_back(p);
+  }
+
+  ClipperOffset co;
+  co.ArcTolerance = arctol;
+  co.AddPaths(sub, jt, etClosedPolygon);
+
+  Paths solution;
+  co.Execute(solution, delta);
+
+  return(tclPutList(interp, pathsToDynList(solution)));
 }
 
 int clipperSVGCmd (ClientData data, Tcl_Interp *interp,
@@ -265,14 +367,15 @@ int clipperSVGCmd (ClientData data, Tcl_Interp *interp,
     if (Tcl_GetDouble(interp, argv[3], &scale) != TCL_OK) return TCL_ERROR;
   }
 
-  if (argc > 3) {
+  if (argc > 4) {		/* was argc > 3: read argv[4] past the end */
     int dummy;
     if (Tcl_GetInt(interp, argv[4], &dummy) != TCL_OK) return TCL_ERROR;
     if (dummy == 0) flipy = false;
     else flipy = true;
   }
 
-  Paths sub(DYN_LIST_N(dl));
+  Paths sub;
+  sub.reserve(DYN_LIST_N(dl));
   sublists = (DYN_LIST **) DYN_LIST_VALS(dl);
   for (int i = 0; i < DYN_LIST_N(dl); i++) {
     Path p;
@@ -294,8 +397,11 @@ int add_clipper_commands(Tcl_Interp *interp)
   Tcl_CreateCommand(interp, "curve::clipper", 
 		    (Tcl_CmdProc *) clipperCmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "curve::saveSVG", 
-		    (Tcl_CmdProc *) clipperSVGCmd, 
+  Tcl_CreateCommand(interp, "curve::polygonOffset",
+		    (Tcl_CmdProc *) polygonOffsetCmd,
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "curve::saveSVG",
+		    (Tcl_CmdProc *) clipperSVGCmd,
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   return TCL_OK;
 }
