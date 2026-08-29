@@ -56,7 +56,7 @@ namespace eval wav {
     proc envelope { s ramp_ms rate } {
         set n [dl_length $s]
         set nr [expr {int($ramp_ms * $rate / 1000.0)}]
-        if { $nr <= 0 || $n < 4 } { dl_return $s }
+        if { $nr <= 0 || $n < 4 } { dl_yield $s }
         if { 2 * $nr > $n } { set nr [expr {$n / 2}] }
 
         set pi [expr {acos(-1.0)}]

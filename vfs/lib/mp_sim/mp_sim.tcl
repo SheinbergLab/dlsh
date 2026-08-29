@@ -474,13 +474,13 @@ proc mp_sim::trajectory_kinematics {traj_pair ts} {
         dl_local vy $traj_pair:3
         dl_local speed [dl_sqrt [dl_add [dl_mult $vx $vx] [dl_mult $vy $vy]]]
         dl_local dir   [dl_atan2 $vy $vx]
-        dl_return [dl_llist $speed $dir]
+        dl_yield [dl_llist $speed $dir]
     }
     # Finite-difference fallback from position channels.
     dl_local mox $traj_pair:0
     dl_local moy $traj_pair:1
     if {$n < 2} {
-        dl_return [dl_llist [dl_zeros $n] [dl_zeros $n]]
+        dl_yield [dl_llist [dl_zeros $n] [dl_zeros $n]]
     }
     # dt grid (assume uniform; ts[1]-ts[0]).
     set dt [expr {[dl_get $ts 1] - [dl_get $ts 0]}]
