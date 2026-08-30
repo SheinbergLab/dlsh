@@ -32,15 +32,18 @@ dl_append $b 4
 dl_tcllist $a          ;# => 1 2 3 4   -- $a changed too
 ```
 
-There is no single "copy" command; any operation that builds a new list gives
-you an independent one. The general form works for every element type:
+Use `dl_copy` when you want an independent snapshot:
 
 ```tcl
-set b [dl_choose $a [dl_fromto 0 [dl_length $a]]]   ;# independent copy
+set b [dl_copy $a]
+dl_append $b 4
+dl_tcllist $a          ;# => 1 2 3   -- unchanged
 ```
 
-`dl_set name $a` also copies, but into a *named* list (see
-[Named lists](#named-lists)) rather than a handle in a variable.
+It is a deep copy: the sublists of a list-of-lists are copied too, so the
+result shares no storage with the original. `dl_set name $a` also copies, but
+into a *named* list (see [Named lists](#named-lists)) rather than a handle in
+a variable.
 
 A dynlist is closer to a numpy array or a Tk widget name than to a Tcl list.
 
@@ -199,7 +202,7 @@ you run on *that* never touch the handle.
 | keep a list in a variable | `set x [dl_...]` |
 | return a list from a proc | `return $x` |
 | return several | `return [list $a $b]` or a dict or `dl_llist` |
-| an independent copy | `dl_choose $x [dl_fromto 0 [dl_length $x]]` |
+| an independent copy | `dl_copy $x` |
 | its length | `dl_length $x` |
 | Tcl-side data | `dl_tcllist $x` |
 | free it now | `dl_delete $x` |
@@ -209,7 +212,7 @@ you run on *that* never touch the handle.
 |---|---|
 | `return "$a $b"` | string interpolation drops the handles |
 | `llength $x` on a handle | not a Tcl list; can strand the list |
-| assuming `set b $a` copies | it aliases; build a new list to copy |
+| assuming `set b $a` copies | it aliases; use `dl_copy` |
 | assuming `unset x` frees | it drops one claim, not both |
 
 ---

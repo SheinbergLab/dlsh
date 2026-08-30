@@ -211,6 +211,7 @@ static int tclDeleteDynList           (ClientData, Tcl_Interp *, int, char **);
 static int tclDeleteTraceDynList      (ClientData, Tcl_Interp *, int, char **);
 static int tclRenameDynList           (ClientData, Tcl_Interp *, int, char **);
 static int tclResetDynList            (ClientData, Tcl_Interp *, int, char **);
+static int tclCopyDynList             (ClientData, Tcl_Interp *, int, char **);
 static int tclCleanDynList            (ClientData, Tcl_Interp *, int, char **);
 static int tclPushTmpList             (ClientData, Tcl_Interp *, int, char **);
 static int tclPopTmpList              (ClientData, Tcl_Interp *, int, char **);
@@ -341,6 +342,8 @@ static TCL_COMMANDS DLcommands[] = {
       "delete a dynList" },
   { "dl_deleteTrace",      tclDeleteTraceDynList,    NULL, 
       "delete a dynList from a trace cmd" },
+  { "dl_copy",             tclCopyDynList,        NULL,
+      "return an independent deep copy of a dynlist" },
   { "dl_reset",            tclResetDynList,       NULL, 
       "reset a dynList" },
   { "dl_pushTemps" ,       tclPushTmpList,        NULL,
@@ -5207,6 +5210,50 @@ static int tclConsDynList (ClientData data, Tcl_Interp *interp,
  *    Resets an existing dynlist
  *
  *****************************************************************************/
+
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    tclCopyDynList
+ *
+ * ARGS
+ *    Tcl Args
+ *
+ * TCL FUNCTION
+ *    dl_copy
+ *
+ * DESCRIPTION
+ *    Return an independent deep copy of a dynlist.
+ *
+ *    Dynlists are objects, not values: `set b $a` makes both names refer to
+ * the same list, and mutating through one shows through the other.  This is
+ * how you get a list you can modify without disturbing the original.
+ *
+ *    Deep: sublists of a list-of-lists are copied too (dfuCopyDynList
+ * recurses), so the result shares no storage with the original.
+ *
+ *****************************************************************************/
+
+static int tclCopyDynList (ClientData data, Tcl_Interp *interp,
+			   int argc, char *argv[])
+{
+  DYN_LIST *dl, *newlist;
+
+  if (argc != 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " dynlist", NULL);
+    return TCL_ERROR;
+  }
+
+  if (tclFindDynList(interp, argv[1], &dl) != TCL_OK)
+    return TCL_ERROR;
+
+  if (!(newlist = dfuCopyDynList(dl))) {
+    Tcl_SetResult(interp, "dl_copy: unable to copy list", TCL_STATIC);
+    return TCL_ERROR;
+  }
+
+  return tclPutList(interp, newlist);
+}
 
 static int tclResetDynList (ClientData data, Tcl_Interp *interp,
 			    int argc, char *argv[])
