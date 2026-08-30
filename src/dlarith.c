@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 #include "df.h"
 #include "dfana.h"
@@ -4586,6 +4587,72 @@ DYN_LIST *dynListProdLists(DYN_LIST *dl)
   return dynListSumProdLists(dl, DL_PROD_LIST);
 }
 
+/*
+ * dynListSumInt64 -- exact sum of an integer-typed flat list.
+ *
+ * dynListSumProdList has to return a DYN_LIST, and the widest numeric list
+ * type is float, so a large integer sum comes back as a float32
+ * approximation. For the scalar dl_sum case the Tcl layer can do better:
+ * Tcl carries 64-bit integers natively, so hand it the exact value.
+ *
+ * Returns 1 and fills *out when dl is a flat integer-typed list; 0 otherwise,
+ * in which case the caller should fall back to the DYN_LIST path.
+ */
+int dynListSumInt64(DYN_LIST *dl, long long *out)
+{
+  int i;
+  long long acc = 0;
+
+  if (!dl || DYN_LIST_N(dl) == 0) return 0;
+
+  switch (DYN_LIST_DATATYPE(dl)) {
+  case DF_LONG:
+    {
+      int *vals = (int *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) acc += vals[i];
+    }
+    break;
+  case DF_SHORT:
+    {
+      short *vals = (short *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) acc += vals[i];
+    }
+    break;
+  case DF_CHAR:
+    {
+      char *vals = (char *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) acc += vals[i];
+    }
+    break;
+  default:
+    return 0;
+  }
+  *out = acc;
+  return 1;
+}
+
+/*
+ * dynListSumDouble -- sum of a flat float list, accumulated and returned in
+ * double. Same reasoning as dynListSumInt64: the widest list type is float,
+ * so returning through a DYN_LIST costs precision the caller does not have
+ * to accept when it is handing the value to Tcl.
+ */
+int dynListSumDouble(DYN_LIST *dl, double *out)
+{
+  int i;
+  double acc = 0.0;
+  float *vals;
+
+  if (!dl || DYN_LIST_N(dl) == 0) return 0;
+  if (DYN_LIST_DATATYPE(dl) != DF_FLOAT) return 0;
+
+  vals = (float *) DYN_LIST_VALS(dl);
+  for (i = 0; i < DYN_LIST_N(dl); i++)
+    if (!isnan(vals[i])) acc += vals[i];
+  *out = acc;
+  return 1;
+}
+
 DYN_LIST *dynListSumProdList(DYN_LIST *dl, int op)
 {
   int i;
@@ -4597,8 +4664,10 @@ DYN_LIST *dynListSumProdList(DYN_LIST *dl, int op)
   case DF_LONG:
     {
       int *vals = (int *) DYN_LIST_VALS(dl);
-      int retval;
-      retlist = dfuCreateDynList(DF_LONG, 1);
+      long long retval;
+      /* Accumulate wide: an int accumulator silently wrapped, so summing a
+	 long list of ints returned a negative number rather than a large
+	 one. */
       if (op == DL_SUM_LIST) {
 	retval = 0;
 	for (i = 0; i < DYN_LIST_N(dl); i++) retval += vals[i];
@@ -4607,14 +4676,25 @@ DYN_LIST *dynListSumProdList(DYN_LIST *dl, int op)
 	retval = 1;
 	for (i = 0; i < DYN_LIST_N(dl); i++) retval *= vals[i];
       }
-      dfuAddDynListLong(retlist, retval);
+      if (retval >= INT_MIN && retval <= INT_MAX) {
+	retlist = dfuCreateDynList(DF_LONG, 1);
+	dfuAddDynListLong(retlist, (int) retval);
+      }
+      else {
+	/* Too big for an int list. A float is approximate but is vastly
+	   closer than a wrapped int, and there is no wider list type. */
+	retlist = dfuCreateDynList(DF_FLOAT, 1);
+	dfuAddDynListFloat(retlist, (float) retval);
+      }
     }
     break;
   case DF_SHORT:
     {
       short *vals = (short *) DYN_LIST_VALS(dl);
-      int retval;
-      retlist = dfuCreateDynList(DF_LONG, 1);
+      long long retval;
+      /* Accumulate wide: an int accumulator silently wrapped, so summing a
+	 long list of ints returned a negative number rather than a large
+	 one. */
       if (op == DL_SUM_LIST) {
 	retval = 0;
 	for (i = 0; i < DYN_LIST_N(dl); i++) retval += vals[i];
@@ -4623,13 +4703,24 @@ DYN_LIST *dynListSumProdList(DYN_LIST *dl, int op)
 	retval = 1;
 	for (i = 0; i < DYN_LIST_N(dl); i++) retval *= vals[i];
       }
-      dfuAddDynListLong(retlist, retval);
+      if (retval >= INT_MIN && retval <= INT_MAX) {
+	retlist = dfuCreateDynList(DF_LONG, 1);
+	dfuAddDynListLong(retlist, (int) retval);
+      }
+      else {
+	/* Too big for an int list. A float is approximate but is vastly
+	   closer than a wrapped int, and there is no wider list type. */
+	retlist = dfuCreateDynList(DF_FLOAT, 1);
+	dfuAddDynListFloat(retlist, (float) retval);
+      }
     }
     break;
   case DF_FLOAT:
     {
       float *vals = (float *) DYN_LIST_VALS(dl);
-      float retval;
+      double retval;		/* accumulate in double: a float accumulator
+				   loses whole addends once the running sum
+				   passes ~2^24 */
       retlist = dfuCreateDynList(DYN_LIST_DATATYPE(dl), 1);
       if (op == DL_SUM_LIST) {
 	retval = 0.0;
@@ -4639,14 +4730,16 @@ DYN_LIST *dynListSumProdList(DYN_LIST *dl, int op)
 	retval = 1.0;
 	for (i = 0; i < DYN_LIST_N(dl); i++) retval *= vals[i];
       }
-      dfuAddDynListFloat(retlist, retval);
+      dfuAddDynListFloat(retlist, (float) retval);
     }
     break;
   case DF_CHAR:
     {
       char *vals = (char *) DYN_LIST_VALS(dl);
-      int retval;
-      retlist = dfuCreateDynList(DF_LONG, 1);
+      long long retval;
+      /* Accumulate wide: an int accumulator silently wrapped, so summing a
+	 long list of ints returned a negative number rather than a large
+	 one. */
       if (op == DL_SUM_LIST) {
 	retval = 0;
 	for (i = 0; i < DYN_LIST_N(dl); i++) retval += vals[i];
@@ -4655,7 +4748,16 @@ DYN_LIST *dynListSumProdList(DYN_LIST *dl, int op)
 	retval = 1;
 	for (i = 0; i < DYN_LIST_N(dl); i++) retval *= vals[i];
       }
-      dfuAddDynListLong(retlist, retval);
+      if (retval >= INT_MIN && retval <= INT_MAX) {
+	retlist = dfuCreateDynList(DF_LONG, 1);
+	dfuAddDynListLong(retlist, (int) retval);
+      }
+      else {
+	/* Too big for an int list. A float is approximate but is vastly
+	   closer than a wrapped int, and there is no wider list type. */
+	retlist = dfuCreateDynList(DF_FLOAT, 1);
+	dfuAddDynListFloat(retlist, (float) retval);
+      }
     }
     break;
   case DF_LIST:

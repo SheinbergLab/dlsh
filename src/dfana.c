@@ -5360,10 +5360,13 @@ DYN_LIST *dynListHMeanLists(DYN_LIST *dl)
   return(list);
 }
 
-float dynListMeanList(DYN_LIST *dl)
+double dynListMeanList(DYN_LIST *dl)
 {
   int i;
-  float sum = 0.0;
+  double sum = 0.0;		/* was float: a single-precision accumulator
+				   drops addends once the running sum passes
+				   ~2^24, which made the mean of a long int
+				   list wrong by percent, not epsilon */
   
   if (!dl || !DYN_LIST_N(dl)) return(0.0);
 
@@ -5505,7 +5508,7 @@ DYN_LIST* dynListSumColsList(DYN_LIST *dl)
   case DF_LONG:
     {
       int *vals;
-      int sum = 0;
+      long long sum = 0;
       newlist = dfuCreateDynList(DF_LONG, length);
       for (i = 0; i < length; i++) {
 	for (sum = 0, j = 0; j < DYN_LIST_N(dl); j++) {
@@ -5519,7 +5522,7 @@ DYN_LIST* dynListSumColsList(DYN_LIST *dl)
   case DF_SHORT:
     {
       short *vals;
-      int sum = 0;
+      long long sum = 0;
       newlist = dfuCreateDynList(DF_LONG, length);
       for (i = 0; i < length; i++) {
 	for (sum = 0, j = 0; j < DYN_LIST_N(dl); j++) {
@@ -5533,7 +5536,7 @@ DYN_LIST* dynListSumColsList(DYN_LIST *dl)
   case DF_FLOAT:
     {
       float *vals;
-      float sum = 0.;
+      double sum = 0.;
       newlist = dfuCreateDynList(DF_FLOAT, length);
       for (i = 0; i < length; i++) {
 	for (sum = 0, j = 0; j < DYN_LIST_N(dl); j++) {
@@ -5547,7 +5550,7 @@ DYN_LIST* dynListSumColsList(DYN_LIST *dl)
   case DF_CHAR:
     {
       char *vals;
-      int sum = 0;
+      long long sum = 0;
       newlist = dfuCreateDynList(DF_LONG, length);
       for (i = 0; i < length; i++) {
 	for (sum = 0, j = 0; j < DYN_LIST_N(dl); j++) {
@@ -5652,7 +5655,7 @@ DYN_LIST *dynListVarLists(DYN_LIST *dl)
   return(list);
 }
 
-float dynListVarList(DYN_LIST *dl)
+double dynListVarList(DYN_LIST *dl)
 {
   int i;
   double var = 0.0;
@@ -5667,7 +5670,7 @@ float dynListVarList(DYN_LIST *dl)
   case DF_LONG:
     {
       int *vals = (int *) DYN_LIST_VALS(dl);
-      float mean = dynListMeanList(dl);
+      double mean = dynListMeanList(dl);
       int n = DYN_LIST_N(dl);
       double sdiff  = 0.0;
       double ssdiff = 0.0;
@@ -5683,7 +5686,7 @@ float dynListVarList(DYN_LIST *dl)
   case DF_SHORT:
     {
       short *vals = (short *) DYN_LIST_VALS(dl);
-      float mean = dynListMeanList(dl);
+      double mean = dynListMeanList(dl);
       int n = DYN_LIST_N(dl);
       double sdiff  = 0.0;
       double ssdiff = 0.0;
@@ -5699,7 +5702,7 @@ float dynListVarList(DYN_LIST *dl)
   case DF_FLOAT:
     {
       float *vals = (float *) DYN_LIST_VALS(dl);
-      float mean = dynListMeanList(dl);
+      double mean = dynListMeanList(dl);
       int n = DYN_LIST_N(dl);
       double sdiff  = 0.0;
       double ssdiff = 0.0;
@@ -5715,7 +5718,7 @@ float dynListVarList(DYN_LIST *dl)
   case DF_CHAR:
     {
       char *vals = (char *) DYN_LIST_VALS(dl);
-      float mean = dynListMeanList(dl);
+      double mean = dynListMeanList(dl);
       int n = DYN_LIST_N(dl);
       double sdiff  = 0.0;
       double ssdiff = 0.0;
@@ -5744,7 +5747,7 @@ float dynListVarList(DYN_LIST *dl)
 
 
 
-float dynListStdList(DYN_LIST *dl)
+double dynListStdList(DYN_LIST *dl)
 {
   return(sqrt((double) dynListVarList(dl)));
 }
