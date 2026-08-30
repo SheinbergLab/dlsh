@@ -129,18 +129,28 @@ jobs:
         # The interpreter no longer links libdlsh -- the dlsh PACKAGE is loaded
         # from a zip at runtime (package require dlsh), exactly as dserv/stim2
         # do. CI runners have no /usr/local/dlsh/dlsh.zip, so stage one from the
-        # freshly-built libdlsh + the checked-in vfs/lib/dlsh tree.
+        # freshly-built libdlsh + the checked-in vfs/lib tree.
+        #
+        # Stage ALL of vfs/lib, not just vfs/lib/dlsh: tests that exercise a
+        # pure-Tcl package (test_mp_sim_kinematics needs mp_sim) find nothing
+        # otherwise. Packages with compiled parts simply won't load here, which
+        # is fine -- no dlsh-layer test depends on one.
         run: |
           cmake --build build --target dlsh -j"$(sysctl -n hw.ncpu)"
           rm -rf zipstage && mkdir -p zipstage/lib
-          cp -R vfs/lib/dlsh zipstage/lib/dlsh
+          cp -R vfs/lib/. zipstage/lib/
           dst="zipstage/lib/dlsh/$(uname -s)/$(uname -m)"; mkdir -p "$dst"
           cp build/libdlsh.dylib "$dst/"
           ( cd zipstage && zip -qr -X "$GITHUB_WORKSPACE/test-dlsh.zip" lib )
           echo "DLSH_ZIP=$GITHUB_WORKSPACE/test-dlsh.zip" >> "$GITHUB_ENV"
 
       - name: Unit tests
-        run: ctest --test-dir build --output-on-failure -R 'test_dl_foreach|test_dl_comprehension|test_dg_concat|test_leak_dl_foreach'
+        # -L dlsh, not a hardcoded -R list: run whatever DLSH_INTERP_TESTS
+        # registered, without also running the tests our FetchContent
+        # dependencies register (zlib's `example`, libpng's suite). The old
+        # hardcoded list silently skipped newly added tests -- test_dl_yield
+        # and test_mp_sim_kinematics were both registered and both invisible.
+        run: ctest --test-dir build --output-on-failure -L dlsh
 
       - name: Headless smoke test
         run: ./build/dlsh -e 'puts "tcl=[info patchlevel] dlsh=[package require dlsh] sum=[dl_sum [dl_fromto 1 100]]"'
