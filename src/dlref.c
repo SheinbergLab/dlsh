@@ -77,8 +77,12 @@ static const char *DLREF_DLSH_KEY = "dlsh";
 typedef struct {
   DYN_LIST *dl;			/* the list, or NULL once detached     */
   DLSHINFO *dlinfo;		/* owning interp's dlTable             */
+  Tcl_Interp *interp;		/* owning interp (for the frame re-arm)*/
   int objrefs;			/* live Tcl_Objs pointing here         */
   int framed;			/* frame trace / dlTable claim held    */
+  int unwinding;		/* claim was released by a frame exit
+				 * and the name has not been materialized
+				 * since -- see dlRefDrop              */
 } DL_REF;
 
 static void dlRefFreeInternalRep(Tcl_Obj *objPtr);
@@ -119,6 +123,7 @@ static DL_REF *dlRefGet(Tcl_Interp *interp, DYN_LIST *dl)
   if (!ref) return NULL;
   ref->dl = dl;
   ref->dlinfo = (DLSHINFO *) Tcl_GetAssocData(interp, DLREF_DLSH_KEY, NULL);
+  ref->interp = interp;
   ref->objrefs = 0;
   ref->framed = 1;
   DYN_LIST_REFHANDLE(dl) = ref;
@@ -154,7 +159,30 @@ static void dlRefDestroy(DL_REF *ref)
   free(ref);
 }
 
-/* Release one object reference. */
+/* Release one object reference.
+ *
+ * Losing the last reference does NOT mean the list is unreachable.  Its name
+ * may still be held as a plain string -- which is exactly what shimmering
+ * produces: [llength $x] makes Tcl generate the name into the string rep and
+ * then discard our internal rep, so the reference vanishes while the variable
+ * still spells the list.  Freeing here would strand that name.
+ *
+ * So instead of destroying an unreferenced-but-still-registered list, hand it
+ * back to the current frame as an ordinary temp.  It then has precisely the
+ * lifetime it would have had if it were created there, which is the same
+ * lifetime dlsh temps have always had, and the name stays resolvable for the
+ * rest of the frame.
+ *
+ * The exception is a drop that is itself part of a frame unwinding, which
+ * must NOT be handed upward or every `set x [dl_...]` would promote a list
+ * into its caller on return.  Tcl_PopCallFrame deletes a frame's hash
+ * variables -- our hidden %listN% claim -- before its compiled locals -- the
+ * user's x -- so during teardown the claim is always released first and every
+ * drop would otherwise look like an escape.  That fixed ordering is also the
+ * signal: dlRefFrameRelease marks the handle `unwinding`, and the mark is
+ * cleared as soon as the name is materialized again (dlRefUpdateString),
+ * which can only happen once some live frame is using it.  A drop that is
+ * still marked is part of the teardown, and is freed outright. */
 
 static void dlRefDrop(DL_REF *ref)
 {
@@ -162,6 +190,12 @@ static void dlRefDrop(DL_REF *ref)
   if (--ref->objrefs > 0) return;
   if (ref->framed && ref->dl) return;	/* frame/dlTable still owns it */
   if (!ref->dl) { free(ref); return; }	/* already detached: just reclaim */
+
+  if (!ref->unwinding && ref->interp &&
+      dlReclaimInFrame(ref->interp, ref->dl)) {
+    ref->framed = 1;
+    return;
+  }
   dlRefDestroy(ref);
 }
 
@@ -210,6 +244,13 @@ static void dlRefDupInternalRep(Tcl_Obj *srcPtr, Tcl_Obj *dupPtr)
   Tcl_StoreInternalRep(dupPtr, &dlRefObjType, irPtr);
 }
 
+/* Materializing the name is the moment a bare string of it can start
+   existing, and it only happens while a live frame is running -- Tcl always
+   generates the string rep before discarding an internal rep, which is what
+   makes this the reliable hook for shimmering.  Clearing `unwinding` here
+   tells dlRefDrop that a later drop belongs to this frame rather than to a
+   teardown, so the list is handed to it instead of freed. */
+
 static void dlRefUpdateString(Tcl_Obj *objPtr)
 {
   DL_REF *ref = dlRefFromObj(objPtr);
@@ -219,6 +260,8 @@ static void dlRefUpdateString(Tcl_Obj *objPtr)
   objPtr->bytes = (char *) Tcl_Alloc(n + 1);
   memcpy(objPtr->bytes, name, n + 1);
   objPtr->length = (Tcl_Size) n;
+
+  if (ref) ref->unwinding = 0;
 }
 
 /* Resurrect a handle from a name.  This is what makes the type safe against
@@ -269,16 +312,24 @@ void dlRefSetObjResult(Tcl_Interp *interp, DYN_LIST *dl)
 
   if (!dl) return;
 
-  /* The string rep is the list's name -- exactly what Tcl_SetResult used to
-     leave here -- so every string-based dl_* command is unaffected. */
-  objPtr = Tcl_NewStringObj(DYN_LIST_NAME(dl), -1);
-
-  if ((ref = dlRefGet(interp, dl))) {
-    ref->objrefs++;
-    ir.twoPtrValue.ptr1 = ref;
-    ir.twoPtrValue.ptr2 = NULL;
-    Tcl_StoreInternalRep(objPtr, &dlRefObjType, &ir);
+  if (!(ref = dlRefGet(interp, dl))) {
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(DYN_LIST_NAME(dl), -1));
+    return;
   }
+
+  /* Deliberately handed back with no string rep: dlRefUpdateString generates
+     the name on demand, and that call is what tells us the name has escaped
+     into a live frame (see dlRefDrop).  Pre-filling the bytes here would mean
+     updateString never runs and the signal would be lost.  Anything that
+     wants the name still gets exactly "%listN%", just a moment later. */
+  objPtr = Tcl_NewObj();
+  Tcl_InvalidateStringRep(objPtr);
+
+  ref->objrefs++;
+  ir.twoPtrValue.ptr1 = ref;
+  ir.twoPtrValue.ptr2 = NULL;
+  Tcl_StoreInternalRep(objPtr, &dlRefObjType, &ir);
+
   Tcl_SetObjResult(interp, objPtr);
 }
 
@@ -289,13 +340,27 @@ int dlRefFrameRelease(Tcl_Interp *interp, DYN_LIST *dl)
   if (!ref) return 1;			/* untracked: free as always */
 
   ref->framed = 0;
-  if (ref->objrefs > 0) return 0;	/* an escaped reference keeps it */
+  if (ref->objrefs > 0) {
+    /* Held by something outside this frame's claim.  Whether that is a real
+       escape or just a local about to be deleted two lines further into
+       Tcl_PopCallFrame is not knowable yet, so mark it and let dlRefDrop
+       decide: a drop that arrives before the name is materialized again is
+       part of this same teardown. */
+    ref->unwinding = 1;
+    return 0;
+  }
 
   /* No references: hand the list back to the caller to free exactly as
      before, taking the now-empty handle with us. */
   dlRefDetach(ref);
   free(ref);
   return 1;
+}
+
+void dlRefNoteUse(DYN_LIST *dl)
+{
+  DL_REF *ref = dlRefFind(dl);
+  if (ref) ref->unwinding = 0;
 }
 
 int dlRefCount(Tcl_Interp *interp, DYN_LIST *dl)

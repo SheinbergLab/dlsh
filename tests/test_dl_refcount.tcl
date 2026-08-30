@@ -130,20 +130,36 @@ set before [nlists]
 for {set i 0} {$i < 200} {incr i} { churn_local }
 ok "in-frame temps are reclaimed" [expr {[nlists] - $before}] 0
 
-# A list that escapes, then loses its last reference, is reclaimed too.
+# An escaped list whose last reference goes away is freed promptly -- the
+# drop arrives while its frame is still unwinding, so dlRefDrop frees it
+# rather than handing it upward. Retention therefore matches master exactly:
+# plain temps accumulate until the frame exits (long-standing dlsh behavior,
+# and the reason test_leak_dl_foreach exists), escaped+dropped lists do not
+# accumulate at all. Measured on master: 100 and 0, identical to here.
 proc churn_escape {} { set x [dl_fromto 0 50]; return $x }
-set before [nlists]
-for {set i 0} {$i < 200} {incr i} {
-    set tmp [churn_escape]
-    unset tmp
+
+proc retention_inside {} {
+    set b [nlists]
+    for {set i 0} {$i < 100} {incr i} { dl_ilist 1 2 3 }   ;# plain temps
+    set plain [expr {[nlists] - $b}]
+    set b [nlists]
+    for {set i 0} {$i < 100} {incr i} { set t [churn_escape]; unset t }
+    set escaped [expr {[nlists] - $b}]
+    return "$plain $escaped"
 }
-ok "escaped lists are reclaimed on unset" [expr {[nlists] - $before}] 0
+set before [nlists]
+ok "retention matches master" [retention_inside] {100 0}
+ok "  and everything is reclaimed at frame exit" [expr {[nlists] - $before}] 0
 
 # Overwriting the variable drops the old reference just as unset does.
+proc churn_overwrite {} {
+    set b [nlists]
+    set slot [churn_escape]
+    for {set i 0} {$i < 100} {incr i} { set slot [churn_escape] }
+    return [expr {[nlists] - $b}]
+}
 set before [nlists]
-set slot [churn_escape]
-for {set i 0} {$i < 200} {incr i} { set slot [churn_escape] }
-unset slot
+churn_overwrite
 ok "overwriting a variable frees the old list" [expr {[nlists] - $before}] 0
 
 # The blessed idiom must not have regressed into a leak either.
@@ -164,16 +180,23 @@ churn_yield 200
 ok "dl_yield results are reclaimed" [expr {[nlists] - $before}] 0
 
 # An accumulator holds its lists for as long as it exists, and no longer.
-set before [nlists]
 proc build_acc {n} {
     set acc {}
     for {set i 0} {$i < $n} {incr i} { lappend acc [dl_fromto 0 10] }
     return $acc
 }
-set acc [build_acc 50]
-ok "accumulator keeps its lists alive" [expr {[nlists] - $before}] 50
-ok "  and they are all usable" [dl_tcllist [lindex $acc 17]] {0 1 2 3 4 5 6 7 8 9}
-unset acc
+proc acc_lifecycle {} {
+    set b [nlists]
+    set acc [build_acc 50]
+    set held [expr {[nlists] - $b}]
+    set sample [dl_tcllist [lindex $acc 17]]
+    unset acc
+    return [list $held $sample]
+}
+set before [nlists]
+lassign [acc_lifecycle] held sample
+ok "accumulator keeps its lists alive" $held 50
+ok "  and they are all usable" $sample {0 1 2 3 4 5 6 7 8 9}
 ok "accumulator release frees them all" [expr {[nlists] - $before}] 0
 
 ###########################################################################
@@ -226,29 +249,20 @@ proc delete_named {} {
 ok "dl_delete of a named list is immediate" [delete_named] {errored}
 
 ###########################################################################
-# 5. KNOWN LIMITATION: shimmering drops the last reference
+# 5. Shimmering must not lose the list
 #
-# A Tcl_Obj holds one internal rep at a time. Converting a dynlist handle to
-# another type -- [string length], [string range], [llength], [lindex] all do
-# this -- frees the dynlist internal rep, which drops the reference. If that
-# was the last one and the creating frame has already exited, the list is
-# freed while the variable still holds its name.
+# A Tcl_Obj carries one internal rep at a time. Converting a dynlist handle to
+# another type -- [llength], [lindex], [string length], [string range] all do
+# this -- makes Tcl generate the name into the string rep and then discard our
+# internal rep, which drops the reference. If that was the last reference, a
+# naive refcount frees the list right there, while the variable still spells
+# its name.
 #
-# This is NOT a regression: on master the same variable was already dangling
-# the moment its frame exited, so nothing that used to work stops working.
-# It is an unfixed corner of the new guarantee, and it is why `set` cannot yet
-# be advertised as unconditionally safe.
-#
-# The failure is a clean "not found" error, never a crash or a bad read.
-#
-# Fixing it properly means not freeing on refcount-zero at all, but handing
-# the list back to the CURRENT frame as an ordinary temp, so the name stays
-# resolvable for the rest of that frame. That needs a safe way to re-arm a
-# frame claim from inside the Tcl_Obj free proc, which runs without an interp
-# and sometimes during frame teardown -- deliberately left for review rather
-# than rushed.
-#
-# These cases assert today's behavior so that a future fix trips them.
+# dlRefDrop handles this by not freeing an unreferenced-but-registered list at
+# all: it hands it to the current frame as an ordinary temp (dlReclaimInFrame),
+# so the name stays resolvable for the rest of that frame. Safe even when the
+# drop happens during frame teardown, because Tcl_PopCallFrame unlinks the
+# frame before deleting its locals, so the claim lands in the caller's frame.
 ###########################################################################
 
 proc shimmer_escape {} { set x [dl_ilist 1 2 3]; return $x }
@@ -259,13 +273,138 @@ proc shimmer_probe {script} {
     return "survives"
 }
 
-ok "shimmer: string length loses it" [shimmer_probe {string length $keep}] {lost}
-ok "shimmer: llength loses it"       [shimmer_probe {llength $keep}]       {lost}
-ok "shimmer: lindex loses it"        [shimmer_probe {lindex $keep 0}]      {lost}
-# Operations that only need the string rep leave the handle intact.
-ok "no shimmer: string compare"      [shimmer_probe {if {$keep eq ""} {}}] {survives}
-ok "no shimmer: append elsewhere"    [shimmer_probe {set s ""; append s $keep}] {survives}
-ok "no shimmer: dl_* commands"       [shimmer_probe {dl_length $keep}]     {survives}
+# These four convert the object to another type and drop the reference.
+ok "shimmer: llength"       [shimmer_probe {llength $keep}]       {survives}
+ok "shimmer: lindex"        [shimmer_probe {lindex $keep 0}]      {survives}
+ok "shimmer: string length" [shimmer_probe {string length $keep}] {survives}
+ok "shimmer: string range"  [shimmer_probe {string range $keep 0 end}] {survives}
+# These only need the string rep, so the handle is never disturbed.
+ok "no shimmer: comparison" [shimmer_probe {if {$keep eq ""} {}}]  {survives}
+ok "no shimmer: append"     [shimmer_probe {set s ""; append s $keep}] {survives}
+ok "no shimmer: dl_* cmds"  [shimmer_probe {dl_length $keep}]      {survives}
+
+# A shimmered list is still reclaimed -- it becomes a temp of the frame that
+# dropped it, and dies with that frame like any other temp.
+proc shimmer_churn {} {
+    set b [nlists]
+    for {set i 0} {$i < 100} {incr i} {
+        set keep [shimmer_escape]
+        llength $keep
+        unset keep
+    }
+    return [expr {[nlists] - $b}]
+}
+set before [nlists]
+ok "shimmered lists retain in-frame" [shimmer_churn] 100
+ok "  and are reclaimed at frame exit" [expr {[nlists] - $before}] 0
+
+# The name survives a full round trip out through a bare string and back.
+proc shimmer_roundtrip {} {
+    set keep [shimmer_escape]
+    set name ""
+    append name [string range $keep 0 end]   ;# shimmers, then copies the name
+    unset keep                               ;# only the bare string is left
+    return [dl_tcllist $name]
+}
+ok "name still resolves after round trip" [shimmer_roundtrip] {1 2 3}
+
+###########################################################################
+# 6. REMAINING CORNER, documented
+#
+# Telling "this drop is a frame unwinding" from "this drop is a shimmer"
+# relies on seeing the list used by a live frame -- either its name being
+# materialized (dlRefUpdateString) or a dl_* command resolving it
+# (dlRefNoteUse). Both are invisible in one specific sequence:
+#
+#   the list's name was already materialized in the CALLEE (so the caller's
+#   shimmer finds the string rep cached and never calls updateString), AND
+#   the caller's very first touch of it is a shimmering op, with no dl_*
+#   command in between.
+#
+# Then the unwinding mark from the callee's exit is still set and the list is
+# freed. Closing it would need a per-command execution hook, which is a global
+# cost on every command in the interpreter -- not worth it for this.
+#
+# This was already broken on master (the list was freed at the callee's exit
+# regardless), so nothing regresses; and the failure is a clean "not found".
+###########################################################################
+
+proc corner_callee {} { set x [dl_ilist 1 2 3]; dl_length $x; return $x }
+
+proc corner_hits {} {
+    set k [corner_callee]
+    llength $k                     ;# first touch is a shimmer -> mark still set
+    if {[catch {dl_tcllist $k}]} { return "lost" }
+    return "survives"
+}
+ok "corner: name taken in callee, then shimmered" [corner_hits] {lost}
+
+proc corner_avoided {} {
+    set k [corner_callee]
+    dl_length $k                   ;# any dl_* use first re-establishes it
+    llength $k
+    if {[catch {dl_tcllist $k}]} { return "lost" }
+    return "survives"
+}
+ok "corner: a dl_* use first avoids it" [corner_avoided] {survives}
+
+###########################################################################
+# 7. Memory soak: RSS must plateau, not climb
+#
+# The census above proves lists leave dlTable; this proves the memory goes
+# with them. Growth is measured per block, because the first block includes
+# allocator warm-up -- an absolute threshold would flag that as a leak.
+###########################################################################
+
+proc get_rss_kb {} {
+    if {[file readable /proc/self/status]} {
+        set f [open /proc/self/status r]; set d [read $f]; close $f
+        if {[regexp {VmRSS:\s+(\d+)\s+kB} $d -> rss]} { return $rss }
+    }
+    if {![catch {exec ps -o rss= -p [pid]} rss]} { return [string trim $rss] }
+    return -1
+}
+
+proc soak_block {n} {
+    for {set i 0} {$i < $n} {incr i} {
+        set a [churn_escape]
+        set b [dl_mult $a 2]
+        set acc {}
+        lappend acc $a $b
+        dict set d k $b
+        llength $a                 ;# exercise the shimmer path too
+        unset acc d a b
+    }
+}
+
+# Run the blocks inside a proc, the way real dlsh code works: temps and any
+# promoted lists belong to that frame and go when it returns.
+proc soak_run {} {
+    soak_block 2000                            ;# warm up the allocator
+    set growth {}
+    for {set r 0} {$r < 4} {incr r} {
+        set b [get_rss_kb]
+        soak_block 2000
+        lappend growth [expr {[get_rss_kb] - $b}]
+    }
+    return $growth
+}
+
+if {[get_rss_kb] < 0} {
+    puts "SKIP soak (no RSS available on this platform)"
+} else {
+    set before [nlists]
+    set growth [soak_run]
+    # The last two blocks are steady state; allow page-granularity noise only.
+    set tail [expr {[lindex $growth 2] + [lindex $growth 3]}]
+    if {$tail > 512} {
+        puts "FAIL soak: RSS still climbing, per-block growth {$growth} kB"
+        incr ::failures
+    } else {
+        puts "OK   soak: RSS plateaus (per-block growth {$growth} kB)"
+    }
+    ok "soak leaves no lists behind" [expr {[nlists] - $before}] 0
+}
 
 ###########################################################################
 

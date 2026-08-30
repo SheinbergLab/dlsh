@@ -37,6 +37,19 @@ void dlRefInvalidate(Tcl_Interp *interp, DYN_LIST *dl);
    dl_clean and friends to leave referenced lists alone. */
 int dlRefCount(Tcl_Interp *interp, DYN_LIST *dl);
 
+/* Note that a live frame just resolved dl by name (called from
+   tclFindDynList).  Like materializing the name, this proves the list is in
+   use outside a frame teardown, so a later drop hands it to the current frame
+   rather than freeing it.  Cheap: one load and one store. */
+void dlRefNoteUse(DYN_LIST *dl);
+
+/* Provided by tcl_dl.c (it owns the delete trace). Give dl an ordinary
+   frame claim in the CURRENT frame -- the same hidden variable plus unset
+   trace that tclPutList installs on a freshly made temp -- so the list lives
+   until that frame exits.  Returns 0 if no claim could be installed, in which
+   case the caller must dispose of the list itself. */
+int dlReclaimInFrame(Tcl_Interp *interp, DYN_LIST *dl);
+
 #ifdef __cplusplus
 }
 #endif

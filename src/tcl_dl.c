@@ -4001,6 +4001,63 @@ static char *tclDeleteLocalDynList(ClientData clientData, Tcl_Interp *interp,
 /*****************************************************************************
  *
  * FUNCTION
+ *    dlReclaimInFrame
+ *
+ * DESCRIPTION
+ *    Give a list an ordinary frame claim in the current frame: the same
+ * hidden variable + unset trace tclPutList installs on a fresh temp, so the
+ * list is freed when this frame exits.
+ *
+ *    dlref.c calls this when the last object reference to a list disappears
+ * while the list is still registered.  Freeing right then would be wrong: the
+ * list's NAME may still be held somewhere as a plain string (that is what
+ * happens when [llength]/[lindex]/[string length] shimmer a dynlist object to
+ * another type -- Tcl generates the string rep, then discards our internal
+ * rep, dropping the reference).  Handing the list to the current frame keeps
+ * the name resolvable for as long as any code in that frame could still use
+ * it, and restores exactly the lifetime a temp made here would have had.
+ *
+ *    Safe to call from a Tcl_Obj free proc, including during frame teardown:
+ * Tcl_PopCallFrame removes the frame from the interpreter's stack BEFORE
+ * deleting its locals, so the claim lands in the caller's frame -- which is
+ * where a surviving name string would live anyway.
+ *
+ *****************************************************************************/
+
+int dlReclaimInFrame(Tcl_Interp *interp, DYN_LIST *dl)
+{
+  Tcl_HashEntry *entryPtr;
+  char *name;
+
+  DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
+  if (!dlinfo || !dl) return 0;
+  if (Tcl_InterpDeleted(interp)) return 0;
+
+  /* Only lists still registered under their own name can be reclaimed this
+     way; anything else has no name for the trace to find. */
+  name = DYN_LIST_NAME(dl);
+  if (!(entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, name)) ||
+      Tcl_GetHashValue(entryPtr) != (void *) dl) {
+    return 0;
+  }
+
+  /* Set before tracing: writing a variable that already carries the delete
+     trace would fire it and free the list underneath us. */
+  if (!Tcl_GetVar(interp, name, 0)) {
+    Tcl_SetVar(interp, name, name, 0);
+  }
+  if (!Tcl_VarTraceInfo(interp, name, 0,
+			(Tcl_VarTraceProc *) tclDeleteLocalDynList, NULL)) {
+    Tcl_TraceVar(interp, name, TCL_TRACE_WRITES | TCL_TRACE_UNSETS,
+		 (Tcl_VarTraceProc *) tclDeleteLocalDynList,
+		 (ClientData) strdup(name));
+  }
+  return 1;
+}
+
+/*****************************************************************************
+ *
+ * FUNCTION
  *    tclLocalDynList
  *
  * ARGS
@@ -9515,7 +9572,11 @@ int tclFindDynList(Tcl_Interp *interp, char *name, DYN_LIST **dl)
       *dl = list;
       DYN_LIST_FLAGS(*dl) &= ~DL_SUBLIST; /* Flag as top-level list */
     }
-    
+
+    /* Resolving a name means a live frame is using this list, which tells the
+       refcount layer that a later drop is not part of a frame teardown. */
+    dlRefNoteUse(list);
+
     /*
      * If a dl_return'd dynlist is looked up, then set a trace to delete
      * it when the current procedure exits (as long as it doesn't already
