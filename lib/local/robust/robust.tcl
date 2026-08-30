@@ -132,7 +132,7 @@ namespace eval ::helprobust {
 
 	dl_local z2 [dl_add [dl_add [dl_mult [dl_div [dl_sub $z $s] $u] 25] 200] $noise]
 
-	dl_return [dl_llist $z $z2]
+	dl_yield [dl_llist $z $z2]
     }
 }
 
