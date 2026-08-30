@@ -264,7 +264,9 @@ DYN_LIST *dynListCumSumProdList(DYN_LIST *dl, int op);
 DYN_LIST *dynListMeanLists(DYN_LIST *dl);
 DYN_LIST *dynListHMeanLists(DYN_LIST *dl);
 DYN_LIST *dynListBMeanLists(DYN_LIST *dl);
-float dynListMeanList(DYN_LIST *dl);
+int dynListSumInt64(DYN_LIST *dl, long long *out);
+int dynListSumDouble(DYN_LIST *dl, double *out);
+double dynListMeanList(DYN_LIST *dl);
 DYN_LIST *dynListAverageList(DYN_LIST *dl);
 DYN_LIST *dynListSumColsList(DYN_LIST *dl);
 
@@ -274,11 +276,11 @@ DYN_LIST *dynListHistList(DYN_LIST *dl, DYN_LIST *range, int);
 DYN_LIST *dynListStdLists(DYN_LIST *dl);
 DYN_LIST *dynListHStdLists(DYN_LIST *dl);
 DYN_LIST *dynListBStdLists(DYN_LIST *dl);
-float dynListStdList(DYN_LIST *dl);
+double dynListStdList(DYN_LIST *dl);
 
 DYN_LIST *dynListVarLists(DYN_LIST *dl);
 DYN_LIST *dynListHVarLists(DYN_LIST *dl);
-float dynListVarList(DYN_LIST *dl);
+double dynListVarList(DYN_LIST *dl);
 
 DYN_LIST *dynListCountLists(DYN_LIST *dl, DYN_LIST *range);
 long dynListCountList(DYN_LIST *dl, DYN_LIST *range);

@@ -8300,6 +8300,20 @@ static int tclReduceList (ClientData data, Tcl_Interp *interp,
     return TCL_OK;
     break;
   case DL_SUM:
+      {
+	/* Integer lists sum exactly: Tcl carries 64-bit integers, so do not
+	   push the result through a float list and lose digits. */
+	long long isum;
+	double fsum;
+	if (dynListSumInt64(dl, &isum)) {
+	  Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt) isum));
+	  return TCL_OK;
+	}
+	if (dynListSumDouble(dl, &fsum)) {
+	  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(fsum));
+	  return TCL_OK;
+	}
+      }
     retlist = dynListSumProdList(dl, DL_SUM_LIST);
     tclDynListToTclList(interp, retlist);    
     dfuFreeDynList(retlist);
