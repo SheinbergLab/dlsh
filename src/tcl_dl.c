@@ -828,23 +828,46 @@ static int tclScanList(ClientData data, Tcl_Interp * interp, int objc,
 		       Tcl_Obj * const objv[]);
 
 
-/* Interpreter teardown.
+/* Interpreter teardown -- NOT CURRENTLY CALLED.  Read this before wiring it
+ * up: the one-line "fix" crashes, and it takes a while to see why.
  *
- * This used to drop both hash tables without freeing what was in them, so
- * every interpreter that went away leaked its remaining lists and ALL of its
- * dyngroups.  Not a large leak per interpreter, but dserv gives each
- * subprocess its own interpreter, and a dyngroup like stimdg is not small.
+ * Dl_Init passes NULL where this would go, so an interpreter that goes away
+ * abandons DLSHINFO and everything still registered in it.  Only untraced
+ * things leak, which is why it went unnoticed: Tcl dismantles the global
+ * namespace before clearing assoc data, so every temp carrying a delete trace
+ * is already gone.  What survives is what never had one -- lists bound by
+ * name with dl_set, and every dyngroup, since dgTable entries are never
+ * traced.  Measured at ~13 MB per block of 6 interpreters each holding 20
+ * lists of 20k ints, and dserv gives each subprocess its own interpreter.
  *
- * Note what is and is not left here.  Tcl dismantles the global namespace
- * before it clears assoc data, so every temp carrying a delete trace has
- * already been freed by that trace; what survives to this point is precisely
- * the things that never had one -- lists bound by name with dl_set, and every
- * dyngroup, since dgTable entries are never traced.  So this frees orphans,
- * not live data.
+ * Registering this as the assoc-data delete proc fixes that leak and passes
+ * every test -- and then segfaults at process exit.  What is established:
  *
- * dfuFreeDynList runs the refcount free hook, which detaches any outstanding
- * handle, so a Tcl_Obj that somehow outlives its interpreter is left holding
- * an inert handle rather than a dangling list.
+ *   - it only happens when libdlsh was loaded out of a zip; the same build
+ *     loaded from a real filesystem path (--libdlsh) exits cleanly;
+ *   - this function is never entered.  Logging to a file from its first line
+ *     (so channel finalization cannot swallow it) produces nothing, and the
+ *     faulting PC has no symbol with unreadable memory around it.  The call
+ *     through the stored function pointer is what faults;
+ *   - `dlsh -e 'puts hi'`, using no dl_ command at all, is enough to trigger.
+ *
+ * So the pointer Tcl holds is unusable by the time it calls it, and the zip
+ * load path is what makes the difference.  The mechanism is NOT pinned down:
+ * Tcl copies a VFS library to a temp file, loads that and unlinks it
+ * immediately, and TclFinalizeLoad only dlcloses under TCL_UNLOAD_DLLS, which
+ * is not set here -- so a simple "it was unloaded first" story does not quite
+ * fit.  Note though that TclFinalizeLoad carries a comment describing exactly
+ * this hazard: "you get a core on exit because it wants to call a function in
+ * the dll after it has been unloaded".
+ *
+ * dserv, stim2 and the dlsh interpreter all load libdlsh from dlsh.zip, so
+ * this is the configuration that matters, not an edge case.  Any fix must
+ * guarantee the code outlives interpreter teardown; an exit handler is likely
+ * to have the same problem.
+ *
+ * The body below is correct and ready if that ever changes.  dfuFreeDynList
+ * runs the refcount free hook, so outstanding handles are detached rather
+ * than left dangling.  tests/tools/interp_teardown_leak.tcl measures the leak.
  */
 
 static void deleteDlFunc(ClientData clientData, Tcl_Interp *interp)
@@ -934,12 +957,11 @@ int Dl_Init(Tcl_Interp *interp)
   
   dlshinfo->TmpListRecordList = NULL;
 
-  /* deleteDlFunc, not NULL: with no delete proc the assoc data was simply
-     abandoned when the interpreter went away, taking DLSHINFO and every list
-     and dyngroup still registered in it. The function existed all along; it
-     was just never wired up, so nothing ever ran at teardown. */
+  /* NULL, deliberately -- see the comment on deleteDlFunc. Registering it
+     segfaults at exit whenever libdlsh is loaded out of a zip, which is how
+     dserv, stim2 and the dlsh interpreter all load it. */
   Tcl_SetAssocData(interp, DLSH_ASSOC_DATA_KEY,
-		   (Tcl_InterpDeleteProc *) deleteDlFunc,
+		   NULL,
 		   (void *) dlshinfo);
 
   while (DLcommands[i].name) {

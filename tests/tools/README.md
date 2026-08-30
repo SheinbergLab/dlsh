@@ -66,6 +66,24 @@ that is by design, not a leak, and is what `dl_clean` is for. A soak that
 churns at global scope will show tens of thousands of retained lists and tell
 you nothing.
 
+## interp_teardown_leak.tcl -- measures a known, unfixed leak
+
+Destroying an interpreter does not reclaim the lists and dyngroups it still
+holds, because `Dl_Init` passes NULL where the assoc-data delete proc would
+go. This script measures that; it **fails on purpose** against every current
+build.
+
+Do not "fix" it by simply registering `deleteDlFunc`. That does remove the
+leak and passes the whole suite -- and then segfaults at process exit
+whenever libdlsh was loaded from a zip, which is how dserv, stim2 and the
+dlsh interpreter all load it. `dlsh -e 'puts hi'` is enough to trigger it,
+and the function is never even entered. See the long comment on
+`deleteDlFunc` in `src/tcl_dl.c` for what is established and what is not.
+
+Note that a test ending in `exit 0` will NOT catch this: that path skips
+interpreter deletion. Exercise teardown with `dlsh -e '<script>'` and check
+the exit code.
+
 ### Gotcha: `tpool` hangs in the standalone `dlsh` interpreter
 
 `tpool::create` succeeds and `tpool::wait` never returns. This is not a dlsh

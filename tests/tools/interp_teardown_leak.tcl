@@ -1,8 +1,10 @@
 #!/usr/bin/env dlsh
 #
-# test_leak_interp_teardown.tcl
-#   Destroying an interpreter must reclaim the lists and dyngroups it still
-#   holds.
+# interp_teardown_leak.tcl -- demonstrates a KNOWN, UNFIXED leak.
+#
+#   Destroying an interpreter does not reclaim the lists and dyngroups it
+#   still holds. This script measures that. It is a diagnostic, not a test:
+#   it FAILS on purpose against every current build.
 #
 #   Dl_Init registered its per-interp state (DLSHINFO, the dlTable and the
 #   dgTable) with a NULL delete proc, so deleteDlFunc -- which existed all
@@ -17,8 +19,8 @@
 #   name with dl_set, and every dyngroup. So this test builds those, not
 #   temps, or it would measure nothing.
 #
-#   Usage: dlsh test_leak_interp_teardown.tcl ?blocks? ?interps? ?size?
-#   Exits non-zero if RSS climbs across blocks.
+#   Usage: dlsh tests/tools/interp_teardown_leak.tcl ?blocks? ?interps? ?size?
+#   Exits non-zero while the leak is present -- i.e. always, for now.
 
 if {[catch {package require dlsh}]} {
     foreach path {/usr/local/dlsh/dlsh.zip /usr/local/lib/dlsh.zip} {
