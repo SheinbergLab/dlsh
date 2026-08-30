@@ -728,9 +728,20 @@ typedef struct {
   int n;			/* number of slots filled     */
   int flags;			/* info about the dynlist     */
   void *vals;			/* pointer to actual data     */
+  void *refhandle;		/* opaque refcount handle, or NULL.
+				 * Owned by the Tcl layer (dlref.c); lablib
+				 * only ever passes it to the free hook below.
+				 * Every DYN_LIST is calloc'd, so an untracked
+				 * list reliably starts NULL. */
 } DYN_LIST;
 
 #define DYN_LIST_NAME(d)      ((d)->name)
+#define DYN_LIST_REFHANDLE(d) ((d)->refhandle)
+
+/* Installed by the Tcl layer so that a list carrying a refcount handle can
+ * detach it however it is freed -- there are ~500 dfuFreeDynList call sites
+ * and only this one hook.  Left NULL when lablib is used without Tcl. */
+extern void (*dfuDynListFreeHook)(DYN_LIST *dl);
 #define DYN_LIST_DATATYPE(d)  ((d)->datatype)
 #define DYN_LIST_INCREMENT(d) ((d)->increment)
 #define DYN_LIST_MAX(d)       ((d)->max)

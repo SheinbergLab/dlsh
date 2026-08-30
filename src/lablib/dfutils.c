@@ -3030,6 +3030,9 @@ DYN_LIST *dfuCopyDynList(DYN_LIST *old)
 
   memcpy(new, old, sizeof(DYN_LIST));
 
+  /* The copy is a distinct list: it must not inherit the original's handle. */
+  DYN_LIST_REFHANDLE(new) = NULL;
+
   /* 
    * This is a strange situation, but something that we take care of
    *  by making sure that the copy actually allocates some space
@@ -4047,11 +4050,18 @@ void dfuFreeDynGroup(DYN_GROUP *dyngroup)
  *
  ***********************************************************************/
 
+void (*dfuDynListFreeHook)(DYN_LIST *dl) = NULL;
+
 void dfuFreeDynList(DYN_LIST *dynlist)
 {
   int i;
 
   if (!dynlist) return;
+
+  /* Let the Tcl layer detach any refcount handle before the memory goes.
+     The hook clears refhandle, so this never recurses. */
+  if (DYN_LIST_REFHANDLE(dynlist) && dfuDynListFreeHook)
+    dfuDynListFreeHook(dynlist);
 
 #ifdef DEBUG
   /* Should never get this message */

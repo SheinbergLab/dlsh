@@ -349,8 +349,9 @@ add_library(dlsh SHARED
     src/tcl_dm.c 
     src/dlarith.c 
     src/dmana.c 
-    src/tcl_dl.c 
-    src/dgjson.c 
+    src/tcl_dl.c
+    src/dlref.c
+    src/dgjson.c
     src/dgmsgpack.c
     src/dgarrow.c
     src/dlnoise.c
@@ -638,6 +639,7 @@ OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
         test_dl_foreach
         test_dl_comprehension
         test_dl_yield
+        test_dl_refcount
         test_mp_sim_kinematics
         test_dg_concat
         test_leak_dl_foreach)

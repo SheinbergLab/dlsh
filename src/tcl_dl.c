@@ -38,6 +38,7 @@
 #include "dfana.h"
 #include <labtcl.h>
 #include "tcl_dl.h"
+#include "dlref.h"
 #include "dgmsgpack.h"
 #include "dgarrow.h"
 #include <jansson.h>
@@ -880,6 +881,9 @@ int Dl_Init(Tcl_Interp *interp)
  
   Tcl_InitHashTable(&dlshinfo->dlTable, TCL_STRING_KEYS);
   Tcl_InitHashTable(&dlshinfo->dgTable, TCL_STRING_KEYS);
+
+  /* Refcounted handles for lists that escape the frame that made them. */
+  dlRefInit(interp);
 
   dlshinfo->TmpListStack =  (TMPLIST_STACK *) calloc(1, sizeof(TMPLIST_STACK));
   TMPLIST_SIZE(dlshinfo->TmpListStack) = 0;
@@ -3473,14 +3477,14 @@ static int tclCreateDynList (ClientData data, Tcl_Interp *interp,
   
   for (i = startindex; i < argc; i++) {
     if (argv[i][0]) {		/* as int as it's not the empty string */
-      if (Tcl_VarEval(interp, "dl_append ", listname, " {", argv[i], "}", 
+      if (Tcl_VarEval(interp, "dl_append ", listname, " {", argv[i], "}",
 		      (char *) NULL) != TCL_OK) {
 	return TCL_ERROR;
       }
     }
   }
-  
-  Tcl_SetResult(interp, listname, TCL_VOLATILE);
+
+  dlRefSetObjResult(interp, dl);
   return TCL_OK;
 }
 
@@ -3519,11 +3523,14 @@ int tclPutList(Tcl_Interp *interp, DYN_LIST *dl)
   /* NEW!!! */
   /* Add a local variable that will, when the current proc exits, free list */
   Tcl_SetVar(interp, listname, listname, 0);
-  Tcl_TraceVar(interp, listname, TCL_TRACE_WRITES | TCL_TRACE_UNSETS, 
-	       (Tcl_VarTraceProc *) tclDeleteLocalDynList, 
+  Tcl_TraceVar(interp, listname, TCL_TRACE_WRITES | TCL_TRACE_UNSETS,
+	       (Tcl_VarTraceProc *) tclDeleteLocalDynList,
 	       (ClientData) strdup(listname));
 
-  Tcl_SetResult(interp, listname, TCL_VOLATILE);
+  /* Hand back a refcounted handle whose string rep is still `listname`, so
+     that `set x [...]` keeps the list alive past this frame while every
+     string-based command goes on resolving it by name. */
+  dlRefSetObjResult(interp, dl);
   return TCL_OK;
 }
 
@@ -3566,7 +3573,13 @@ static int tclDeleteDynList (ClientData data, Tcl_Interp *interp,
 	Tcl_UnsetVar(interp, argv[i], 0);
       }
       else {
-	if ((dl = Tcl_GetHashValue(entryPtr))) dfuFreeDynList(dl);
+	/* An explicit dl_delete overrides outstanding handles; detach them
+	   so a stale reference reports a missing list rather than reading
+	   freed memory. */
+	if ((dl = Tcl_GetHashValue(entryPtr))) {
+	  dlRefInvalidate(interp, dl);
+	  dfuFreeDynList(dl);
+	}
 	Tcl_DeleteHashEntry(entryPtr);
       }
     }
@@ -3637,7 +3650,10 @@ static int tclDeleteTraceDynList (ClientData data, Tcl_Interp *interp,
       Tcl_UnsetVar(interp, argv[1], 0);
     }
     else {
-      if ((dl = Tcl_GetHashValue(entryPtr))) dfuFreeDynList(dl);
+      if ((dl = Tcl_GetHashValue(entryPtr))) {
+	if (!dlRefFrameRelease(interp, dl)) return TCL_OK;
+	dfuFreeDynList(dl);
+      }
       Tcl_DeleteHashEntry(entryPtr);
     }
   }
@@ -3950,7 +3966,19 @@ static char *tclDeleteLocalDynList(ClientData clientData, Tcl_Interp *interp,
   if (!dlinfo) return NULL;
   
   if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, (char *) clientData))) {
-    if ((dl = Tcl_GetHashValue(entryPtr))) { 
+    /* The frame that owned this list is going away.  If the list escaped --
+       someone did `set x [...]`, returned it, or stashed it -- a refcounted
+       handle is still holding it, so leave both the list and its dlTable
+       entry alone and let the last reference free it.  With no handle this
+       behaves exactly as it always has. */
+    if ((dl = Tcl_GetHashValue(entryPtr))) {
+      if (!dlRefFrameRelease(interp, dl)) {
+	Tcl_UntraceVar(interp, name1, TCL_TRACE_WRITES | TCL_TRACE_UNSETS,
+		       (Tcl_VarTraceProc *) tclDeleteLocalDynList,
+		       (ClientData) clientData);
+	if (clientData) free(clientData);
+	return NULL;
+      }
       dfuFreeDynList(dl);
     }
     Tcl_DeleteHashEntry(entryPtr);
