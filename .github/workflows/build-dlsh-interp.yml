@@ -11,9 +11,17 @@ on:
   push:
     branches: ['dlsh-interp-**']
   pull_request:
+    # These paths must cover everything the suite actually exercises, not just
+    # the interpreter-bundling files this workflow started life testing. The
+    # dlsh test suite grew into it later: before this list included src/** and
+    # tests/**, a PR changing only src/tcl_dl.c or adding a test ran no CI at
+    # all -- the changes most likely to break the suite were the ones that
+    # never triggered it.
     paths:
-      - 'src/dlsh_main.c'
-      - 'cmake/dlsh_bundle_appzip.cmake'
+      - 'src/**'
+      - 'tests/**'
+      - 'vfs/lib/**'          # staged into the test dlsh.zip
+      - 'cmake/**'
       - 'CMakeLists.txt'
       - 'linux/build-dlsh-deb.sh'
       - '.github/workflows/build-dlsh-interp.yml'
