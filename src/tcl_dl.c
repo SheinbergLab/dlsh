@@ -3569,17 +3569,19 @@ static int tclDeleteDynList (ClientData data, Tcl_Interp *interp,
 
   for (i = 1; i < argc; i++) {
     if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, argv[i]))) {
+      /* dl_delete is authoritative: it means "this list is gone now", not
+	 "release my claim on it".  Detach any refcount handles up front so
+	 the list is freed on the spot however many references are still
+	 outstanding, and whichever branch below does the freeing.  Detaching
+	 keeps those references safe -- they hold an inert handle and report a
+	 missing list -- rather than leaving them pointed at freed memory. */
+      if ((dl = Tcl_GetHashValue(entryPtr))) dlRefInvalidate(interp, dl);
+
       if (Tcl_GetVar(interp, argv[i], 0)) {
-	Tcl_UnsetVar(interp, argv[i], 0);
+	Tcl_UnsetVar(interp, argv[i], 0);	/* trace frees it */
       }
       else {
-	/* An explicit dl_delete overrides outstanding handles; detach them
-	   so a stale reference reports a missing list rather than reading
-	   freed memory. */
-	if ((dl = Tcl_GetHashValue(entryPtr))) {
-	  dlRefInvalidate(interp, dl);
-	  dfuFreeDynList(dl);
-	}
+	if (dl) dfuFreeDynList(dl);
 	Tcl_DeleteHashEntry(entryPtr);
       }
     }

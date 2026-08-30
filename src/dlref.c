@@ -83,6 +83,9 @@ typedef struct {
   int unwinding;		/* claim was released by a frame exit
 				 * and the name has not been materialized
 				 * since -- see dlRefDrop              */
+  char name[DYN_LIST_NAME_SIZE];/* the list's name, kept when it is detached
+				 * so a stale reference can still say which
+				 * list it was                         */
 } DL_REF;
 
 static void dlRefFreeInternalRep(Tcl_Obj *objPtr);
@@ -136,7 +139,14 @@ static DL_REF *dlRefGet(Tcl_Interp *interp, DYN_LIST *dl)
 static void dlRefDetach(DL_REF *ref)
 {
   if (!ref) return;
-  if (ref->dl) DYN_LIST_REFHANDLE(ref->dl) = NULL;
+  if (ref->dl) {
+    /* Keep the name: objects still holding this handle may not have
+       generated their string rep yet, and "%list7%" makes a far better
+       error than "". */
+    strncpy(ref->name, DYN_LIST_NAME(ref->dl), DYN_LIST_NAME_SIZE - 1);
+    ref->name[DYN_LIST_NAME_SIZE - 1] = 0;
+    DYN_LIST_REFHANDLE(ref->dl) = NULL;
+  }
   ref->dl = NULL;
   ref->dlinfo = NULL;
 }
@@ -254,7 +264,9 @@ static void dlRefDupInternalRep(Tcl_Obj *srcPtr, Tcl_Obj *dupPtr)
 static void dlRefUpdateString(Tcl_Obj *objPtr)
 {
   DL_REF *ref = dlRefFromObj(objPtr);
-  const char *name = (ref && ref->dl) ? DYN_LIST_NAME(ref->dl) : "";
+  const char *name = !ref ? ""
+                   : ref->dl ? DYN_LIST_NAME(ref->dl)
+                   : ref->name;		/* detached: the name it used to have */
   size_t n = strlen(name);
 
   objPtr->bytes = (char *) Tcl_Alloc(n + 1);

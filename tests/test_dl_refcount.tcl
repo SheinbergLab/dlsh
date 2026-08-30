@@ -200,30 +200,52 @@ ok "  and they are all usable" $sample {0 1 2 3 4 5 6 7 8 9}
 ok "accumulator release frees them all" [expr {[nlists] - $before}] 0
 
 ###########################################################################
-# 4. dl_delete
+# 4. dl_delete is authoritative
 #
-# SEMANTIC CHANGE, flagged for review. On master, dl_delete of a temp frees
-# it immediately and any variable still holding the name dangles:
+# dl_delete means "this list is gone now", not "release my claim on it", and
+# that holds however many references are outstanding -- same as master:
 #
 #     set x [dl_ilist 1 2 3]; dl_delete $x; dl_tcllist $x   ;# -> error
 #
-# dl_delete works by unsetting the list's hidden frame variable, i.e. by
-# releasing the *frame's* claim. With handles, a live reference is a second
-# claim, so the list now survives until that reference goes away too -- the
-# delete is deferred rather than ignored. That is the safe direction (it
-# cannot produce a use-after-free), and it is the only place the additive
-# rule is visible from a script. The alternative -- make dl_delete
-# authoritative and invalidate outstanding handles -- is a one-line change in
-# tclDeleteDynList if that is preferred.
+# It is the one place a script can outrank the refcount. Outstanding
+# references stay safe: tclDeleteDynList detaches their handles before the
+# free, so they hold an inert handle and report a missing list rather than
+# reading freed memory. The handle keeps the list's name so the error names
+# the right list even if that object never generated a string rep.
 ###########################################################################
+
+proc make_escaped {} { set x [dl_ilist 1 2 3]; return $x }
 
 proc delete_referenced {} {
     set x [dl_ilist 1 2 3]
+    set name ""
+    append name [string range $x 0 end]      ;# remember which list it was
     dl_delete $x
-    if {[catch {dl_tcllist $x} e]} { return "errored" }
-    return $e
+    if {![catch {dl_tcllist $x} e]} { return "still alive" }
+    # The error must name the deleted list, not "" -- that is what the name
+    # kept in the detached handle is for.
+    if {[string match "*\"$name\"*not found*" $e]} { return "errored, named" }
+    return "errored, but unhelpfully: $e"
 }
-ok "dl_delete defers while a reference lives" [delete_referenced] {1 2 3}
+ok "dl_delete beats a live reference" [delete_referenced] {errored, named}
+
+# Deleting through one of two aliases takes the list out from under both.
+proc delete_aliased {} {
+    set x [dl_ilist 1 2 3]
+    set y $x
+    dl_delete $x
+    return "[catch {dl_tcllist $x}] [catch {dl_tcllist $y}]"
+}
+ok "  and out from under an alias too" [delete_aliased] {1 1}
+
+# An escaped list -- no frame claim left, only a reference -- is deletable.
+proc delete_escaped {} {
+    set k [make_escaped]
+    dl_delete $k
+    if {[catch {dl_tcllist $k}]} { return "errored" }
+    return "still alive"
+}
+ok "  and an escaped list as well" [delete_escaped] {errored}
 
 # With no live reference, dl_delete frees immediately as it always has.
 # NB: [set name "$x"] would NOT do -- Tcl hands back the very same object, so
