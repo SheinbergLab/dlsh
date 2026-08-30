@@ -38,6 +38,7 @@
 #include "dfana.h"
 #include <labtcl.h>
 #include "tcl_dl.h"
+#include "dlref.h"
 #include "dgmsgpack.h"
 #include "dgarrow.h"
 #include <jansson.h>
@@ -827,12 +828,76 @@ static int tclScanList(ClientData data, Tcl_Interp * interp, int objc,
 		       Tcl_Obj * const objv[]);
 
 
+/* Interpreter teardown -- NOT CURRENTLY CALLED.  Read this before wiring it
+ * up: the one-line "fix" crashes, and it takes a while to see why.
+ *
+ * Dl_Init passes NULL where this would go, so an interpreter that goes away
+ * abandons DLSHINFO and everything still registered in it.  Only untraced
+ * things leak, which is why it went unnoticed: Tcl dismantles the global
+ * namespace before clearing assoc data, so every temp carrying a delete trace
+ * is already gone.  What survives is what never had one -- lists bound by
+ * name with dl_set, and every dyngroup, since dgTable entries are never
+ * traced.  Measured at ~13 MB per block of 6 interpreters each holding 20
+ * lists of 20k ints, and dserv gives each subprocess its own interpreter.
+ *
+ * Registering this as the assoc-data delete proc fixes that leak and passes
+ * every test -- and then segfaults at process exit.  What is established:
+ *
+ *   - it only happens when libdlsh was loaded out of a zip; the same build
+ *     loaded from a real filesystem path (--libdlsh) exits cleanly;
+ *   - this function is never entered.  Logging to a file from its first line
+ *     (so channel finalization cannot swallow it) produces nothing, and the
+ *     faulting PC has no symbol with unreadable memory around it.  The call
+ *     through the stored function pointer is what faults;
+ *   - `dlsh -e 'puts hi'`, using no dl_ command at all, is enough to trigger.
+ *
+ * So the pointer Tcl holds is unusable by the time it calls it, and the zip
+ * load path is what makes the difference.  The mechanism is NOT pinned down:
+ * Tcl copies a VFS library to a temp file, loads that and unlinks it
+ * immediately, and TclFinalizeLoad only dlcloses under TCL_UNLOAD_DLLS, which
+ * is not set here -- so a simple "it was unloaded first" story does not quite
+ * fit.  Note though that TclFinalizeLoad carries a comment describing exactly
+ * this hazard: "you get a core on exit because it wants to call a function in
+ * the dll after it has been unloaded".
+ *
+ * dserv, stim2 and the dlsh interpreter all load libdlsh from dlsh.zip, so
+ * this is the configuration that matters, not an edge case.  Any fix must
+ * guarantee the code outlives interpreter teardown; an exit handler is likely
+ * to have the same problem.
+ *
+ * The body below is correct and ready if that ever changes.  dfuFreeDynList
+ * runs the refcount free hook, so outstanding handles are detached rather
+ * than left dangling.  tests/tools/interp_teardown_leak.tcl measures the leak.
+ */
+
 static void deleteDlFunc(ClientData clientData, Tcl_Interp *interp)
 {
   DLSHINFO *dlshinfo = (DLSHINFO *) clientData;
-  
+  Tcl_HashEntry *entryPtr;
+  Tcl_HashSearch search;
+
+  for (entryPtr = Tcl_FirstHashEntry(&dlshinfo->dlTable, &search);
+       entryPtr != NULL;
+       entryPtr = Tcl_NextHashEntry(&search)) {
+    DYN_LIST *dl = (DYN_LIST *) Tcl_GetHashValue(entryPtr);
+    if (dl) dfuFreeDynList(dl);
+  }
   Tcl_DeleteHashTable(&dlshinfo->dlTable);
+
+  for (entryPtr = Tcl_FirstHashEntry(&dlshinfo->dgTable, &search);
+       entryPtr != NULL;
+       entryPtr = Tcl_NextHashEntry(&search)) {
+    DYN_GROUP *dg = (DYN_GROUP *) Tcl_GetHashValue(entryPtr);
+    if (dg) dfuFreeDynGroup(dg);
+  }
   Tcl_DeleteHashTable(&dlshinfo->dgTable);
+
+  if (dlshinfo->TmpListStack) {
+    if (TMPLIST_TMPLISTS(dlshinfo->TmpListStack))
+      free(TMPLIST_TMPLISTS(dlshinfo->TmpListStack));
+    free(dlshinfo->TmpListStack);
+  }
+
   free(dlshinfo);
 }
 
@@ -881,6 +946,9 @@ int Dl_Init(Tcl_Interp *interp)
   Tcl_InitHashTable(&dlshinfo->dlTable, TCL_STRING_KEYS);
   Tcl_InitHashTable(&dlshinfo->dgTable, TCL_STRING_KEYS);
 
+  /* Refcounted handles for lists that escape the frame that made them. */
+  dlRefInit(interp);
+
   dlshinfo->TmpListStack =  (TMPLIST_STACK *) calloc(1, sizeof(TMPLIST_STACK));
   TMPLIST_SIZE(dlshinfo->TmpListStack) = 0;
   TMPLIST_INDEX(dlshinfo->TmpListStack) = -1;
@@ -889,6 +957,9 @@ int Dl_Init(Tcl_Interp *interp)
   
   dlshinfo->TmpListRecordList = NULL;
 
+  /* NULL, deliberately -- see the comment on deleteDlFunc. Registering it
+     segfaults at exit whenever libdlsh is loaded out of a zip, which is how
+     dserv, stim2 and the dlsh interpreter all load it. */
   Tcl_SetAssocData(interp, DLSH_ASSOC_DATA_KEY,
 		   NULL,
 		   (void *) dlshinfo);
@@ -3473,14 +3544,14 @@ static int tclCreateDynList (ClientData data, Tcl_Interp *interp,
   
   for (i = startindex; i < argc; i++) {
     if (argv[i][0]) {		/* as int as it's not the empty string */
-      if (Tcl_VarEval(interp, "dl_append ", listname, " {", argv[i], "}", 
+      if (Tcl_VarEval(interp, "dl_append ", listname, " {", argv[i], "}",
 		      (char *) NULL) != TCL_OK) {
 	return TCL_ERROR;
       }
     }
   }
-  
-  Tcl_SetResult(interp, listname, TCL_VOLATILE);
+
+  dlRefSetObjResult(interp, dl);
   return TCL_OK;
 }
 
@@ -3519,11 +3590,14 @@ int tclPutList(Tcl_Interp *interp, DYN_LIST *dl)
   /* NEW!!! */
   /* Add a local variable that will, when the current proc exits, free list */
   Tcl_SetVar(interp, listname, listname, 0);
-  Tcl_TraceVar(interp, listname, TCL_TRACE_WRITES | TCL_TRACE_UNSETS, 
-	       (Tcl_VarTraceProc *) tclDeleteLocalDynList, 
+  Tcl_TraceVar(interp, listname, TCL_TRACE_WRITES | TCL_TRACE_UNSETS,
+	       (Tcl_VarTraceProc *) tclDeleteLocalDynList,
 	       (ClientData) strdup(listname));
 
-  Tcl_SetResult(interp, listname, TCL_VOLATILE);
+  /* Hand back a refcounted handle whose string rep is still `listname`, so
+     that `set x [...]` keeps the list alive past this frame while every
+     string-based command goes on resolving it by name. */
+  dlRefSetObjResult(interp, dl);
   return TCL_OK;
 }
 
@@ -3562,11 +3636,19 @@ static int tclDeleteDynList (ClientData data, Tcl_Interp *interp,
 
   for (i = 1; i < argc; i++) {
     if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, argv[i]))) {
+      /* dl_delete is authoritative: it means "this list is gone now", not
+	 "release my claim on it".  Detach any refcount handles up front so
+	 the list is freed on the spot however many references are still
+	 outstanding, and whichever branch below does the freeing.  Detaching
+	 keeps those references safe -- they hold an inert handle and report a
+	 missing list -- rather than leaving them pointed at freed memory. */
+      if ((dl = Tcl_GetHashValue(entryPtr))) dlRefInvalidate(interp, dl);
+
       if (Tcl_GetVar(interp, argv[i], 0)) {
-	Tcl_UnsetVar(interp, argv[i], 0);
+	Tcl_UnsetVar(interp, argv[i], 0);	/* trace frees it */
       }
       else {
-	if ((dl = Tcl_GetHashValue(entryPtr))) dfuFreeDynList(dl);
+	if (dl) dfuFreeDynList(dl);
 	Tcl_DeleteHashEntry(entryPtr);
       }
     }
@@ -3637,7 +3719,10 @@ static int tclDeleteTraceDynList (ClientData data, Tcl_Interp *interp,
       Tcl_UnsetVar(interp, argv[1], 0);
     }
     else {
-      if ((dl = Tcl_GetHashValue(entryPtr))) dfuFreeDynList(dl);
+      if ((dl = Tcl_GetHashValue(entryPtr))) {
+	if (!dlRefFrameRelease(interp, dl)) return TCL_OK;
+	dfuFreeDynList(dl);
+      }
       Tcl_DeleteHashEntry(entryPtr);
     }
   }
@@ -3950,7 +4035,19 @@ static char *tclDeleteLocalDynList(ClientData clientData, Tcl_Interp *interp,
   if (!dlinfo) return NULL;
   
   if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, (char *) clientData))) {
-    if ((dl = Tcl_GetHashValue(entryPtr))) { 
+    /* The frame that owned this list is going away.  If the list escaped --
+       someone did `set x [...]`, returned it, or stashed it -- a refcounted
+       handle is still holding it, so leave both the list and its dlTable
+       entry alone and let the last reference free it.  With no handle this
+       behaves exactly as it always has. */
+    if ((dl = Tcl_GetHashValue(entryPtr))) {
+      if (!dlRefFrameRelease(interp, dl)) {
+	Tcl_UntraceVar(interp, name1, TCL_TRACE_WRITES | TCL_TRACE_UNSETS,
+		       (Tcl_VarTraceProc *) tclDeleteLocalDynList,
+		       (ClientData) clientData);
+	if (clientData) free(clientData);
+	return NULL;
+      }
       dfuFreeDynList(dl);
     }
     Tcl_DeleteHashEntry(entryPtr);
@@ -3969,6 +4066,63 @@ static char *tclDeleteLocalDynList(ClientData clientData, Tcl_Interp *interp,
   return NULL;
 }
 
+
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    dlReclaimInFrame
+ *
+ * DESCRIPTION
+ *    Give a list an ordinary frame claim in the current frame: the same
+ * hidden variable + unset trace tclPutList installs on a fresh temp, so the
+ * list is freed when this frame exits.
+ *
+ *    dlref.c calls this when the last object reference to a list disappears
+ * while the list is still registered.  Freeing right then would be wrong: the
+ * list's NAME may still be held somewhere as a plain string (that is what
+ * happens when [llength]/[lindex]/[string length] shimmer a dynlist object to
+ * another type -- Tcl generates the string rep, then discards our internal
+ * rep, dropping the reference).  Handing the list to the current frame keeps
+ * the name resolvable for as long as any code in that frame could still use
+ * it, and restores exactly the lifetime a temp made here would have had.
+ *
+ *    Safe to call from a Tcl_Obj free proc, including during frame teardown:
+ * Tcl_PopCallFrame removes the frame from the interpreter's stack BEFORE
+ * deleting its locals, so the claim lands in the caller's frame -- which is
+ * where a surviving name string would live anyway.
+ *
+ *****************************************************************************/
+
+int dlReclaimInFrame(Tcl_Interp *interp, DYN_LIST *dl)
+{
+  Tcl_HashEntry *entryPtr;
+  char *name;
+
+  DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
+  if (!dlinfo || !dl) return 0;
+  if (Tcl_InterpDeleted(interp)) return 0;
+
+  /* Only lists still registered under their own name can be reclaimed this
+     way; anything else has no name for the trace to find. */
+  name = DYN_LIST_NAME(dl);
+  if (!(entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, name)) ||
+      Tcl_GetHashValue(entryPtr) != (void *) dl) {
+    return 0;
+  }
+
+  /* Set before tracing: writing a variable that already carries the delete
+     trace would fire it and free the list underneath us. */
+  if (!Tcl_GetVar(interp, name, 0)) {
+    Tcl_SetVar(interp, name, name, 0);
+  }
+  if (!Tcl_VarTraceInfo(interp, name, 0,
+			(Tcl_VarTraceProc *) tclDeleteLocalDynList, NULL)) {
+    Tcl_TraceVar(interp, name, TCL_TRACE_WRITES | TCL_TRACE_UNSETS,
+		 (Tcl_VarTraceProc *) tclDeleteLocalDynList,
+		 (ClientData) strdup(name));
+  }
+  return 1;
+}
 
 /*****************************************************************************
  *
@@ -9487,7 +9641,11 @@ int tclFindDynList(Tcl_Interp *interp, char *name, DYN_LIST **dl)
       *dl = list;
       DYN_LIST_FLAGS(*dl) &= ~DL_SUBLIST; /* Flag as top-level list */
     }
-    
+
+    /* Resolving a name means a live frame is using this list, which tells the
+       refcount layer that a later drop is not part of a frame teardown. */
+    dlRefNoteUse(list);
+
     /*
      * If a dl_return'd dynlist is looked up, then set a trace to delete
      * it when the current procedure exits (as long as it doesn't already
