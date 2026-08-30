@@ -278,9 +278,9 @@ proc dl_distance { xy1 xy2 } {
     #   Returns: list of floats that represent the distance between xy1
     #            and xy2 pairs of coordinates
     #   Example: 
-    #            % dl_local xy1 [dl_llist [dl_flist 0 0] [dl_flist 4 0]]
+    #            % set xy1 [dl_llist [dl_flist 0 0] [dl_flist 4 0]]
     #              &xy1_30&
-    #            % dl_local xy2 [dl_llist [dl_flist -5 0] [dl_flist 4 7]]
+    #            % set xy2 [dl_llist [dl_flist -5 0] [dl_flist 4 7]]
     #              &xy2_31&
     #            % dl_tcllist [dl_distance $xy1 $xy2]
     #              5.000000 7.000000
@@ -308,12 +308,9 @@ proc dl_remap { dl_tomap dl_oldval dl_newval } {
     #   Returns: new list with replaced values
     # 
     #   Example: 
-    #            % dl_local a [dl_ilist 0 1 2 3 0 1]
-    #            &a_121&
-    #            % dl_local old [dl_ilist 0 1 2 3]
-    #            &old_122&
-    #            % dl_local new [dl_slist zero one two three]
-    #            &new_123&
+    #            % set a [dl_ilist 0 1 2 3 0 1]
+    #            % set old [dl_ilist 0 1 2 3]
+    #            % set new [dl_slist zero one two three]
     #            % dl_tcllist [dl_remap $a $old $new]
     #            zero one two three zero one
     # %END%
@@ -355,10 +352,10 @@ proc dl_paste { dl1 dl2 args } {
     #   Returns: new list with concatenated values
     # 
     #   Example: 
-    #            % dl_local a [dl_ilist 0 1 2 3 0 1]
-    #            % dl_local b [dl_slist a b c d e f]
-    #            % dl_local c [dl_slist !]
-    #            % dl_local new [dl_paste $a $b $c]
+    #            % set a [dl_ilist 0 1 2 3 0 1]
+    #            % set b [dl_slist a b c d e f]
+    #            % set c [dl_slist !]
+    #            % set new [dl_paste $a $b $c]
     #            % dl_tcllist $new
     #            0a! 1b! 2c! 3d! 0e! 1f!
     # %END%

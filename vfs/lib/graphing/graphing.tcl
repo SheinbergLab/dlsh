@@ -699,8 +699,8 @@ namespace eval ::gr {
 	#       -ymax : maximum of yaxis [calculated from data]
 	#
 	#  EXAMPLE
-	#    dl_local v [dl_combine [dl_fromto 1 11] [dl_fromto 10 30 2] [dl_fromto 10 110 10]]
-	#    dl_local t [dl_repeat "0 5 20" 10]
+	#    set v [dl_combine [dl_fromto 1 11] [dl_fromto 10 30 2] [dl_fromto 10 110 10]]
+	#    set t [dl_repeat "0 5 20" 10]
 	#    ::gr::boxwhisker $v $t
 	#    ::gr::boxwhisker $v $t -boxmin 20 -boxmax 80 -plot_outliers 1 -veridical_x 1]
 	# %END%
@@ -933,8 +933,8 @@ namespace eval ::gr {
 	#       -ymax : maximum of yaxis [calculated from data]
 	#
 	#  EXAMPLE
-	#    dl_local v [dl_combine [dl_fromto 1 11] [dl_fromto 10 30 2] [dl_fromto 10 110 10]]
-	#    dl_local t [dl_repeat "0 5 20" 10]
+	#    set v [dl_combine [dl_fromto 1 11] [dl_fromto 10 30 2] [dl_fromto 10 110 10]]
+	#    set t [dl_repeat "0 5 20" 10]
 	#    ::gr::barchart $v $t
 	# %END%
 
@@ -1154,8 +1154,8 @@ namespace eval ::gr {
 	#       -ymax : maximum of yaxis [calculated from data]
 	#
 	#  EXAMPLE
-	#    dl_local v [dl_combine [dl_fromto 1 11] [dl_fromto 10 30 2] [dl_fromto 10 110 10]]
-	#    dl_local t [dl_repeat "0 5 20" 10]
+	#    set v [dl_combine [dl_fromto 1 11] [dl_fromto 10 30 2] [dl_fromto 10 110 10]]
+	#    set t [dl_repeat "0 5 20" 10]
 	#    ::gr::lineplot $v $t
 	# %END%
 
@@ -1383,8 +1383,8 @@ namespace eval ::gr {
 	#       -line : draw a dashed line under data. 'x=y', 'x=-y', 'lsfit' (using dl_lsfit), or 'none' [none] 
 	#
 	#  EXAMPLE
-	#    dl_local x [dl_zrand 20]
-	#    dl_local y [dl_zrand 20]
+	#    set x [dl_zrand 20]
+	#    set y [dl_zrand 20]
 	#    ::gr::xyscatter $x $y
 	# %END%
 
