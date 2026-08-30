@@ -828,12 +828,53 @@ static int tclScanList(ClientData data, Tcl_Interp * interp, int objc,
 		       Tcl_Obj * const objv[]);
 
 
+/* Interpreter teardown.
+ *
+ * This used to drop both hash tables without freeing what was in them, so
+ * every interpreter that went away leaked its remaining lists and ALL of its
+ * dyngroups.  Not a large leak per interpreter, but dserv gives each
+ * subprocess its own interpreter, and a dyngroup like stimdg is not small.
+ *
+ * Note what is and is not left here.  Tcl dismantles the global namespace
+ * before it clears assoc data, so every temp carrying a delete trace has
+ * already been freed by that trace; what survives to this point is precisely
+ * the things that never had one -- lists bound by name with dl_set, and every
+ * dyngroup, since dgTable entries are never traced.  So this frees orphans,
+ * not live data.
+ *
+ * dfuFreeDynList runs the refcount free hook, which detaches any outstanding
+ * handle, so a Tcl_Obj that somehow outlives its interpreter is left holding
+ * an inert handle rather than a dangling list.
+ */
+
 static void deleteDlFunc(ClientData clientData, Tcl_Interp *interp)
 {
   DLSHINFO *dlshinfo = (DLSHINFO *) clientData;
-  
+  Tcl_HashEntry *entryPtr;
+  Tcl_HashSearch search;
+
+  for (entryPtr = Tcl_FirstHashEntry(&dlshinfo->dlTable, &search);
+       entryPtr != NULL;
+       entryPtr = Tcl_NextHashEntry(&search)) {
+    DYN_LIST *dl = (DYN_LIST *) Tcl_GetHashValue(entryPtr);
+    if (dl) dfuFreeDynList(dl);
+  }
   Tcl_DeleteHashTable(&dlshinfo->dlTable);
+
+  for (entryPtr = Tcl_FirstHashEntry(&dlshinfo->dgTable, &search);
+       entryPtr != NULL;
+       entryPtr = Tcl_NextHashEntry(&search)) {
+    DYN_GROUP *dg = (DYN_GROUP *) Tcl_GetHashValue(entryPtr);
+    if (dg) dfuFreeDynGroup(dg);
+  }
   Tcl_DeleteHashTable(&dlshinfo->dgTable);
+
+  if (dlshinfo->TmpListStack) {
+    if (TMPLIST_TMPLISTS(dlshinfo->TmpListStack))
+      free(TMPLIST_TMPLISTS(dlshinfo->TmpListStack));
+    free(dlshinfo->TmpListStack);
+  }
+
   free(dlshinfo);
 }
 
@@ -893,8 +934,12 @@ int Dl_Init(Tcl_Interp *interp)
   
   dlshinfo->TmpListRecordList = NULL;
 
+  /* deleteDlFunc, not NULL: with no delete proc the assoc data was simply
+     abandoned when the interpreter went away, taking DLSHINFO and every list
+     and dyngroup still registered in it. The function existed all along; it
+     was just never wired up, so nothing ever ran at teardown. */
   Tcl_SetAssocData(interp, DLSH_ASSOC_DATA_KEY,
-		   NULL,
+		   (Tcl_InterpDeleteProc *) deleteDlFunc,
 		   (void *) dlshinfo);
 
   while (DLcommands[i].name) {
