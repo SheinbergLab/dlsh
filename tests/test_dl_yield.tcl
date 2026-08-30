@@ -90,8 +90,19 @@ set y_big [marginal s4 slot 50]
 set r_big [marginal r4 rslot 50]
 dl_delete ysrc
 
-check "dl_yield hand-off is O(1) in list length" \
-    [expr {$y_big < 10 * $y_small}] 1
+# Compare the two implementations AT THE SAME SIZE rather than one
+# implementation against itself at two sizes. Both are measured under
+# identical conditions, so a slow or throttled machine scales them together
+# and cancels out; an absolute bound on y_big/y_small does not, and failed
+# intermittently on CI (15x observed on a throttled runner against a 10x
+# bound) with no code change to explain it.
+check "promoting beats copying at 2e6 elements" \
+    [expr {$r_big > 5 * $y_big}] 1
+# Still assert yield does not scale, but loosely enough that only a real
+# copying regression trips it: the list grew 2000x between the two
+# measurements, and a copying implementation shows up as ~1000x here.
+check "dl_yield hand-off does not scale with length" \
+    [expr {$y_big < 100 * $y_small}] 1
 check "dl_return hand-off is O(length) (control)" \
     [expr {$r_big > 20 * $r_small}] 1
 puts [format "     (per frame: yield %.1f -> %.1f us, return %.1f -> %.1f us, 1e3 -> 2e6 elements)" \
