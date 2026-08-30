@@ -1,7 +1,7 @@
 package provide stimCompose 1.45
 
 namespace eval ::stimCompose {
-    load_Impro 
+    package require impro 
     set total_elements 64
     set total_textures 124
     set n_elements 4
@@ -73,7 +73,7 @@ namespace eval ::stimCompose {
 	if { $premult } { img_premultiplyAlpha $resultimage 128 128 128 }
 	dl_local result [img_img2list $resultimage]
 	img_delete $scaled_alpha $resultimage
-	dl_return $result
+	dl_yield $result
     }
 
     proc make_silhouette_from_dg { g id } {
@@ -133,7 +133,7 @@ namespace eval ::stimCompose {
 			 [dl_randchoose $ntextures 1]]
 	set scale 1.0
 	
-	dl_return [make_object $els $xoffs $yoffs $texture $scale $premult]
+	dl_yield [make_object $els $xoffs $yoffs $texture $scale $premult]
     }
 
     proc random_family { members } {

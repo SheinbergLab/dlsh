@@ -647,6 +647,14 @@ OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
     # ctest would also pick up tests registered by FetchContent dependencies
     # (zlib's `example`, libpng's suite), and a hardcoded -R list in the
     # workflow silently skips any test added here later.
+    # lib/ and vfs/lib/ are hand-kept duplicates of the Tcl library with no
+    # sync step, and vfs/ is the copy that ships -- so editing only lib/
+    # leaves the shipped tree stale and `use <proc>` keeps showing the old
+    # text. Cheap to check, and it has caught real drift.
+    add_test(NAME lib_vfs_sync
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-lib-sync.sh)
+    set_tests_properties(lib_vfs_sync PROPERTIES LABELS dlsh TIMEOUT 60)
+
     foreach(_name ${DLSH_INTERP_TESTS})
         set(_t ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_name}.tcl)
         if(EXISTS ${_t})
