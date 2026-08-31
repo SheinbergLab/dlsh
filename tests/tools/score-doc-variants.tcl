@@ -20,7 +20,10 @@ set variants_file [lindex $argv 0]
 source $variants_file
 catch {dl_srand 12345}
 
-proc canon {m args} { return [format %.6g $m] }
+# %f, six decimal places -- what dlsh printed when these were recorded.
+# Not %g: six SIGNIFICANT digits keeps a seventh decimal on a number
+# below 0.1, so 0.0366313 would fail to match the recorded 0.036631.
+proc canon {m args} { return [format %.6f $m] }
 
 # Floats are compared by value, not spelling. These transcripts were recorded
 # when dlsh printed 0.000000 where it now prints 0.0, and that difference is
