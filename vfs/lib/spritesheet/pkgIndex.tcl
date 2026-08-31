@@ -8,4 +8,11 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded spritesheet 1.0 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) spritesheet[info sharedlibextension]]]
+package ifneeded spritesheet 1.0 [list apply {{lib args} {
+    if {![file exists $lib]} {
+        return -code error "spritesheet: compiled library not present in this\
+ dlsh.zip -- no $::tcl_platform(os)/$::tcl_platform(machine) build of\
+ [file tail $lib] was packaged"
+    }
+    uplevel #0 [list load $lib {*}$args]
+}} [file join $dir $::tcl_platform(os) $::tcl_platform(machine) spritesheet[info sharedlibextension]]]

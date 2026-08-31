@@ -8,7 +8,14 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded curve 1.1 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libcurve[info sharedlibextension]]]\n[list source [file join $dir curve.tcl]]
+package ifneeded curve 1.1 [list apply {{lib args} {
+    if {![file exists $lib]} {
+        return -code error "curve: compiled library not present in this\
+ dlsh.zip -- no $::tcl_platform(os)/$::tcl_platform(machine) build of\
+ [file tail $lib] was packaged"
+    }
+    uplevel #0 [list load $lib {*}$args]
+}} [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libcurve[info sharedlibextension]]]\n[list source [file join $dir curve.tcl]]
 
 
 
