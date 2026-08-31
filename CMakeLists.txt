@@ -642,6 +642,7 @@ OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
         test_dl_refcount
         test_mp_sim_kinematics
         test_dg_concat
+        test_dg_names
         test_leak_dl_foreach
         test_reduction_accuracy)
     # Labelled `dlsh` so CI can run exactly these with `ctest -L dlsh`: a bare

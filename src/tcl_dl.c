@@ -2405,6 +2405,23 @@ static int tclDynListToString(ClientData data, Tcl_Interp * interp, int objc,
   return TCL_OK;
 }
 
+/* Is this one of the names dg_create generates, rather than one a person
+ * chose?  "group" followed by digits and nothing else.
+ */
+static int dlIsGeneratedGroupName(const char *s)
+{
+  const char *p;
+
+  if (strncmp(s, "group", 5)) return 0;
+  p = s + 5;
+  if (!*p) return 0;                    /* bare "group" is a chosen name */
+  while (*p) {
+    if (*p < '0' || *p > '9') return 0;
+    p++;
+  }
+  return 1;
+}
+
 static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp, 
 				 int objc, Tcl_Obj * const objv[])
 {
@@ -2494,7 +2511,25 @@ static int tclDynGroupFromString(ClientData cdata, Tcl_Interp * interp,
   
   Tcl_MutexUnlock(&dgBufferMutex);
   
+  /* Decide what this group is called here.
+   *
+   * A groupNNN name came from whatever counter the sending interpreter
+   * happened to be on; it identifies nothing on this side, and two unrelated
+   * groups can easily both be group7 and silently replace one another. Give
+   * it a local name instead -- callers are expected to keep what
+   * dg_fromString returns rather than the name inside the blob.
+   *
+   * A name a person chose (stimdg, trialdg) IS an identity: code refers to it
+   * by name, and restoring over it to replace the old contents is the point.
+   * Those are kept. An explicit target name still wins over both.
+   */
   if (newname) strncpy(DYN_GROUP_NAME(dg), newname, DYN_GROUP_NAME_SIZE-1);
+  else if (dlIsGeneratedGroupName(DYN_GROUP_NAME(dg))) {
+    char local[64];
+    dlNextGroupName(dlinfo, local, sizeof(local));
+    strncpy(DYN_GROUP_NAME(dg), local, DYN_GROUP_NAME_SIZE-1);
+    DYN_GROUP_NAME(dg)[DYN_GROUP_NAME_SIZE-1] = 0;
+  }
   if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dgTable, DYN_GROUP_NAME(dg)))) {
     DYN_GROUP *dgold;
     if ((dgold = Tcl_GetHashValue(entryPtr))) {

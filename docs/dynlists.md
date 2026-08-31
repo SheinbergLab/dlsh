@@ -158,6 +158,45 @@ returns; they live until `dl_delete`. That is what you want for something
 long-lived like a dyngroup column, and not what you want for a scratch value
 — use `set` for those.
 
+## Generated names are not identities
+
+`%listN%`, `>N<` and `groupN` are generated from counters. They are unique
+within an interpreter and mean nothing outside it, so do not store one as
+text and do not send one anywhere expecting it to still refer to the same
+thing. Keep the handle a command gives you.
+
+Two consequences worth knowing.
+
+**A generated name is never handed out twice.** The counters do not restart —
+not on `dl_clean`, not on `dg_clean`. A name whose list has been freed simply
+stops resolving:
+
+```tcl
+set n %list0%               ;# don't do this, but if you did
+dl_clean
+dl_length $n                ;# error, not somebody else's list
+```
+
+Before this, the counter restarted and `%list0%` came round again, so that
+last line quietly returned the length of an unrelated list.
+
+**A group arrives under a local name.** `dg_toString` records whatever the
+group was called where it was made. `dg_fromString` treats the two kinds of
+name differently:
+
+```tcl
+set g [dg_fromString $blob]      ;# a groupN blob -> renamed locally; keep $g
+dg_fromString $blob              ;# a "stimdg" blob -> still stimdg
+dg_fromString $blob mycopy       ;# an explicit name always wins
+```
+
+A `groupN` came from the sending interpreter's counter and identifies nothing
+here — two unrelated groups can easily both be `group7` — so it is renamed on
+arrival and you use the returned name. A name a person chose is an identity:
+code refers to `stimdg` by name, and restoring over it to replace the
+contents is the point, so it survives the trip. That also means restoring a
+named group repeatedly replaces it in place rather than accumulating copies.
+
 ## Things that surprise people
 
 **`unset` does not free the list.**
