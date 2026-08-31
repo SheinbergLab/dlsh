@@ -86,6 +86,13 @@ proc run_one {slug ns code} {
         }
         incr ran
         if {[catch {uplevel #0 $cmd} got]} {
+            # A transcript can legitimately record a failure -- dl_clean and
+            # dl_local demonstrate what happens when a swept list is used
+            # again, and the error IS the point. If the message is what was
+            # recorded, that is a match, not a failure.
+            if {[norm $got] eq [norm $expected] && [string trim $expected] ne ""} {
+                continue
+            }
             lappend errs [list $cmd $got]
             break
         }
