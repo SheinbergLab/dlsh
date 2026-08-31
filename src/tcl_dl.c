@@ -980,6 +980,64 @@ static DL_OBJWRAP dlWrapSet   = { (Tcl_CmdProc *) tclSetDynList, NULL };
 static DL_OBJWRAP dlWrapDgAdd = { (Tcl_CmdProc *) tclAddExistingListDynGroup,
 				  (ClientData) DG_MOVE };
 
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    dlHandleResultObjCmd
+ *
+ * DESCRIPTION
+ *    Obj-command wrapper for dl_return and dl_yield: run the original
+ * implementation, then hand its ">#<" name back as a refcounted handle
+ * object instead of a bare string.
+ *
+ *    Without this the wrapper above cannot read a returned list at all. A
+ * value that arrives as a plain string fails dlRefObjIsHandle, so
+ * absorbMayMove is false for every ">#<" no matter where it came from, and
+ * the two cases that matter are again indistinguishable:
+ *
+ *      dl_set g:c [mk]                  may  MOVE  (nothing else holds it)
+ *      set r [mk] ; dl_set g:c $r       must COPY  ($r lives on)
+ *
+ * With a handle object the ordinary shared/unshared test separates them, the
+ * same way it already does for %#% temporaries.
+ *
+ *    The result is upgraded whatever the return code, because dl_yield exits
+ * through TCL_RETURN rather than TCL_OK -- it sets return options so the
+ * enclosing proc returns -- and its list needs a handle just as much.  If the
+ * result does not name a list in the table (an error, say) it is left alone.
+ *
+ *****************************************************************************/
+
+static int dlHandleResultObjCmd(ClientData data, Tcl_Interp *interp,
+				int objc, Tcl_Obj *const objv[])
+{
+  DL_OBJWRAP *w = (DL_OBJWRAP *) data;
+  Tcl_HashEntry *entryPtr;
+  const char **argv;
+  int i, result;
+  DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
+
+  argv = (const char **) Tcl_Alloc((objc + 1) * sizeof(char *));
+  for (i = 0; i < objc; i++) argv[i] = Tcl_GetString(objv[i]);
+  argv[objc] = NULL;
+  result = w->proc(w->cd, interp, objc, (char **) argv);
+  Tcl_Free((void *) argv);
+
+  if (dlinfo) {
+    const char *name = Tcl_GetStringResult(interp);
+    if (name && *name &&
+	(entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, name))) {
+      DYN_LIST *dl = Tcl_GetHashValue(entryPtr);
+      if (dl) dlRefSetObjResult(interp, dl);
+    }
+  }
+  return result;
+}
+
+static DL_OBJWRAP dlWrapLocal  = { (Tcl_CmdProc *) tclLocalDynList, NULL };
+static DL_OBJWRAP dlWrapReturn = { (Tcl_CmdProc *) tclReturnDynList, NULL };
+static DL_OBJWRAP dlWrapYield  = { (Tcl_CmdProc *) tclYieldDynList, NULL };
+
 int Dl_Init(Tcl_Interp *interp)
 {
   char *startup_dir, startup_dirbuf[128];
@@ -1044,6 +1102,17 @@ int Dl_Init(Tcl_Interp *interp)
 		       (ClientData) &dlWrapSet, NULL);
   Tcl_CreateObjCommand(interp, "dg_addExistingList", dlSharedAwareObjCmd,
 		       (ClientData) &dlWrapDgAdd, NULL);
+
+  Tcl_CreateObjCommand(interp, "dl_local", dlSharedAwareObjCmd,
+		       (ClientData) &dlWrapLocal, NULL);
+
+  /* dl_return and dl_yield hand back a list for the caller to take, so their
+     result has to be a handle object rather than a name -- see
+     dlHandleResultObjCmd.  The table entries above stay for dl_help. */
+  Tcl_CreateObjCommand(interp, "dl_return", dlHandleResultObjCmd,
+		       (ClientData) &dlWrapReturn, NULL);
+  Tcl_CreateObjCommand(interp, "dl_yield", dlHandleResultObjCmd,
+		       (ClientData) &dlWrapYield, NULL);
 
   /* Add the two objectified commands */
   Tcl_CreateObjCommand(interp, "dl_dotimes", tclDoTimes, NULL, NULL);
@@ -4088,19 +4157,13 @@ static int tclSetDynList (ClientData data, Tcl_Interp *interp,
      so without the check `set x [...]; dl_set g:col:0 $x` renames x's list
      into the group and leaves x naming a list it no longer owns -- silently,
      exactly as the group branch above did before it was fixed. */
-  /* The check applies to %listN% only, not to >N< return lists. A %listN%
-     may be what a plain `set` is holding, so moving it can strand the
-     variable -- that is the bug this guards. A >N< is what dl_return/dl_yield
-     hand up to be consumed, and nothing else can be holding it: dl_yield is
-     still a string command, so its result reaches us as a bare name rather
-     than a refcounted handle and absorbMayMove is always false for it.
-     Guarding it too would copy on every iteration and strand the original --
-     2000 retained lists over a 2000-iteration `dl_set $g:col [someproc]`
-     loop, since after the first pass the column exists and assignment comes
-     through here. Convert dl_return/dl_yield to Obj commands and this can
-     become a plain absorbMayMove test like the others. */
-  if (((DYN_LIST_NAME(dl)[0] == '>') ||
-       (DYN_LIST_NAME(dl)[0] == '%' && dlinfo->absorbMayMove)) &&
+  /* Same ownership rule as the group branch above and as dg_addExistingList.
+     This covers >N< return lists as well as %listN% temporaries: now that
+     dl_return and dl_yield hand back handle objects, an inline [someproc] is
+     unshared and still moves, while one a variable is holding is shared and
+     gets copied. */
+  if ((DYN_LIST_NAME(dl)[0] == '%' || DYN_LIST_NAME(dl)[0] == '>') &&
+      dlinfo->absorbMayMove &&
       (entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, DYN_LIST_NAME(dl))) &&
       !(DYN_LIST_FLAGS(dl) & DL_SUBLIST)) {
     char movedfrom[DYN_LIST_NAME_SIZE];
@@ -4364,15 +4427,11 @@ static int tclLocalDynList (ClientData data, Tcl_Interp *interp,
   /*    groups and must be copied)                         */
   /* Return lists (>#<) can also be renamed                */
 
-  /* NOT gated on absorbMayMove, unlike dl_set and dg_addExistingList. That
-     was tried: it does stop `dl_local y $x` from renaming a set-bound list
-     out from under x, but inside a proc the inline argument's object is
-     shared, so every `dl_local t [dl_ilist ...]` copies and strands the
-     original -- 2000 retained lists over a 2000-iteration loop, in exactly
-     the pattern the docs recommend. The real fix is for dl_return/dl_yield
-     to hand back a refcounted handle so an inline result can be told from a
-     variable's; until then dl_local keeps moving. */
+  /* Same ownership rule as dl_set: an inline argument is unshared and moves,
+     one a variable is holding is shared and gets copied, so `dl_local y $x`
+     no longer renames x's list out from under x. */
   if ((DYN_LIST_NAME(dl)[0] == '%' || DYN_LIST_NAME(dl)[0] == '>') &&
+      dlinfo->absorbMayMove &&
       (entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, DYN_LIST_NAME(dl))) &&
       !(DYN_LIST_FLAGS(dl) & DL_SUBLIST)) {
     Tcl_DeleteHashEntry(entryPtr);

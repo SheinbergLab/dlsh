@@ -56,10 +56,14 @@ proc l3 {} { dl_yield [l2] }
 proc l4 {} { dl_yield [l3] }
 check "4-deep pass-through" [dl_tcllist [l4]] {0 1 2 3 4}
 
-# the same shape dangles under dl_return, which is why the re-wrap was needed
+# This shape used to dangle one frame up, which is why dl_yield re-wraps. It
+# no longer does: dl_return hands back a handle object now, and that object
+# reference keeps the list alive when the frame trace fires, exactly as it
+# does for a list held by a plain `set`. The re-wrap is still the clearer
+# thing to write, but forgetting it no longer costs the list.
 proc d1 {} { return [dl_return [dl_fromto 0 5]] }
 proc d2 {} { return [d1] }
-check "dl_return dangles one frame up" [catch {dl_tcllist [d2]}] 1
+check "dl_return survives one frame up" [dl_tcllist [d2]] {0 1 2 3 4}
 
 proc slot {} { dl_yield [dl_add ysrc 0] }
 proc s2 {} { dl_yield [slot] }
