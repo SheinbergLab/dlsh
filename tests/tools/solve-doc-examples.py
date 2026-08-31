@@ -47,11 +47,18 @@ HAND = {
     'dlg_disjointLines': (['x', 'y'], 'the only two lists in scope'),
 }
 
+# Output text too garbled for the deletion pattern to explain, repaired
+# literally. dl_append returns the appended sublist, which a live run prints
+# as `&b_2&:1`; the transcript has the `b` displaced out of the token.
+TEXT = {
+    'dl_llist': [('&_1&b:1', '&b_1&:1')],
+}
+
 CMD = re.compile(r'^[ \t]*%[ \t]+(\S.*)$', re.M)
 DECL = [re.compile(r'\bdl_local\s+([A-Za-z_][A-Za-z0-9_]*)'),
         re.compile(r'\bset\s+([A-Za-z_][A-Za-z0-9_]*)'),
         re.compile(r'\b(?:foreach|dl_foreach|dl_dotimes)\s+([A-Za-z_][A-Za-z0-9_]*)')]
-BARE = re.compile(r'\$(?![A-Za-z0-9_{:])')
+BARE = re.compile(r'\$(?!::|[A-Za-z0-9_{])')   # `$:1` counts: it is `$b:1`
 
 
 def declared(code):
@@ -197,6 +204,8 @@ for xid, slug, ns, code, cands, vs in work:
             combo = tuple(names)
             text = BARE.sub(lambda mm: '$' + next(it), code)
             handed.append((slug, combo, why))
+            for old, new in TEXT.get(slug, []):
+                text = text.replace(old, new)
         else:
             unsolved.append((slug, len(vs), m, c,
                              'tie' if rivals else 'nothing matched'))
@@ -209,6 +218,8 @@ for xid, slug, ns, code, cands, vs in work:
                   if m.group(1) in nm else m.group(0), text)
     if slug not in [h[0] for h in handed]:
         solved.append((slug, combo, m, c))
+    for old, new in TEXT.get(slug, []):
+        text = text.replace(old, new)
     updates.append((xid, text))
 
 print('  decided by matching recorded output     : %d' % len(solved))

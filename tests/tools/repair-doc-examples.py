@@ -208,7 +208,7 @@ def repair(code, infer=False):
         # &name_N& return tokens appear on output lines; $refs on both
         ln = deLatex(ln)
         ln = re.sub(r'&([A-Za-z0-9_]*?)_([0-9]+)&', sub_amp, ln)
-        ln = re.sub(r'\$([A-Za-z0-9_]*)', sub_dollar, ln)
+        ln = re.sub(r'\$(?!::)([A-Za-z0-9_]*)', sub_dollar, ln)   # $::pi is intact
         out.append(ln)
 
     return '\n'.join(out), fixed, inferred, unresolved
