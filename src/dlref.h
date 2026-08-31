@@ -43,6 +43,9 @@ int dlRefCount(Tcl_Interp *interp, DYN_LIST *dl);
    rather than freeing it.  Cheap: one load and one store. */
 void dlRefNoteUse(DYN_LIST *dl);
 
+/* Is this Tcl_Obj one of our dynlist handles (vs a bare name string)? */
+int dlRefObjIsHandle(Tcl_Obj *objPtr);
+
 /* Provided by tcl_dl.c (it owns the delete trace). Give dl an ordinary
    frame claim in the CURRENT frame -- the same hidden variable plus unset
    trace that tclPutList installs on a freshly made temp -- so the list lives

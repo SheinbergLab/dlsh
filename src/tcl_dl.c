@@ -212,6 +212,7 @@ static int tclDeleteTraceDynList      (ClientData, Tcl_Interp *, int, char **);
 static int tclRenameDynList           (ClientData, Tcl_Interp *, int, char **);
 static int tclResetDynList            (ClientData, Tcl_Interp *, int, char **);
 static int tclCopyDynList             (ClientData, Tcl_Interp *, int, char **);
+static void dlReleaseHiddenVar        (Tcl_Interp *interp, const char *name);
 static int tclCleanDynList            (ClientData, Tcl_Interp *, int, char **);
 static int tclPushTmpList             (ClientData, Tcl_Interp *, int, char **);
 static int tclPopTmpList              (ClientData, Tcl_Interp *, int, char **);
@@ -918,6 +919,67 @@ static void deleteDlFunc(ClientData clientData, Tcl_Interp *interp)
  *
  *****************************************************************************/
 
+
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    dlSharedAwareObjCmd
+ *
+ * DESCRIPTION
+ *    Obj-command wrapper for dl_set and dg_addExistingList.
+ *
+ *    Both may absorb a list into a dyngroup, and absorbing by MOVE steals the
+ * list from anyone else holding it.  Deciding move-vs-copy from the list's
+ * refcount does not work: these two cases are indistinguishable by count,
+ * because each is exactly one reference --
+ *
+ *      set x [dl_fromto 0 5] ; dl_set g:c $x    must COPY  ($x lives on)
+ *      dl_set g:c [dl_fromto 0 5]               may  MOVE  (nothing else holds it)
+ *
+ * -- but they are trivially distinguishable at the Tcl_Obj level: a value
+ * sitting in a variable is SHARED (the variable holds a reference and the
+ * argument vector another), while a transient command result is not.  The
+ * string-command interface throws that away, hence this thin wrapper: it
+ * records the answer, then delegates to the original implementation.
+ *
+ *    Requiring a handle object as well as unshared-ness keeps a literal name
+ * typed by the user ("dl_set g:c %list3%") on the copy path, since that
+ * object is a plain string and something else may well hold the list.
+ *
+ *****************************************************************************/
+
+typedef struct {
+  Tcl_CmdProc *proc;
+  ClientData cd;
+} DL_OBJWRAP;
+
+static int dlSharedAwareObjCmd(ClientData data, Tcl_Interp *interp,
+			       int objc, Tcl_Obj *const objv[])
+{
+  DL_OBJWRAP *w = (DL_OBJWRAP *) data;
+  const char **argv;
+  int i, result;
+  DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
+
+  if (dlinfo) {
+    dlinfo->absorbMayMove =
+      (objc > 2 && !Tcl_IsShared(objv[2]) && dlRefObjIsHandle(objv[2]));
+  }
+
+  argv = (const char **) Tcl_Alloc((objc + 1) * sizeof(char *));
+  for (i = 0; i < objc; i++) argv[i] = Tcl_GetString(objv[i]);
+  argv[objc] = NULL;
+  result = w->proc(w->cd, interp, objc, (char **) argv);
+  Tcl_Free((void *) argv);
+
+  if (dlinfo) dlinfo->absorbMayMove = 0;   /* default to the safe side */
+  return result;
+}
+
+static DL_OBJWRAP dlWrapSet   = { (Tcl_CmdProc *) tclSetDynList, NULL };
+static DL_OBJWRAP dlWrapDgAdd = { (Tcl_CmdProc *) tclAddExistingListDynGroup,
+				  (ClientData) DG_MOVE };
+
 int Dl_Init(Tcl_Interp *interp)
 {
   char *startup_dir, startup_dirbuf[128];
@@ -974,6 +1036,14 @@ int Dl_Init(Tcl_Interp *interp)
 		      (Tcl_CmdDeleteProc *) NULL);
     i++;
   }
+
+  /* dl_set and dg_addExistingList need to see their value argument as a
+     Tcl_Obj to decide whether it may be moved into a group -- see
+     dlSharedAwareObjCmd.  Registered after the table so these win. */
+  Tcl_CreateObjCommand(interp, "dl_set", dlSharedAwareObjCmd,
+		       (ClientData) &dlWrapSet, NULL);
+  Tcl_CreateObjCommand(interp, "dg_addExistingList", dlSharedAwareObjCmd,
+		       (ClientData) &dlWrapDgAdd, NULL);
 
   /* Add the two objectified commands */
   Tcl_CreateObjCommand(interp, "dl_dotimes", tclDoTimes, NULL, NULL);
@@ -2936,7 +3006,20 @@ static int tclAddExistingListDynGroup (ClientData data, Tcl_Interp *interp,
   case DG_MOVE:
     if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, oldname))) {
       dl = Tcl_GetHashValue(entryPtr);
+      /* Moving steals the list from whoever else holds it. That was safe
+         when a %listN% temp had exactly one owner -- its hidden variable --
+         but a refcounted handle is a real second owner, so `set x [...]`
+         followed by dg_addExistingList would leave x naming a list the
+         group had taken. Copy when anything still refers to it. */
+      if (!dlinfo->absorbMayMove) {
+        dfuCopyDynGroupExistingList(dg, newname, dl);
+        Tcl_AppendResult(interp, argv[1], ":", newname, (char *) NULL);
+        return TCL_OK;
+      }
       Tcl_DeleteHashEntry(entryPtr);
+      /* the hidden variable goes with the list, or its delete trace is
+         orphaned and fires on a name that may later be recycled */
+      dlReleaseHiddenVar(interp, oldname);
     }
     else {
       char *colon;
@@ -3539,6 +3622,11 @@ static int tclCreateDynList (ClientData data, Tcl_Interp *interp,
 
   /* NEW!!! */
   /* Add a local variable that will, when the current proc exits, free list */
+  /* The name may have been used before -- dl_clean resets the counter -- so
+     drop any leftover variable/trace first, or Tcl_SetVar fires a stale
+     delete trace and destroys the list we just made.  Only possible once the
+     counter has been reset, and this is the hot path, so gate on that. */
+  if (dlinfo->namesRecycled) dlReleaseHiddenVar(interp, listname);
   Tcl_SetVar(interp, listname, listname, 0);
   Tcl_TraceVar(interp, listname, 
 	       TCL_TRACE_WRITES | TCL_TRACE_UNSETS, 
@@ -3556,6 +3644,45 @@ static int tclCreateDynList (ClientData data, Tcl_Interp *interp,
 
   dlRefSetObjResult(interp, dl);
   return TCL_OK;
+}
+
+
+/*****************************************************************************
+ *
+ * FUNCTION
+ *    dlReleaseHiddenVar
+ *
+ * DESCRIPTION
+ *    Drop the hidden "%listN%" variable and delete trace that tclPutList
+ * installs to own a temp, without letting the trace fire.
+ *
+ *    Two places need this.  When a dyngroup absorbs a list the list leaves
+ * dlTable, but its variable and trace were being left behind; the trace then
+ * fires on a name that no longer resolves, and -- because dl_clean resets the
+ * name counter -- a LATER list can be handed that same name, at which point
+ * Tcl_SetVar trips the stale write trace and deletes the list that was just
+ * created.  And tclPutList itself can be handed a recycled name, so it clears
+ * any leftover first: dl_yield deliberately leaves a name behind on the
+ * assumption the trace fires harmlessly at frame exit, which is true inside a
+ * proc and false at the global scope, where the frame never exits.
+ *
+ *****************************************************************************/
+
+static void dlReleaseHiddenVar(Tcl_Interp *interp, const char *name)
+{
+  ClientData cd;
+
+  if (!Tcl_GetVar(interp, (char *) name, 0)) return;
+
+  /* Remove the trace before unsetting, or unsetting fires it. */
+  while ((cd = Tcl_VarTraceInfo(interp, (char *) name, 0,
+				(Tcl_VarTraceProc *) tclDeleteLocalDynList,
+				NULL))) {
+    Tcl_UntraceVar(interp, (char *) name, TCL_TRACE_WRITES | TCL_TRACE_UNSETS,
+		   (Tcl_VarTraceProc *) tclDeleteLocalDynList, cd);
+    if (cd) free(cd);
+  }
+  Tcl_UnsetVar(interp, (char *) name, 0);
 }
 
 int tclPutList(Tcl_Interp *interp, DYN_LIST *dl) 
@@ -3592,6 +3719,11 @@ int tclPutList(Tcl_Interp *interp, DYN_LIST *dl)
 
   /* NEW!!! */
   /* Add a local variable that will, when the current proc exits, free list */
+  /* The name may have been used before -- dl_clean resets the counter -- so
+     drop any leftover variable/trace first, or Tcl_SetVar fires a stale
+     delete trace and destroys the list we just made.  Only possible once the
+     counter has been reset, and this is the hot path, so gate on that. */
+  if (dlinfo->namesRecycled) dlReleaseHiddenVar(interp, listname);
   Tcl_SetVar(interp, listname, listname, 0);
   Tcl_TraceVar(interp, listname, TCL_TRACE_WRITES | TCL_TRACE_UNSETS,
 	       (Tcl_VarTraceProc *) tclDeleteLocalDynList,
@@ -3772,7 +3904,10 @@ static int tclCleanDynList (ClientData data, Tcl_Interp *interp,
   }
 
   /* reset the respective counter */
-  if (mode == DL_CLEAN_TEMPS) dlinfo->dlCount = 0;
+  if (mode == DL_CLEAN_TEMPS) {
+    dlinfo->dlCount = 0;
+    dlinfo->namesRecycled = 1;	/* names can collide from here on */
+  }
   else if (mode == DL_CLEAN_RETS) dlinfo->returnCount = 0;
 
   return TCL_OK;
@@ -3895,11 +4030,21 @@ static int tclSetDynList (ClientData data, Tcl_Interp *interp,
       if (tclFindDynList(interp, newname, &newdl) != TCL_OK ||
 	  !(DYN_LIST_FLAGS(newdl) & DL_SUBLIST)) { 
 	Tcl_ResetResult(interp);
+	/* Same rule as dg_addExistingList: only steal a temp nothing else
+	   refers to. This used to be decided by the name prefix alone, so a
+	   %listN% was always moved and a &name& always copied -- which is
+	   why the dl_local style preserved the source and the set style did
+	   not. */
 	if ((DYN_LIST_NAME(dl)[0] == '%' || DYN_LIST_NAME(dl)[0] == '>') &&
+	    dlinfo->absorbMayMove &&
 	    (entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, DYN_LIST_NAME(dl))) &&
 	    !(DYN_LIST_FLAGS(dl) & DL_SUBLIST)) {
+	  char movedfrom[DYN_LIST_NAME_SIZE];
+	  strncpy(movedfrom, DYN_LIST_NAME(dl), DYN_LIST_NAME_SIZE-1);
+	  movedfrom[DYN_LIST_NAME_SIZE-1] = 0;
 	  Tcl_DeleteHashEntry(entryPtr);
-	  
+	  dlReleaseHiddenVar(interp, movedfrom);
+
 	  strncpy(DYN_LIST_NAME(dl), colon+1, DYN_LIST_NAME_SIZE-1);
 	  dfuAddDynGroupExistingList(dg, DYN_LIST_NAME(dl), dl);
 	}

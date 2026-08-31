@@ -369,6 +369,13 @@ int dlRefFrameRelease(Tcl_Interp *interp, DYN_LIST *dl)
   return 1;
 }
 
+/* True when objPtr is one of our handle objects rather than, say, a literal
+   name typed by the user. Used to decide whether a value may be moved. */
+int dlRefObjIsHandle(Tcl_Obj *objPtr)
+{
+  return Tcl_FetchInternalRep(objPtr, &dlRefObjType) != NULL;
+}
+
 void dlRefNoteUse(DYN_LIST *dl)
 {
   DL_REF *ref = dlRefFind(dl);

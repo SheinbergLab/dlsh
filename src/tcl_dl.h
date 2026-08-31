@@ -59,6 +59,19 @@ typedef struct _dlshinfo {
   /*
    * for managing temporary list storage
    */
+  /* Set by the Obj wrappers for dl_set / dg_addExistingList: may the value
+     argument be moved into a dyngroup, or must it be copied because someone
+     else still holds it?  A value living in a variable is shared; a transient
+     command result is not.  The list's own refcount cannot tell these apart,
+     because both look like exactly one reference. */
+  int absorbMayMove;
+
+  /* Set once dl_clean has reset the name counter, after which a generated
+     name can collide with a leftover hidden variable.  Until then names are
+     unique and list creation can skip the check entirely -- it is on the
+     hot path. */
+  int namesRecycled;
+
   TMPLIST_STACK *TmpListStack;
   DYN_LIST *TmpListRecordList;
     
