@@ -12,6 +12,7 @@
  ****************************************************************************/
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #ifndef WIN32
 #include <unistd.h>
@@ -67,6 +68,7 @@ extern json_t *dg_to_hybrid_json(DYN_GROUP *dg);
 /*
  * Callback function for deleted temporary lists 
  */
+static int dlNextId(DLSHINFO *dlinfo, int *counter);
 static char *tclDeleteLocalDynList(ClientData clientData, Tcl_Interp *interp,
 				   char *name1, char *name2, int flags);
 
@@ -3669,8 +3671,12 @@ static int tclCreateDynList (ClientData data, Tcl_Interp *interp,
   /* One of two places new temporary lists are created */
   /*   also see tclPutList, which converts an existing */
   /*   dynlist into a dynlist for dlsh...              */
-  if (dlinfo->TmpListRecordList) dfuAddDynListLong(dlinfo->TmpListRecordList, dlinfo->dlCount);
-  sprintf(listname, "%%list%d%%", dlinfo->dlCount++);
+  {
+    int id = dlNextId(dlinfo, &dlinfo->dlCount);
+    if (dlinfo->TmpListRecordList)
+      dfuAddDynListLong(dlinfo->TmpListRecordList, id);
+    sprintf(listname, "%%list%d%%", id);
+  }
 
   if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, listname))) {
     Tcl_AppendResult(interp,
@@ -3754,6 +3760,33 @@ static void dlReleaseHiddenVar(Tcl_Interp *interp, const char *name)
   Tcl_UnsetVar(interp, (char *) name, 0);
 }
 
+/* Next id for a generated list name.
+ *
+ * These counters used to restart at 0 on dl_clean, which made names come
+ * round again -- and a name that comes round again can be resolved to the
+ * WRONG list.  Anything holding "%list0%" as a string across a dl_clean
+ * silently reads whatever list is called that now:
+ *
+ *     set n %list0% ... dl_clean ... dl_length $n   -> a different list
+ *
+ * Never reusing a name turns that into an honest "not found".  It also
+ * retires the leftover-hidden-variable hazard the reset created, where a
+ * regenerated name could fire a stale delete trace on the list just made.
+ *
+ * The counter stays an int: DLSHINFO's layout is fixed because pkgs/adf
+ * reads it and ships as its own binary in dlsh.zip.  So on the vanishingly
+ * unlikely wrap -- 2^31 lists in one interpreter -- restart rather than emit
+ * a negative name, and re-arm the leftover check for that case.
+ */
+static int dlNextId(DLSHINFO *dlinfo, int *counter)
+{
+  if (*counter == INT_MAX) {
+    *counter = 0;
+    dlinfo->namesRecycled = 1;
+  }
+  return (*counter)++;
+}
+
 int tclPutList(Tcl_Interp *interp, DYN_LIST *dl) 
 {
   Tcl_HashEntry *entryPtr;
@@ -3763,8 +3796,12 @@ int tclPutList(Tcl_Interp *interp, DYN_LIST *dl)
   DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
   if (!dlinfo) return TCL_ERROR;
 
-  if (dlinfo->TmpListRecordList) dfuAddDynListLong(dlinfo->TmpListRecordList, dlinfo->dlCount);
-  sprintf(listname, "%%list%d%%", dlinfo->dlCount++);
+  {
+    int id = dlNextId(dlinfo, &dlinfo->dlCount);
+    if (dlinfo->TmpListRecordList)
+      dfuAddDynListLong(dlinfo->TmpListRecordList, id);
+    sprintf(listname, "%%list%d%%", id);
+  }
 
   if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, listname))) {
     Tcl_AppendResult(interp, "dl_create: list ",
@@ -3972,12 +4009,8 @@ static int tclCleanDynList (ClientData data, Tcl_Interp *interp,
     }
   }
 
-  /* reset the respective counter */
-  if (mode == DL_CLEAN_TEMPS) {
-    dlinfo->dlCount = 0;
-    dlinfo->namesRecycled = 1;	/* names can collide from here on */
-  }
-  else if (mode == DL_CLEAN_RETS) dlinfo->returnCount = 0;
+  /* The counters deliberately keep going: restarting them made a freed name
+     resolvable to a different list, silently.  See dlNextId. */
 
   return TCL_OK;
 }
@@ -4420,7 +4453,7 @@ static int tclLocalDynList (ClientData data, Tcl_Interp *interp,
       Tcl_UnsetVar(interp, varname, 0);
   }
 
-  sprintf(newname, "&%s_%d&", varname, dlinfo->localCount++);
+  sprintf(newname, "&%s_%d&", varname, dlNextId(dlinfo, &dlinfo->localCount));
 
   /* A temporary list that's in the dlTable can be renamed */
   /*   (temporary lists not in the dlTable are elements of */
@@ -4529,7 +4562,7 @@ static int dlMakeReturnList (Tcl_Interp *interp, char *name, int mayConsume,
   if (tclFindDynList(interp, name, &dl) != TCL_OK)
     return TCL_ERROR;
 
-  snprintf(newname, newnamesz, ">%d<", dlinfo->returnCount++);
+  snprintf(newname, newnamesz, ">%d<", dlNextId(dlinfo, &dlinfo->returnCount));
 
   /* A temporary list that's in the dlTable can be renamed */
   /*   (temporary lists not in the dlTable are elements of */
@@ -4726,7 +4759,7 @@ static int tclYieldDynList (ClientData data, Tcl_Interp *interp,
     /* frame.  The old name's variable and trace stay behind and fire on  */
     /* frame exit, at which point the delete trace finds no list of that  */
     /* name and does nothing.                                            */
-    snprintf(name, sizeof(name), ">%d<", dlinfo->returnCount++);
+    snprintf(name, sizeof(name), ">%d<", dlNextId(dlinfo, &dlinfo->returnCount));
     Tcl_DeleteHashEntry(entryPtr);
     strncpy(DYN_LIST_NAME(dl), name, DYN_LIST_NAME_SIZE-1);
     entryPtr = Tcl_CreateHashEntry(&dlinfo->dlTable, name, &newentry);
