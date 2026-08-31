@@ -69,6 +69,7 @@ extern json_t *dg_to_hybrid_json(DYN_GROUP *dg);
  * Callback function for deleted temporary lists 
  */
 static int dlNextId(DLSHINFO *dlinfo, int *counter);
+static void dlNextGroupName(DLSHINFO *dlinfo, char *out, size_t outsz);
 static char *tclDeleteLocalDynList(ClientData clientData, Tcl_Interp *interp,
 				   char *name1, char *name2, int flags);
 
@@ -1367,7 +1368,7 @@ static int tclCreateDynGroup (ClientData data, Tcl_Interp *interp,
     strncpy(groupname, argv[1], 63);
     dlinfo->dgCount++;
   }
-  else sprintf(groupname, "group%d", dlinfo->dgCount++);
+  else dlNextGroupName(dlinfo, groupname, sizeof(groupname));
 
   if (argc > 2) {
     if (Tcl_GetInt(interp, argv[2], &increment) != TCL_OK) {
@@ -1384,6 +1385,27 @@ static int tclCreateDynGroup (ClientData data, Tcl_Interp *interp,
   return (tclPutGroup(interp, dg));
 }
 
+/* Next unused generated group name.
+ *
+ * Group names are not private the way %listN% is: dg_fromString restores a
+ * group under the name it was serialized with, and that name came from some
+ * other interpreter's counter. Restore a group called group7 into a fresh
+ * interpreter and the eighth dg_create fails outright --
+ * "tclPutGroup: group group7 already exists" -- because the generated name
+ * had already been decided before anyone checked whether it was free.
+ *
+ * So skip names that are taken. As with the list counters, the count is not
+ * restarted by dg_clean, so a freed name does not come round again and a
+ * stale reference to one fails instead of finding a different group.
+ */
+static void dlNextGroupName(DLSHINFO *dlinfo, char *out, size_t outsz)
+{
+  do {
+    if (dlinfo->dgCount == INT_MAX) dlinfo->dgCount = 0;
+    snprintf(out, outsz, "group%d", dlinfo->dgCount++);
+  } while (Tcl_FindHashEntry(&dlinfo->dgTable, out));
+}
+
 int tclPutGroup(Tcl_Interp *interp, DYN_GROUP *dg) 
 {
   Tcl_HashEntry *entryPtr;
@@ -1396,7 +1418,7 @@ int tclPutGroup(Tcl_Interp *interp, DYN_GROUP *dg)
   if (!dg) return 0;
 
   if (!DYN_GROUP_NAME(dg)[0]) {
-    sprintf(groupname, "group%d", dlinfo->dgCount++);
+    dlNextGroupName(dlinfo, groupname, sizeof(groupname));
     strcpy(DYN_GROUP_NAME(dg), groupname);
   }
   else {
@@ -1429,7 +1451,7 @@ static int tclDgTempName (ClientData data, Tcl_Interp *interp,
   DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
   if (!dlinfo) return TCL_ERROR;
 
-  sprintf(groupname, "group%d", dlinfo->dgCount++);
+  dlNextGroupName(dlinfo, groupname, sizeof(groupname));
   Tcl_SetResult(interp, groupname, TCL_VOLATILE);
   return TCL_OK;
 }
@@ -1473,7 +1495,7 @@ static int tclCopyDynGroup (ClientData data, Tcl_Interp *interp,
     strncpy(newname, argv[2], 63);
     dlinfo->dgCount++;
   }
-  else sprintf(newname, "group%d", dlinfo->dgCount++);
+  else dlNextGroupName(dlinfo, newname, sizeof(newname));
 
   if (tclFindDynGroup(interp, argv[1], &old) != TCL_OK) return TCL_ERROR;
   
@@ -2912,7 +2934,7 @@ static int tclDeleteDynGroup (ClientData data, Tcl_Interp *interp,
 	Tcl_VarEval(interp, "dg_delete ", name, (char *) NULL);
       }
     }
-    dlinfo->dgCount = 0;
+    /* counter deliberately keeps going -- see dlNextGroupName */
   }
 
   else if (argc < 2) {
@@ -2938,7 +2960,7 @@ static int tclDeleteDynGroup (ClientData data, Tcl_Interp *interp,
 	Tcl_VarEval(interp, "dg_delete ", Tcl_GetHashKey(&dlinfo->dgTable, entryPtr),
 		    (char *) NULL);
       }
-      dlinfo->dgCount = 0;
+      /* counter deliberately keeps going -- see dlNextGroupName */
     }
     else {
       Tcl_AppendResult(interp, "dg_delete: dyngroup \"", argv[i], 
