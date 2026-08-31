@@ -90,8 +90,8 @@ proc run_one {slug ns code} {
             break
         }
         set et [string trim $expected]
-        if {[regexp {^(%[a-zA-Z]*[0-9]+%|>[0-9]+<|&[^& ]*_[0-9]+&)$} $et]} {
-            if {[regexp {^(%[a-zA-Z]*[0-9]+%|>[0-9]+<|&[^& ]*_[0-9]+&)$} [string trim $got]]} {
+        if {[regexp {^(%[a-zA-Z]*[0-9]+%|>[0-9]+<|\\?&[^&]*_[0-9]+\\?&)$} $et]} {
+            if {[regexp {^(%[a-zA-Z]*[0-9]+%|>[0-9]+<|\\?&[^&]*_[0-9]+\\?&)$} [string trim $got]]} {
                 set namemap($et) [string trim $got]
             }
             continue

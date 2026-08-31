@@ -55,7 +55,27 @@ DECL = [
     re.compile(r'\b(?:foreach|dl_foreach)\s+\{([^}]*)\}'),
     re.compile(r'\bproc\s+[A-Za-z_:][A-Za-z0-9_:]*\s*\{([^}]*)\}'),
     re.compile(r'\bfor\s*\{\s*set\s+([A-Za-z_][A-Za-z0-9_]*)'),
+    re.compile(r'\bdg_toString\s+\S+\s+([A-Za-z_][A-Za-z0-9_]*)'),
 ]
+
+
+# Names that are always in scope but never declared in a transcript, so a
+# truncated reference to one has nothing local to match against. Verified
+# present rather than assumed: pi and e are global scalars and colors a
+# global array in a stock interpreter, and plot.tcl sets `thisplot` around
+# the deferred command strings that dlp_cmd and friends build.
+KNOWN = ['pi', 'e', 'colors', 'thisplot']
+
+# `$\backslash$` is a LaTeX escape for a single backslash that survived the
+# import as literal text. It has to go before references are read, or its
+# trailing `$` looks like an eaten name.
+LATEX = [(re.compile(r'\$\\?backslash\$'), '\\')]
+
+
+def deLatex(line):
+    for pat, repl in LATEX:
+        line = pat.sub(lambda m, r=repl: r, line)   # literal, not a re escape
+    return line
 
 
 def declared_by_line(lines):
@@ -100,9 +120,13 @@ def resolve(trunc, scope, allnames):
             return cands[0], 'sole one-character name in scope'
         return None, ('no one-character name in scope' if not cands
                       else 'ambiguous: %s' % ', '.join('$' + c for c in cands))
-    if trunc in pool:                                # never corrupted
+    # a name declared anywhere in the transcript is a real name, even if the
+    # declaration shares its line (`set f [open ...]; fconfigure $f ...`)
+    if trunc in pool or trunc in allnames or trunc in KNOWN:
         return trunc, 'intact'
     cands = [d for d in pool if d[1:] == trunc]
+    if not cands:            # nothing local explains it; try the globals
+        cands = [d for d in KNOWN if d[1:] == trunc]
     if len(cands) == 1:
         return cands[0], 'unique suffix match'
     if len(cands) > 1:
@@ -167,7 +191,7 @@ def repair(code, infer=False):
             # the dl_local just above it, so the declaration is known outright
             # -- no matching needed, and it settles cases that would otherwise
             # look ambiguous (`&_4&` under `dl_local b` is `&b_4&`).
-            if echoed and not CMD.match(ln) and (trunc == '' or echoed[1:] == trunc):
+            if echoed and not CMD.match(ln) and trunc != echoed:
                 if echoed != trunc:
                     fixed += 1
                     return '&%s_%s&' % (echoed, n)
@@ -182,8 +206,9 @@ def repair(code, infer=False):
             return '&%s_%s&' % (name, n)
 
         # &name_N& return tokens appear on output lines; $refs on both
-        ln = re.sub(r'&([A-Za-z_][A-Za-z0-9_]*)?_([0-9]+)&', sub_amp, ln)
-        ln = re.sub(r'\$([A-Za-z_][A-Za-z0-9_]*)?', sub_dollar, ln)
+        ln = deLatex(ln)
+        ln = re.sub(r'&([A-Za-z0-9_]*?)_([0-9]+)&', sub_amp, ln)
+        ln = re.sub(r'\$([A-Za-z0-9_]*)', sub_dollar, ln)
         out.append(ln)
 
     return '\n'.join(out), fixed, inferred, unresolved
