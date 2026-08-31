@@ -4082,10 +4082,32 @@ static int tclSetDynList (ClientData data, Tcl_Interp *interp,
   /*    groups and must be copied)                         */
   /*  as can a return list found in the dlTable            */
 
-  if ((DYN_LIST_NAME(dl)[0] == '%' || DYN_LIST_NAME(dl)[0] == '>') &&
+  /* ... but only when nothing else still refers to it. The name prefix says
+     this is a temporary; only the caller's binding says whether it is still
+     reachable. This is the path that renames into a sublist or a plain name,
+     so without the check `set x [...]; dl_set g:col:0 $x` renames x's list
+     into the group and leaves x naming a list it no longer owns -- silently,
+     exactly as the group branch above did before it was fixed. */
+  /* The check applies to %listN% only, not to >N< return lists. A %listN%
+     may be what a plain `set` is holding, so moving it can strand the
+     variable -- that is the bug this guards. A >N< is what dl_return/dl_yield
+     hand up to be consumed, and nothing else can be holding it: dl_yield is
+     still a string command, so its result reaches us as a bare name rather
+     than a refcounted handle and absorbMayMove is always false for it.
+     Guarding it too would copy on every iteration and strand the original --
+     2000 retained lists over a 2000-iteration `dl_set $g:col [someproc]`
+     loop, since after the first pass the column exists and assignment comes
+     through here. Convert dl_return/dl_yield to Obj commands and this can
+     become a plain absorbMayMove test like the others. */
+  if (((DYN_LIST_NAME(dl)[0] == '>') ||
+       (DYN_LIST_NAME(dl)[0] == '%' && dlinfo->absorbMayMove)) &&
       (entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, DYN_LIST_NAME(dl))) &&
       !(DYN_LIST_FLAGS(dl) & DL_SUBLIST)) {
+    char movedfrom[DYN_LIST_NAME_SIZE];
+    strncpy(movedfrom, DYN_LIST_NAME(dl), DYN_LIST_NAME_SIZE-1);
+    movedfrom[DYN_LIST_NAME_SIZE-1] = 0;
     Tcl_DeleteHashEntry(entryPtr);
+    dlReleaseHiddenVar(interp, movedfrom);
 
     /* Change the element of the group */
     if (replace_grouplist) {
@@ -4342,6 +4364,14 @@ static int tclLocalDynList (ClientData data, Tcl_Interp *interp,
   /*    groups and must be copied)                         */
   /* Return lists (>#<) can also be renamed                */
 
+  /* NOT gated on absorbMayMove, unlike dl_set and dg_addExistingList. That
+     was tried: it does stop `dl_local y $x` from renaming a set-bound list
+     out from under x, but inside a proc the inline argument's object is
+     shared, so every `dl_local t [dl_ilist ...]` copies and strands the
+     original -- 2000 retained lists over a 2000-iteration loop, in exactly
+     the pattern the docs recommend. The real fix is for dl_return/dl_yield
+     to hand back a refcounted handle so an inline result can be told from a
+     variable's; until then dl_local keeps moving. */
   if ((DYN_LIST_NAME(dl)[0] == '%' || DYN_LIST_NAME(dl)[0] == '>') &&
       (entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, DYN_LIST_NAME(dl))) &&
       !(DYN_LIST_FLAGS(dl) & DL_SUBLIST)) {
