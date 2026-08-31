@@ -149,11 +149,16 @@ proc from_named {} { dl_yield kept }
 check "named list yielded"  [dl_tcllist [from_named]] {1 1 1}
 check "named list survives" [dl_tcllist kept]         {1 1 1}
 
-# dl_return, by contrast, renames it out from under you
-dl_set doomed [dl_ilist 1 1 1]
-proc steal {} { return [dl_return doomed] }
+# dl_return used to rename it out from under you. It no longer does: it
+# consumes only a list its own frame made, so a named list -- or a caller's
+# variable, which is the same situation now that plain `set` is the idiom --
+# is copied instead. dl_yield has always behaved this way; dl_return has now
+# caught up.
+dl_set kept_named [dl_ilist 1 1 1]
+proc steal {} { return [dl_return kept_named] }
 steal
-check "dl_return consumes a named list" [dl_exists doomed] 0
+check "dl_return leaves a named list alone" [dl_exists kept_named] 1
+check "and its contents are intact"         [dl_tcllist kept_named] {1 1 1}
 
 dg_create yg ; dl_set yg:col [dl_ilist 2 2 2]
 proc from_col {} { dl_yield yg:col }

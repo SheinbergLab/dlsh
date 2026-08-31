@@ -4562,6 +4562,9 @@ static int dlMakeReturnList (Tcl_Interp *interp, char *name, int mayConsume,
   return TCL_OK;
 }
 
+/* defined below, with the ownership rules it encodes */
+static int dlFrameOwnsList(Tcl_Interp *interp, const char *name);
+
 static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
 			     int argc, char *argv[])
 {
@@ -4572,7 +4575,13 @@ static int tclReturnDynList (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  if (dlMakeReturnList(interp, argv[1], 1, newname, sizeof(newname)) != TCL_OK)
+  /* Consume only a list this frame made. dl_return historically renamed
+     anything it found in the table, which is the documented footgun that
+     `dl_return mylist` destroys mylist -- and with plain `set` now the normal
+     idiom, that reaches ordinary variables rather than just stray temporaries.
+     An inline argument is still consumed, so the common case stays free. */
+  if (dlMakeReturnList(interp, argv[1], dlFrameOwnsList(interp, argv[1]),
+		       newname, sizeof(newname)) != TCL_OK)
     return TCL_ERROR;
 
   Tcl_SetResult(interp, newname, TCL_VOLATILE);
@@ -4659,6 +4668,19 @@ static int dlFrameOwnsList(Tcl_Interp *interp, const char *name)
   if (name[0] == '>')
     return isReturnListName(name) && Tcl_GetVar(interp, (char *) name, 0) != NULL;
 
+  /* %listN% -- a temporary. The frame that made it holds the hidden variable
+     of the same name carrying the delete trace, and a variable resolves in
+     the CURRENT frame only, so finding the trace here means this frame made
+     it and is about to drop it. A caller's list passed in as a parameter has
+     its trace one frame up, is not found, and is therefore copied -- which is
+     what "dl_yield never consumes a list it did not make" has always claimed
+     but could not check: the name alone looks identical either way. */
+  if (name[0] == '%') {
+    owner = Tcl_VarTraceInfo(interp, (char *) name, 0,
+			     (Tcl_VarTraceProc *) tclDeleteLocalDynList, NULL);
+    return owner && !strcmp((char *) owner, name);
+  }
+
   if (name[0] != '&') return 0;
   n = strlen(name);
   if (n < 5 || name[n-1] != '&') return 0;
@@ -4712,10 +4734,11 @@ static int tclYieldDynList (ClientData data, Tcl_Interp *interp,
     dlTraceReturnList(interp, name);
   }
   else {
-    /* Only %#% temporaries are ours to consume; everything the caller named
-       (or dl_local'd, or reached through a group) gets copied. */
-    if (dlMakeReturnList(interp, argv[1], argv[1][0] == '%',
-			 name, sizeof(name)) != TCL_OK)
+    /* Nothing here is ours to consume: dlFrameOwnsList already said this
+       frame did not make the list, so copy it. It used to consume anything
+       whose name began with %, which meant a caller's `set` list -- named
+       %listN% like any other temporary -- was taken from the caller. */
+    if (dlMakeReturnList(interp, argv[1], 0, name, sizeof(name)) != TCL_OK)
       return TCL_ERROR;
   }
 
