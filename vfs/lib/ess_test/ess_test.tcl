@@ -798,8 +798,16 @@ proc ess_test::stub_stim2 {} {
     }
 
     # -- capturing: object transforms / color / visibility ----------------
+    # rotateObj is CAPTURED rather than inert because the angle is often a
+    # stimulus variable in its own right -- hapticvis/{identify,transfer} turn
+    # the sample by stimdg:shape_rot_deg_cw -- so a test wants to assert on it
+    # the way it asserts on translateObj. svgOpacity is the `shape` object's
+    # alpha, which for polygon objects rides along in polycolor's 4th
+    # component; match_to_sample/fractal fades layers with it.
     proc ::translateObj {obj x y} { ess_test::_record translateObj $obj [list $x $y] }
+    proc ::rotateObj    {obj args} { ess_test::_record rotateObj $obj $args }
     proc ::polycolor    {obj args} { ess_test::_record polycolor $obj $args }
+    proc ::svgOpacity   {obj args} { ess_test::_record svgOpacity $obj $args }
     proc ::setVisible   {obj v}    { ess_test::_record setVisible $obj [list $v] }
 
     # -- capturing: every motionpatch_* setter (target = 1st arg) ---------
