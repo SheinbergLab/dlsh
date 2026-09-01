@@ -27,9 +27,15 @@ if {![info exists ::__ess_test_loaded]} {
 namespace import ess_test::assert
 
 # The SPEC's ergonomics example, as one defaults dict so each test varies only
-# what it needs. Every one of the loader's 24 params is present here.
+# what it needs. Every one of the loader's 26 params must be present: a key
+# that is NOT a current param drops _bind_args onto its positional path (where
+# the arity then never matches), and a param with no key is reported missing.
+# So this dict has to track the loader's signature -- it went stale when
+# launch_params was replaced by launch_ecc/launch_y/flight_dur, which is what
+# broke every test below.
 set BALLISTIC_DEFAULTS {
-    nr 2  gravities {9.8 0 -9.8}  launch_params {}  fit_halfextent 10.0
+    nr 2  gravities {9.8 0 -9.8}  fit_halfextent 12.0
+    launch_ecc 8.0  launch_y 0.0  flight_dur 1.5
     fix_r 0.2  target_type pulsed_patch  spot_color {0.9 0.9 0.9}
     patch_size 16 dot_density 8 pointsize 2.5 target_speed_ratio 1.0
     target_lifetime 0.15 surround_speed_dva_sec 3 bg_lifetime 0.1
@@ -53,7 +59,13 @@ ess_test::test "loader: build stimdg" {
     ess_test::loader_defaults setup_ballistic $::BALLISTIC_DEFAULTS
     # vary nothing -> full defaults; run the body (this is where sample_fit is
     # called by its absolute ::ess::pursuit::ballistic::sample_fit name).
-    set ::g [ess_test::run_loader {}]
+    #
+    # NAME the loader. One-arg run_loader falls back to last_loader, i.e. the
+    # most recently REGISTERED one -- which silently stopped being
+    # setup_ballistic when the protocol gained setup_static, and every test
+    # below then failed on setup_static's argument list. Naming it costs a
+    # word and does not care how many loaders the protocol grows.
+    set ::g [ess_test::run_loader setup_ballistic {}]
 
     # nr(2) x gravities(3) x coh_depth(1) x coh_dur(1) = 6 trials
     assert {[dl_length $::g:stimtype] == 6} "6 trials (2 x {9.8 0 -9.8})"
@@ -100,13 +112,24 @@ ess_test::test "variant: run a loader as ESS would for a named variant" {
     # run_variant reproduces ESS's variant->args resolution (comment-stripping,
     # preset substitution, first-choice options) -- no hand-written args.
     set gd [ess_test::run_variant pursuit ballistic ballistic_detect]
-    assert {[dl_length $gd:stimtype] == 40} "ballistic_detect variant builds 40 trials"
+    # Derive the expectation from the RESOLVED options instead of a literal.
+    # A hardcoded trial count rots the moment a variant's first choice moves --
+    # which is what happened here: nr's first choice changed and this failed
+    # for a reason that had nothing to do with option resolution, the thing
+    # the test is actually about.
+    lassign [ess_test::variant_args pursuit ballistic ballistic_detect] lp vals
+    set res {}
+    foreach prm [ess_test::loader_params $lp] v $vals { dict set res $prm $v }
+    set nr [dict get $res nr]
+    set ntr [dl_length $gd:stimtype]
+    assert {$ntr > $nr && $ntr % $nr == 0} \
+        "ballistic_detect builds a full crossing of the resolved nr=$nr ($ntr trials)"
     set gs [dl_tcllist $gd:gravity]
     assert {[ess_test::approx [tcl::mathfunc::min {*}$gs] -9.8 1e-3] &&
             [ess_test::approx [tcl::mathfunc::max {*}$gs]  9.8 1e-3]} \
         "gravities came from the normal_inverted preset (+/-9.8)"
     # rebuild the patch design for the stim tests below (they read stimdg)
-    set ::g [ess_test::run_loader {}]
+    set ::g [ess_test::run_loader setup_ballistic {}]
 }
 
 # ==========================================================================
@@ -141,8 +164,13 @@ ess_test::test "stim(patch): parabola position via mask offset" {
     set oxs [ess_test::values motionpatch_maskoffset dots_target 0]
     assert {[llength $oxs] > 5} "target mask offset written every frame"
     set x_end [expr {[lindex $oxs end]*$patch}]
-    assert {[ess_test::approx $x_end [dl_get stimdg:land_x 0] 0.1]} \
-        "final target x == land_x (parabola replayed to the endpoint)"
+    # Tolerate one frame of travel. `play -dur $dur -dt 0.016` steps on a grid
+    # that need not land on $dur (1.5/0.016 = 93.75), so the last SAMPLED frame
+    # is up to one step short of the endpoint -- a fixed 0.1 dva was tighter
+    # than a single step here and failed on the sampling grid, not the physics.
+    set step [expr {abs([lindex $oxs end]-[lindex $oxs end-1])*$patch}]
+    assert {[ess_test::approx $x_end [dl_get stimdg:land_x 0] [expr {1.5*$step}]]} \
+        "final target x == land_x within one frame (parabola replayed to the endpoint)"
 }
 
 ess_test::test "stim(patch): motion_on fires once at playback start" {
@@ -195,14 +223,17 @@ ess_test::test "stim(patch): probe fires inside the dip, at its scheduled time" 
 
 ess_test::test "stim(spot): polygon translated along the parabola" {
     # rebuild the design with a simple-spot target to exercise translateObj
-    set ::gs [ess_test::run_loader [dict merge $::BALLISTIC_DEFAULTS {target_type spot}]]
+    set ::gs [ess_test::run_loader setup_ballistic \
+                  [dict merge $::BALLISTIC_DEFAULTS {target_type spot}]]
     set dur [play_trial 0]
     ess_test::play -dur $dur -dt 0.016
     set xs {}
     foreach r [ess_test::captured translateObj target] { lappend xs [lindex [dict get $r args] 0] }
     assert {[llength $xs] > 5} "spot translated every frame"
-    assert {[ess_test::approx [lindex $xs end] [dl_get stimdg:land_x 0] 0.1]} \
-        "final spot x == land_x"
+    # one frame of travel, for the same reason as the patch test above
+    set step [expr {abs([lindex $xs end]-[lindex $xs end-1])}]
+    assert {[ess_test::approx [lindex $xs end] [dl_get stimdg:land_x 0] [expr {1.5*$step}]]} \
+        "final spot x == land_x within one frame"
     assert {[llength [ess_test::events pursuit/motion_on]] == 1} "spot also fires motion_on once"
 }
 

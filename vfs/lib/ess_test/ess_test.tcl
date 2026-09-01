@@ -1186,12 +1186,23 @@ proc ess_test::clear_dserv_log {} { variable dserv_log; set dserv_log {} }
 # Source a <proto>_stim.tcl with stubs installed (stub_stim2 must run first, so
 # top-level calls like `load_Impro` exist). The stim's `package require mp_sim`
 # etc. load for real.
+#
+# If the stim defines stim_init, CALL it, the way ess-2.0.tm's configure_stim
+# does on the real side. That hook is where a persistent-interp stim allocates
+# what its per-frame code then assumes exists -- pursuit/{ballistic,pendulum}
+# build their trajectory accumulation dg there -- so skipping it left every
+# frame-driver test failing on `dl_set: cannot set list
+# "pursuit_ballistic_traj_acc:t"` rather than on anything it meant to assert.
+# -nostiminit opts out for a test that wants the un-initialised state.
 proc ess_test::stim_source {system protocol args} {
     set path [ess_test::script_path $system $protocol stim]
     if {[dict exists $args -file]} { set path [dict get $args -file] }
     if {![file exists $path]} { error "ess_test::stim_source: no file $path" }
     ess_test::_ensure_tm_paths
     uplevel #0 [list source $path]
+    if {![dict exists $args -nostiminit] && [llength [info commands ::stim_init]]} {
+        uplevel #0 ::stim_init
+    }
     return
 }
 
