@@ -40,7 +40,10 @@
 #   Nothing else in the stack needs to learn about it. Keep the contract thin:
 #   add fields only when a real motion needs them.
 
-package provide traj 1.0
+# 1.1: adds the `polygon` motion type (vertex-schedule target; step or smooth
+# playback). A consumer that needs it should `package require traj 1.1` so an
+# older dlsh.zip fails loudly instead of running without the plugin.
+package provide traj 1.1
 
 namespace eval traj {
     variable models {}                ;# type -> {pos .. vel .. landmarks .. extent ..}
@@ -229,3 +232,4 @@ traj::register ballistic \
 # ==================================================================
 source [file join [file dirname [info script]] pendulum.tcl]
 source [file join [file dirname [info script]] inverted_pendulum.tcl]
+source [file join [file dirname [info script]] polygon.tcl]
