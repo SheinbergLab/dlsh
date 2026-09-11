@@ -640,6 +640,7 @@ OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
         test_dl_comprehension
         test_dl_yield
         test_dl_refcount
+        test_dl_rename
         test_mp_sim_kinematics
         test_dg_concat
         test_dg_names

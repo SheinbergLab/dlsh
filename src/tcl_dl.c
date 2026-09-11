@@ -4235,7 +4235,31 @@ static int tclSetDynList (ClientData data, Tcl_Interp *interp,
     Tcl_DeleteHashEntry(entryPtr);
     newdl = NULL;
   }
-  
+
+  /* From here on `newdl` is the one fact the two branches below need: it is
+     non-NULL exactly when the target name resolved to an existing SUBLIST
+     (g:col:0, L:1) that must be replaced in place, and NULL when a fresh
+     top-level list is to be made under that name.  Do NOT re-resolve the
+     name with tclFindDynList to find that out.  Once the old hash entry is
+     gone, tclFindDynList on a colon-free name can only succeed by coercing
+     a literal -- `dl_set 2 $x` manufactures a temp from "2" -- and
+     tclFindDynListParent then "succeeds" on the same path without ever
+     setting parent/index, so the sublist replacement below reads garbage
+     and crashes.  A colon-free name that survived to here is a plain
+     name, whatever it looks like.
+
+     A colon name can still have resolved to a selection temp rather than
+     an interior sublist (L:0:1, L:1-2 build a new list), which has no slot
+     to replace.  Refuse that here, before the move branch below has taken
+     the source out of dlTable and released its frame claim -- checking it
+     afterwards, as this used to, left the source orphaned on the error
+     path. */
+  if (newdl && !(DYN_LIST_FLAGS(newdl) & DL_SUBLIST)) {
+    Tcl_AppendResult(interp, argv[0],
+		     ": temporary lists cannot be dl_set", NULL);
+    return TCL_ERROR;
+  }
+
   /* A temporary list that's in the dlTable can be renamed */
   /*   (temporary lists not in the dlTable are elements of */
   /*    groups and must be copied)                         */
@@ -4268,23 +4292,13 @@ static int tclSetDynList (ClientData data, Tcl_Interp *interp,
       DYN_GROUP_LIST(dg, groupid) = dl;
     }
     
-    /* 
-     * If the new list can still be found, it's either a sublist or a 
-     *  temporary list.  If it's temporary, fail, because I can't think
-     *  of any reason (except for an error) for this to be right.  
-     *  If a sublist, then reset pointer
-     */
-    else if (tclFindDynList(interp, newname, &newdl) == TCL_OK) {
+    /* The target is an existing sublist: swap the moved list into its
+       parent's slot. */
+    else if (newdl) {
       DYN_LIST **parent;
       int index;
 
-      if (!(DYN_LIST_FLAGS(newdl) & DL_SUBLIST)) {
-	Tcl_AppendResult(interp, argv[0],
-			 ": temporary lists cannot be dl_set", NULL);
-	return TCL_ERROR;
-      }
-
-      if (tclFindDynListParent(interp, newname, NULL, &parent, &index) != 
+      if (tclFindDynListParent(interp, newname, NULL, &parent, &index) !=
 	  TCL_OK) {
 	return TCL_ERROR;
       }
@@ -4309,7 +4323,7 @@ static int tclSetDynList (ClientData data, Tcl_Interp *interp,
       DYN_GROUP_LIST(dg, groupid) = newlist;
     }
 
-    else if (tclFindDynList(interp, newname, &newdl) == TCL_OK) {
+    else if (newdl) {
       DYN_LIST *newlist = dfuCopyDynList(dl);
       DYN_LIST **parent;
       int index;
