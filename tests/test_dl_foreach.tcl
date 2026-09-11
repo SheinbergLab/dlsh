@@ -103,6 +103,38 @@ set a done; dl_foreach x [dl_ilist] { set a ran }; check "empty list" $a done
 check "error in body propagates" [catch { dl_foreach x [dl_ilist 1 2] { error boom } }] 1
 dl_foreach x [dl_ilist 1 2 3] { }; check "loop var unset after" [info exists x] 0
 
+# --- dl_dotimes (regression: same shared-Tcl_Obj panic as dl_foreach) ---
+# It used to set the loop var once and Tcl_SetIntObj the same object every
+# iteration; the first body that read the var made it shared and the next
+# pass panicked ("Tcl_SetWideIntObj called with shared object").
+set acc {}
+dl_dotimes k 3 { lappend acc $k }
+check "dotimes values 0..n-1" $acc {0 1 2}
+set acc {}
+dl_dotimes k 0 { lappend acc $k }
+check "dotimes zero iterations" $acc {}
+check "dotimes var unset after loop" [info exists k] 0
+check "dotimes var unset after zero iterations" [info exists k] 0
+dl_dotimes k 2 { set last $k }
+check "dotimes read via set" $last 1
+set acc {}
+dl_dotimes k 10 { if {$k == 3} break; lappend acc $k }
+check "dotimes break" $acc {0 1 2}
+check "dotimes var unset after break" [info exists k] 0
+set acc {}
+dl_dotimes k 6 { if {$k % 2} continue; lappend acc $k }
+check "dotimes continue" $acc {0 2 4}
+check "dotimes error in body propagates" [catch { dl_dotimes k 3 { error boom } } msg] 1
+check "dotimes error message" $msg boom
+check "dotimes var unset after error" [info exists k] 0
+check "dotimes bad count errors" [catch { dl_dotimes k notanumber { } }] 1
+check "dotimes var unset after bad count" [info exists k] 0
+proc dotimes_ret {} { dl_dotimes k 5 { if {$k == 2} { return "ret$k" } }; return none }
+check "dotimes return from body" [dotimes_ret] ret2
+set acc {}
+dl_dotimes a 2 { dl_dotimes b 2 { lappend acc $a$b } }
+check "dotimes nested" $acc {00 01 10 11}
+
 # --- stress: per-element temp lists churn through create+free without crashing ---
 set rows {}
 for {set i 0} {$i < 2000} {incr i} { lappend rows [dl_ilist $i [expr {$i*2}]] }

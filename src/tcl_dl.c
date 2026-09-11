@@ -10806,30 +10806,63 @@ int dynListPrintValChan(Tcl_Interp * interp, DYN_LIST *dl, int i,
 *    body - tcl code to execute
 \***************************************************************/
 
+/* A loop variable must not be one of the hidden per-list guards that
+   tclPutList / tclCreateDynList install: a variable named "%listN%" carrying
+   a write+unset trace that frees the list.  Writing it runs that trace and
+   frees a list -- for dl_foreach possibly the very one being iterated --
+   mid-loop.  This happens in practice when a handle is passed where a
+   variable name belongs (`dl_comp $i $i`): the comprehension procs upvar the
+   name and hand the alias to dl_foreach, and Tcl_VarTraceInfo follows the
+   link, so one check here covers them all.  Refuse up front rather than
+   corrupt the heap. */
+
+static int tclCheckLoopVar(Tcl_Interp *interp, Tcl_Obj *cmd, Tcl_Obj *varName)
+{
+  ClientData guard = Tcl_VarTraceInfo(interp, Tcl_GetString(varName), 0,
+				      (Tcl_VarTraceProc *) tclDeleteLocalDynList,
+				      NULL);
+  if (!guard) return TCL_OK;
+  Tcl_AppendResult(interp, Tcl_GetString(cmd),
+		   ": loop variable \"", Tcl_GetString(varName),
+		   "\" is the dynlist \"", (char *) guard,
+		   "\" (pass a variable name, not a list handle)", NULL);
+  return TCL_ERROR;
+}
+
 static int tclDoTimes(ClientData data, Tcl_Interp * interp, int objc,
 	Tcl_Obj * const objv[])
 {
-	int i, count;
-	Tcl_Obj * o;
+	int i, count, rc = TCL_OK;
+	Tcl_Obj *varName = objv[1], *body = objv[3];
 
 	if (objc != 4) {
 		Tcl_WrongNumArgs(interp, 1, objv, "var count body");
 		return TCL_ERROR;
 	}
-	if ((o = Tcl_ObjSetVar2(interp, objv[1], NULL, Tcl_NewObj(),
-		TCL_LEAVE_ERR_MSG)) == NULL)
+	if (tclCheckLoopVar(interp, objv[0], varName) != TCL_OK) return TCL_ERROR;
+	if (Tcl_GetIntFromObj(interp, objv[2], &count) != TCL_OK)
 		return TCL_ERROR;
-	if (Tcl_GetIntFromObj(interp, objv[2], &count) != TCL_OK) {
-		Tcl_UnsetVar2(interp, Tcl_GetStringFromObj(objv[1], NULL),
-			NULL, TCL_LEAVE_ERR_MSG);
-		return TCL_ERROR;
-	}
+
 	for (i = 0; i < count; i++) {
-		Tcl_SetIntObj(o, i);
-		if (Tcl_EvalObj(interp, objv[3]) != TCL_OK) return TCL_ERROR;
+		/* Build the loop value as a FRESH Tcl_Obj each iteration, exactly
+		   as tclForEach does.  The old code set the variable once and then
+		   Tcl_SetIntObj'd that same object every pass; once the body had
+		   read the variable the object was shared and modern Tcl panics
+		   ("Tcl_SetWideIntObj called with shared object"). */
+		if (!Tcl_ObjSetVar2(interp, varName, NULL, Tcl_NewIntObj(i),
+				    TCL_LEAVE_ERR_MSG))
+			return TCL_ERROR;
+
+		rc = Tcl_EvalObjEx(interp, body, 0);
+
+		if (rc == TCL_CONTINUE) { rc = TCL_OK; continue; }
+		if (rc == TCL_BREAK)    { rc = TCL_OK; break; }
+		if (rc != TCL_OK)       break;	/* TCL_ERROR / TCL_RETURN propagate */
 	}
-	return Tcl_UnsetVar2(interp, Tcl_GetStringFromObj(objv[1], NULL),
-		NULL, TCL_LEAVE_ERR_MSG);
+
+	/* drop the loop variable */
+	Tcl_UnsetVar2(interp, Tcl_GetString(varName), NULL, 0);
+	return rc;
 }
 
 
