@@ -612,18 +612,29 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
 }
 
 
-static void get_dgname(char *name, char *dgname)
+/*
+ * Derive a dg name from a filename: basename with the extension stripped,
+ * truncated to fit in dgname (size bytes incl. NUL).  Names longer than
+ * DYN_GROUP_NAME_SIZE-1 are silently truncated (dfuCreateNamedDynGroup
+ * would truncate anyway); the previous unbounded memcpy overflowed the
+ * caller's buffer for basenames of 64+ chars.
+ */
+static void get_dgname(const char *name, char *dgname, size_t size)
 {
-  char *start, *end, *p;
-    
+  const char *start, *end, *p;
+  size_t n;
+
+  if (!size) return;
   p = strrchr(name, '/');
   if (!p) start = name;
   else start = p+1;
   p = strrchr(start, '.');
   if (!p) end = start+strlen(start);
   else end = p;
-  memcpy(dgname, start, end-start);
-  dgname[end-start] = '\0';
+  n = end-start;
+  if (n > size-1) n = size-1;
+  memcpy(dgname, start, n);
+  dgname[n] = '\0';
 }
 
 static int add_emdata(DYN_LIST *info, DYN_LIST *h, DYN_LIST *v,
@@ -654,6 +665,7 @@ static int add_event_names(DYN_LIST *evt_names, char *namelist, int len)
   
   while ((newline = strchr(str, '\n'))) {
     n = newline-str;
+    if (n > (int) sizeof(namestr)-1) n = sizeof(namestr)-1;
     memcpy(namestr, str, n);
     namestr[n] = '\0';
     dfuAddDynListString(evt_names, namestr);
@@ -1384,7 +1396,7 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
   FILE *fp;
   DYN_GROUP *dg;
 
-  static char *name, dgname[64];
+  char dgname[DYN_GROUP_NAME_SIZE];
 
   int non_obs_oriented = 0;
 
@@ -1406,10 +1418,9 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
 
   start_msec = timestamp/1000.;
 
-  name = filename;
-  get_dgname(name, dgname);
-  
-  
+  get_dgname(filename, dgname, sizeof(dgname));
+
+
   if (non_obs_oriented) {
     DYN_LIST *varnames, *timestamps, *values, *vallist, *types, *subtypes;
 
@@ -1683,7 +1694,7 @@ static int dslog_get_dpointdg(char *filename, int nvars, char **varnames, DYN_GR
   DYN_LIST *dl = NULL;
   int obsindx = 0;
   
-  static char *name, dgname[64], *listname, **listnames;
+  char *listname, **listnames;
   
   fp = fopen(filename, "rb");
   if (!fp) {
