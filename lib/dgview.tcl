@@ -172,9 +172,11 @@ namespace eval groupview {
 	set array(0,0) $list
 
 	if {[string match [dl_datatype $list] list]} {
+	    # Label each row with the SUBLIST's type, as the group view does;
+	    # this used to print the parent's type, so every row said "list".
 	    for {set j 0} {$j < $maxlength} {incr j} {
-		set array([expr $j+1],0)  "[dl_datatype $list] \
-			([dl_length $list:$j])" 
+		set array([expr $j+1],0)  "[dl_datatype $list:$j] \
+			([dl_length $list:$j])"
 	    }
 	} else {
 	    for {set j 0} {$j < $maxlength} {incr j} {
