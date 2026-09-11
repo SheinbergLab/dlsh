@@ -155,17 +155,117 @@ if {[llength [info commands dg_toArrow]] && [llength [info commands dg_fromArrow
     check "arrow types" [list [dl_datatype wideArrow:w] [dl_datatype wideArrow:d]] {int64 double}
 }
 
-# --- not-yet-supported operations must error, never answer wrong -----
+# --- arithmetic through the generic kernels (dlwide.c) -----------------
+# Values chosen so that a float32 or int32 path would give a different
+# answer: sums beyond 2^32, products beyond 2^53, fractions beyond 7 digits.
+set W  [dl_wlist 5000000000 -1 7]
+set D  [dl_dlist 0.1 0.2 0.3]
+set I  [dl_ilist 1 2 3]
+set F  [dl_flist 0.5 0.25 0.125]
+
+check "int64+int64"        [dl_tcllist [dl_add $W $W]] {10000000000 -2 14}
+check "int64+int64 type"   [dl_datatype [dl_add $W $W]] int64
+check "int64+long"         [dl_tcllist [dl_add $W $I]] {5000000001 1 10}
+check "int64+long type"    [dl_datatype [dl_add $W $I]] int64
+check "int64+scalar"       [dl_tcllist [dl_add $W 1]] {5000000001 0 8}
+check "scalar+int64"       [dl_tcllist [dl_sub 1 $W]] {-4999999999 2 -6}
+check "int64*long exact"   [dl_tcllist [dl_mult $W 3]] {15000000000 -3 21}
+check "int64*int64 wraps like int32 does" [dl_datatype [dl_mult $W $W]] int64
+check "int64 div by zero"  [dl_tcllist [dl_div $W [dl_wlist 2 0 7]]] {2500000000 0 1}
+check "int64+float -> double" [dl_datatype [dl_add $W $F]] double
+check "int64+float value"  [dl_tcllist [dl_add [dl_wlist 5000000000] [dl_flist 0.5]]] 5000000000.5
+check "double+double"      [dl_tcllist [dl_add $D $D]] {0.2 0.4 0.6}
+check "double+long"        [dl_tcllist [dl_add $D $I]] {1.1 2.2 3.3}
+check "double type"        [dl_datatype [dl_add $D $I]] double
+check "double*scalar"      [dl_tcllist [dl_mult $D 10]] {1.0 2.0 3.0}
+check "double pow"         [dl_tcllist [dl_pow [dl_dlist 2] [dl_dlist 0.5]]] [expr {pow(2,0.5)}]
+check "int64 pow"          [dl_tcllist [dl_pow [dl_wlist 2] [dl_wlist 40]]] [expr {2**40}]
+check "double fmod"        [dl_tcllist [dl_fmod [dl_dlist 5.5] 2]] 1.5
+check "nested int64 arith" [dl_tcllist [dl_add [dl_llist $W $W] 1]] {{5000000001 0 8} {5000000001 0 8}}
+check "empty wide arith"   [dl_datatype [dl_add [dl_wlist] $W]] int64
+check "empty wide arith 2" [dl_datatype [dl_add [dl_dlist] $I]] double
+
+check "int64 eq"           [dl_tcllist [dl_eq $W 5000000000]] {1 0 0}
+check "int64 lt long"      [dl_tcllist [dl_lt $W 0]] {0 1 0}
+check "int64 gte"          [dl_tcllist [dl_gte $W $I]] {1 0 1}
+check "double eq exact"    [dl_tcllist [dl_eq [dl_dlist 0.1] 0.1]] 1
+# literals parse at the operand's precision only when a wide list is present
+check "int64 eq wide literal"   [dl_tcllist [dl_eq $W 5000000001]] {0 0 0}
+check "int64 + wide literal"    [dl_tcllist [dl_add [dl_wlist 1] 5000000001]] 5000000002
+check "double + literal exact"  [dl_tcllist [dl_sub [dl_dlist 0.3] 0.1]] [expr {0.3-0.1}]
+check "legacy float + literal stays float" [dl_datatype [dl_add [dl_flist 1] 0.5]] float
+check "legacy int + big literal stays float" [dl_datatype [dl_add [dl_ilist 1] 5000000000]] float
+check "literal list in wide context" [dl_tcllist [dl_add $W {1 2 3}]] {5000000001 1 10}
+check "double lt"          [dl_tcllist [dl_lt $D 0.25]] {1 1 0}
+check "int64 eqIndex"      [dl_tcllist [dl_eqIndex $W 7]] 2
+check "int64 gtIndex none" [dl_tcllist [dl_gtIndex $W 5000000000]] {}
+check "int64 and/or"       [dl_tcllist [dl_or [dl_wlist 0 0 5] [dl_wlist 0 1 0]]] {0 1 1}
+check "int64 mod exact"    [dl_tcllist [dl_mod [dl_wlist 5000000001] 1000000]] 1
+check "int64 mod type"     [dl_datatype [dl_mod $W 3]] int64
+check "double mod"         [dl_tcllist [dl_mod [dl_dlist 5.5] 2]] 1.5
+check "int64 oneof"        [dl_tcllist [dl_oneof $W [dl_wlist 7 -1]]] {0 1 1}
+check "int64 not"          [dl_tcllist [dl_not [dl_wlist 0 5]]] {1 0}
+check "double where"       [dl_tcllist [dl_where [dl_ilist 1 0 1] $D 9]] {0.1 9.0 0.3}
+check "where int64/long -> int64" [dl_datatype [dl_where [dl_ilist 1 0 1] $W $I]] int64
+check "where int64/long value"    [dl_tcllist [dl_where [dl_ilist 1 0 1] $W $I]] {5000000000 2 7}
+
+# --- reductions ---------------------------------------------------------
+check "sum int64 exact"    [dl_sum $W] 5000000006
+check "sum double"         [dl_sum $D] [expr {0.1+0.2+0.3}]
+check "prod int64"         [dl_prod [dl_wlist 3000000000 3]] 9000000000
+check "prods int64 overflow -> double" [dl_datatype [dl_prods [dl_llist [dl_wlist 5000000000 5000000000]]]] double
+check "sums int64"         [dl_tcllist [dl_sums [dl_llist $W $I]]] {5000000006 6}
+check "sums int64 type"    [dl_datatype [dl_sums [dl_llist $W $I]]] int64
+check "sums mixed double"  [dl_datatype [dl_sums [dl_llist $D $W]]] double
+check "cumsum int64"       [dl_tcllist [dl_cumsum $W]] {5000000000 4999999999 5000000006}
+check "cumsum double"      [dl_tcllist [dl_cumsum [dl_dlist 0.5 0.25]]] {0.5 0.75}
+check "mean int64"         [dl_mean $W] [expr {5000000006/3.0}]
+check "mean double"        [dl_mean $D] [expr {(0.1+0.2+0.3)/3.0}]
+check "means"              [dl_tcllist [dl_means [dl_llist $D $D]]] [list [expr {(0.1+0.2+0.3)/3.0}] [expr {(0.1+0.2+0.3)/3.0}]]
+check "var double"         [expr {abs([dl_var [dl_dlist 1 2 3 4]] - 5.0/3) < 1e-12}] 1
+check "std int64"          [expr {abs([dl_std [dl_wlist 1 2 3 4]] - sqrt(5.0/3)) < 1e-12}] 1
+check "min int64"          [dl_min $W] -1
+check "max int64"          [dl_max $W] 5000000000
+check "max nested mixed"   [dl_max [dl_llist $I $W]] 5000000000
+check "min double"         [dl_min $D] 0.1
+check "mins"               [dl_tcllist [dl_mins [dl_llist $W $D]]] {-1.0 0.1}
+check "maxs int64 type"    [dl_datatype [dl_maxs [dl_llist $W $I]]] int64
+check "minIndex/maxIndex"  [list [dl_minIndex $W] [dl_maxIndex $W]] {1 0}
+check "maxPositions"       [dl_tcllist [dl_maxPositions [dl_llist $W $D]]] {0 2}
+check "any/all int64"      [list [dl_any [dl_wlist 0 0 1]] [dl_all [dl_wlist 1 0]]] {1 0}
+check "anys double"        [dl_tcllist [dl_anys [dl_llist [dl_dlist 0 0] [dl_dlist 0 0.5]]]] {0 1}
+
+# --- elementwise math ---------------------------------------------------
+check "abs int64 exact"    [dl_tcllist [dl_abs [dl_wlist -5000000000 3]]] {5000000000 3}
+check "abs int64 type"     [dl_datatype [dl_abs $W]] int64
+check "abs double"         [dl_tcllist [dl_abs [dl_dlist -0.1]]] 0.1
+check "sqrt int64 -> double" [dl_tcllist [dl_sqrt [dl_wlist 4]]] 2.0
+check "floor double -> int64" [dl_tcllist [dl_floor [dl_dlist 1e15 -2.5]]] {1000000000000000 -3}
+check "round double type"  [dl_datatype [dl_round $D]] int64
+check "sin double"         [dl_tcllist [dl_sin [dl_dlist 0]]] 0.0
+check "negate int64"       [dl_tcllist [dl_negate $W]] {-5000000000 1 -7}
+check "sign double"        [dl_tcllist [dl_sign [dl_dlist -0.5 0 2]]] {-1.0 0.0 1.0}
+check "diff int64"         [dl_tcllist [dl_diff $W]] {-5000000001 8}
+check "gradient double"    [dl_tcllist [dl_gradient [dl_dlist 0 1 4]]] {1.0 2.0 3.0}
+
+# --- ordering -----------------------------------------------------------
+check "sort int64"         [dl_tcllist [dl_sort $W]] {-1 7 5000000000}
+check "sort double"        [dl_tcllist [dl_sort [dl_dlist 0.3 0.1 0.2]]] {0.1 0.2 0.3}
+check "sortIndices int64"  [dl_tcllist [dl_sortIndices $W]] {1 2 0}
+check "bsort nested"       [dl_tcllist [dl_bsort [dl_llist $W [dl_dlist 2 1]]]] {{-1 7 5000000000} {1.0 2.0}}
+check "unique int64"       [dl_tcllist [dl_unique [dl_wlist 7 5000000000 7 -1]]] {-1 7 5000000000}
+check "uniqueNoSort double" [dl_tcllist [dl_uniqueNoSort [dl_dlist 0.2 0.2 0.1]]] {0.2 0.1}
+check "rank int64 (occurrence index, as for ints)" [dl_tcllist [dl_rank [dl_wlist 5 1 3 5]]] {0 0 0 1}
+check "recode double"      [dl_tcllist [dl_recode [dl_dlist 0.5 0.1 0.5]]] {1 0 1}
+check "find int64"         [dl_tcllist [dl_find $W [dl_wlist -1 7]]] 1
+check "median (Tcl proc over sort/get)" [dl_median $W] 7
+
+# --- still guarded: no verified implementation yet ----------------------
 foreach {label script} {
-    "dl_sum int64"      { dl_sum $w }
-    "dl_add int64"      { dl_add $w $w }
-    "dl_sort int64"     { dl_sort $w }
-    "dl_mean double"    { dl_mean $d }
-    "dl_min double"     { dl_min $d }
-    "dl_add double"     { dl_add $d 1 }
-    "dl_eq int64"       { dl_eq $w 7 }
-    "dl_unique double"  { dl_unique $d }
-    "dl_cumsum int64"   { dl_cumsum $w }
+    "dl_findIndices int64"     { dl_findIndices $W $W }
+    "dl_countOccurences int64" { dl_countOccurences $W $W }
+    "dl_hist double"           { dl_hist $D 0 1 2 }
+    "dl_bmeans int64"          { dl_bmeans [dl_llist $W] }
 } {
     errors $label $script
 }
@@ -174,13 +274,13 @@ foreach {label script} {
 set nested [dl_llist [dl_ilist 1 2 3] $w]
 set gg [dg_create]
 dl_set $gg:rows [dl_llist [dl_dlist 0.5] [dl_ilist 4]]
-errors "guard: nested list"        { dl_sums $nested }
-errors "guard: list:index"         { dl_median $nested:1 }
-errors "guard: group:list"         { dl_means $gg:rows }
-errors "guard: group:list:index"   { dl_sum $gg:rows:0 }
-errors "guard: dl_medians (Tcl proc over list:index)" { dl_medians $nested }
+errors "guard: nested list"        { dl_hist $nested 0 1 2 }
+errors "guard: list:index"         { dl_findIndices $nested:1 $nested:1 }
+errors "guard: group:list"         { dl_bmeans $gg:rows }
+errors "guard: group:list:index"   { dl_countOccurences $gg:rows:0 $gg:rows:0 }
 check  "guard leaves int sublist usable" [dl_sum $nested:0] 6
 check  "guard leaves int row usable"     [dl_sum $gg:rows:1] 4
+check  "medians over wide rows"          [dl_tcllist [dl_medians [dl_llist [dl_ilist 1 2 3] [dl_wlist 5 1 3]]]] {2.0 3.0}
 
 # Comprehensions infer int64 for values that do not fit in 32 bits.
 check "dl_map over int64" [dl_tcllist [dl_map x $w {expr {$x * 2}}]] \

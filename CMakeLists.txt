@@ -347,8 +347,9 @@ add_library(dlsh SHARED
     src/dlsh_pkg.c 
     src/tcl_df.c 
     src/tcl_dm.c 
-    src/dlarith.c 
-    src/dmana.c 
+    src/dlarith.c
+    src/dlwide.c
+    src/dmana.c
     src/tcl_dl.c
     src/dlref.c
     src/dgjson.c

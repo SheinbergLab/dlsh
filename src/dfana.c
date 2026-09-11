@@ -23,6 +23,7 @@
 
 #include <df.h>
 #include "dfana.h"
+#include "dlwide.h"
 
 #include <utilc.h>
 
@@ -3831,6 +3832,51 @@ DYN_LIST *dynListMathOneArg(DYN_LIST *dl, int func_id)
       }
     }
     break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    {
+      dlw_getd_fn get = dlwDoubleReader(DYN_LIST_DATATYPE(dl));
+      const void *v = DYN_LIST_VALS(dl);
+      int n = DYN_LIST_N(dl);
+      if (DLCheckMatherr) {
+	switch (func_id) {
+	case DL_SQRT:
+	  for (i = 0; i < n; i++) if (get(v, i) < 0.0) return NULL;
+	  break;
+	case DL_LOG:
+	case DL_LOG10:
+	  for (i = 0; i < n; i++) if (get(v, i) <= 0.0) return NULL;
+	  break;
+	case DL_ACOS:
+	case DL_ASIN:
+	case DL_ATAN:
+	  for (i = 0; i < n; i++) if (get(v, i) < -1.0 || get(v, i) > 1.0) return NULL;
+	  break;
+	}
+      }
+      if (func_id == DL_ABS && DYN_LIST_DATATYPE(dl) == DF_INT64) {
+	int64_t *vals = (int64_t *) v;
+	int64_t *newvals = (int64_t *) calloc(n, sizeof(int64_t));
+	if (!newvals) return NULL;
+	for (i = 0; i < n; i++) newvals[i] = vals[i] < 0 ? -vals[i] : vals[i];
+	list = dfuCreateDynListWithVals(DF_INT64, n, newvals);
+      }
+      else if (func_id == DL_CEIL || func_id == DL_FLOOR || func_id == DL_ROUND) {
+	/* whole-number answers: int64 keeps them exact, as the int arms
+	   answer long */
+	int64_t *newvals = (int64_t *) calloc(n, sizeof(int64_t));
+	if (!newvals) return NULL;
+	for (i = 0; i < n; i++) newvals[i] = (int64_t) (*func)(get(v, i));
+	list = dfuCreateDynListWithVals(DF_INT64, n, newvals);
+      }
+      else {
+	double *newvals = (double *) calloc(n, sizeof(double));
+	if (!newvals) return NULL;
+	for (i = 0; i < n; i++) newvals[i] = (*func)(get(v, i));
+	list = dfuCreateDynListWithVals(DF_DOUBLE, n, newvals);
+      }
+    }
+    break;
   case DF_CHAR:
     {
       char *vals = (char *) DYN_LIST_VALS(dl);
@@ -3950,6 +3996,16 @@ float dynListMaxList(DYN_LIST *dl)
 	if(max < vals[i])  max = vals[i];
     }
     break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    {
+      dlw_getd_fn get = dlwDoubleReader(DYN_LIST_DATATYPE(dl));
+      const void *v = DYN_LIST_VALS(dl);
+      max = get(v, 0);
+      for (i = 1; i < DYN_LIST_N(dl); i++)
+	if (max < get(v, i)) max = get(v, i);
+    }
+    break;
   case DF_LIST:
     {
       float val;
@@ -4009,6 +4065,18 @@ int dynListMaxListIndex(DYN_LIST *dl)
 	if(max < vals[i])  { max = vals[i]; maxi = i; }
     }
     break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    {
+      dlw_getd_fn get = dlwDoubleReader(DYN_LIST_DATATYPE(dl));
+      const void *v = DYN_LIST_VALS(dl);
+      double best = get(v, 0), x;
+      for (i = 1; i < DYN_LIST_N(dl); i++) {
+	x = get(v, i);
+	if (best < x) { best = x; maxi = i; }
+      }
+    }
+    break;
   default:
     return(-1);
   }
@@ -4055,6 +4123,18 @@ int dynListMinListIndex(DYN_LIST *dl)
       min = vals[0];
       for (i = 1; i < DYN_LIST_N(dl); i++) 
 	if(min > vals[i])  { min = vals[i]; mini = i; }
+    }
+    break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    {
+      dlw_getd_fn get = dlwDoubleReader(DYN_LIST_DATATYPE(dl));
+      const void *v = DYN_LIST_VALS(dl);
+      double best = get(v, 0), x;
+      for (i = 1; i < DYN_LIST_N(dl); i++) {
+	x = get(v, i);
+	if (best > x) { best = x; mini = i; }
+      }
     }
     break;
   default:
@@ -4233,80 +4313,7 @@ DYN_LIST *dynListMinMaxLists(DYN_LIST *dl, int op)
   }
   dfuFreeDynList(emptylist);
   
-  /* determine if we need a float list, or if ints will do */
-  vals = (DYN_LIST **) DYN_LIST_VALS(working);
-  for (i = 0; i < DYN_LIST_N(working); i++) {
-    if (DYN_LIST_N(vals[i]) == 0) continue;
-    if (DYN_LIST_DATATYPE(vals[i]) == DF_FLOAT) need_float = 1;
-  }
-  if (need_float) {
-    list = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(working));
-    for (i = 0; i < DYN_LIST_N(working); i++) {
-      if (DYN_LIST_N(vals[i]) == 0) dfuAddDynListFloat(list, 0.0);
-      else {
-	switch (DYN_LIST_DATATYPE(vals[i])) {
-	case DF_FLOAT:
-	  {
-	    float *val = (float *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListFloat(list, val[0]);
-	  }
-	  break;
-	case DF_LONG:
-	  {
-	    int *val = (int *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListFloat(list, val[0]);
-	  }
-	  break;
-	case DF_SHORT:
-	  {
-	    short *val = (short *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListFloat(list, val[0]);
-	  }
-	  break;
-	case DF_CHAR:
-	  {
-	    char *val = (char *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListFloat(list, val[0]);
-	  }
-	  break;
-	}
-      }
-    }
-  }
-  else {			/* make a list of longs */
-    list = dfuCreateDynList(DF_LONG, DYN_LIST_N(working));
-    for (i = 0; i < DYN_LIST_N(working); i++) {
-      if (DYN_LIST_N(vals[i]) == 0) dfuAddDynListLong(list, 0);
-      else {
-	switch (DYN_LIST_DATATYPE(vals[i])) {
-	case DF_FLOAT:
-	  {
-	    float *val = (float *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListLong(list, val[0]);
-	  }
-	  break;
-	case DF_LONG:
-	  {
-	    int *val = (int *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListLong(list, val[0]);
-	  }
-	  break;
-	case DF_SHORT:
-	  {
-	    short *val = (short *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListLong(list, val[0]);
-	  }
-	  break;
-	case DF_CHAR:
-	  {
-	    char *val = (char *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListLong(list, val[0]);
-	  }
-	  break;
-	}
-      }
-    }
-  }
+  list = dlwScalarsToList(working);
   dfuFreeDynList(working);
   return(list);
 }
@@ -4359,6 +4366,16 @@ float dynListMinList(DYN_LIST *dl)
       min = vals[0];
       for (i = 1; i < DYN_LIST_N(dl); i++) 
 	if(min > vals[i])  min = vals[i];
+    }
+    break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    {
+      dlw_getd_fn get = dlwDoubleReader(DYN_LIST_DATATYPE(dl));
+      const void *v = DYN_LIST_VALS(dl);
+      min = get(v, 0);
+      for (i = 1; i < DYN_LIST_N(dl); i++)
+	if (min > get(v, i)) min = get(v, i);
     }
     break;
   case DF_LIST:
@@ -4450,6 +4467,26 @@ DYN_LIST *dynListMinMaxList(DYN_LIST *dl, int op)
       dfuAddDynListLong(retlist, retval);
     }
     break;
+  case DF_INT64:
+    {{
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      int64_t retval = vals[0];
+      retlist = dfuCreateDynList(DF_INT64, 1);
+      for (i = 1; i < DYN_LIST_N(dl); i++)
+	if ((op == DL_MINIMUM) ? (retval > vals[i]) : (retval < vals[i])) retval = vals[i];
+      dfuAddDynListInt64(retlist, retval);
+    }}
+    break;
+  case DF_DOUBLE:
+    {{
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      double retval = vals[0];
+      retlist = dfuCreateDynList(DF_DOUBLE, 1);
+      for (i = 1; i < DYN_LIST_N(dl); i++)
+	if ((op == DL_MINIMUM) ? (retval > vals[i]) : (retval < vals[i])) retval = vals[i];
+      dfuAddDynListDouble(retlist, retval);
+    }}
+    break;
   case DF_LIST:
     {
       DYN_LIST *curlist, *curbest;
@@ -4465,6 +4502,23 @@ DYN_LIST *dynListMinMaxList(DYN_LIST *dl, int op)
 	 */
 	if (!curlist) continue;
 	else if (!curbest) curbest = curlist;
+	else if (dlwIsWide(DYN_LIST_DATATYPE(curbest)) ||
+		 dlwIsWide(DYN_LIST_DATATYPE(curlist))) {
+	  int better;
+	  if (dlwIsInteger(DYN_LIST_DATATYPE(curbest)) &&
+	      dlwIsInteger(DYN_LIST_DATATYPE(curlist))) {
+	    int64_t b0 = dlwInt64Reader(DYN_LIST_DATATYPE(curbest))(DYN_LIST_VALS(curbest), 0);
+	    int64_t b1 = dlwInt64Reader(DYN_LIST_DATATYPE(curlist))(DYN_LIST_VALS(curlist), 0);
+	    better = (op == DL_MINIMUM) ? (b1 < b0) : (b1 > b0);
+	  }
+	  else {
+	    double b0 = dlwDoubleReader(DYN_LIST_DATATYPE(curbest))(DYN_LIST_VALS(curbest), 0);
+	    double b1 = dlwDoubleReader(DYN_LIST_DATATYPE(curlist))(DYN_LIST_VALS(curlist), 0);
+	    better = (op == DL_MINIMUM) ? (b1 < b0) : (b1 > b0);
+	  }
+	  if (better) { dfuFreeDynList(curbest); curbest = curlist; }
+	  else dfuFreeDynList(curlist);
+	}
 	else if (DYN_LIST_DATATYPE(curbest) == DF_LONG &&
 		 DYN_LIST_DATATYPE(curlist) == DF_LONG) {
 	  int *v0 = (int *) DYN_LIST_VALS(curbest);
@@ -5333,6 +5387,12 @@ DYN_LIST *dynListMeanLists(DYN_LIST *dl)
       dfuMoveDynListList(list, newlist);
     }
     break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    list = dfuCreateDynList(DF_DOUBLE, DYN_LIST_N(dl));
+    for (i = 0; i < DYN_LIST_N(dl); i++)
+      dfuAddDynListDouble(list, dynListMeanList(sublists[i]));
+    break;
   default:
     list = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dl));
     for (i = 0; i < DYN_LIST_N(dl); i++) {
@@ -5474,6 +5534,18 @@ double dynListMeanList(DYN_LIST *dl)
     {
       char *vals = (char *) DYN_LIST_VALS(dl);
       for (i = 0; i < DYN_LIST_N(dl); i++) sum+=vals[i];
+    }
+    break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) sum += vals[i];
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) if (!isnan(vals[i])) sum += vals[i];
     }
     break;
   case DF_LIST:
@@ -5726,6 +5798,12 @@ DYN_LIST *dynListVarLists(DYN_LIST *dl)
       dfuMoveDynListList(list, newlist);
     }
     break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    list = dfuCreateDynList(DF_DOUBLE, DYN_LIST_N(dl));
+    for (i = 0; i < DYN_LIST_N(dl); i++)
+      dfuAddDynListDouble(list, dynListVarList(sublists[i]));
+    break;
   default:
     list = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dl));
     for (i = 0; i < DYN_LIST_N(dl); i++) {
@@ -5761,6 +5839,19 @@ double dynListVarList(DYN_LIST *dl)
       for (i = 0; i < n; i++) {
 	sdiff += vals[i]-mean;
       }
+      var = 1.0/(n-1.0) * (ssdiff - (1.0/n)*(sdiff*sdiff));
+    }
+    break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    {
+      dlw_getd_fn get = dlwDoubleReader(DYN_LIST_DATATYPE(dl));
+      const void *v = DYN_LIST_VALS(dl);
+      double mean = dynListMeanList(dl);
+      int n = DYN_LIST_N(dl);
+      double sdiff = 0.0, ssdiff = 0.0, x;
+      for (i = 0; i < n; i++) { x = get(v, i) - mean; ssdiff += x * x; }
+      for (i = 0; i < n; i++) sdiff += get(v, i) - mean;
       var = 1.0/(n-1.0) * (ssdiff - (1.0/n)*(sdiff*sdiff));
     }
     break;
@@ -5866,6 +5957,12 @@ DYN_LIST *dynListHStdLists(DYN_LIST *dl)
       dfuMoveDynListList(list, newlist);
     }
     break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    list = dfuCreateDynList(DF_DOUBLE, DYN_LIST_N(dl));
+    for (i = 0; i < DYN_LIST_N(dl); i++)
+      dfuAddDynListDouble(list, dynListStdList(sublists[i]));
+    break;
   default:
     list = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dl));
     for (i = 0; i < DYN_LIST_N(dl); i++) {
@@ -5910,6 +6007,12 @@ DYN_LIST *dynListStdLists(DYN_LIST *dl)
       }
       dfuMoveDynListList(list, newlist);
     }
+    break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    list = dfuCreateDynList(DF_DOUBLE, DYN_LIST_N(dl));
+    for (i = 0; i < DYN_LIST_N(dl); i++)
+      dfuAddDynListDouble(list, dynListStdList(sublists[i]));
     break;
   default:
     list = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dl));
@@ -7211,6 +7314,24 @@ DYN_LIST *dynListDiffList(DYN_LIST *dl, int lag)
       diffs = dfuCreateDynListWithVals(DYN_LIST_DATATYPE(dl), length, d);
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      int64_t *ds = (int64_t *) calloc(length, sizeof(int64_t));
+      int64_t *d = ds;
+      for (i = lag, j = 0; i < DYN_LIST_N(dl); i++, j++) *ds++ = vals[i]-vals[j];
+      diffs = dfuCreateDynListWithVals(DYN_LIST_DATATYPE(dl), length, d);
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      double *ds = (double *) calloc(length, sizeof(double));
+      double *d = ds;
+      for (i = lag, j = 0; i < DYN_LIST_N(dl); i++, j++) *ds++ = vals[i]-vals[j];
+      diffs = dfuCreateDynListWithVals(DYN_LIST_DATATYPE(dl), length, d);
+    }
+    break;
   case DF_SHORT:
     {
       short *vals = (short *) DYN_LIST_VALS(dl);
@@ -7398,6 +7519,34 @@ DYN_LIST *dynListGradientList(DYN_LIST *dl)
     }
     break;
     
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      int64_t *gs = (int64_t *) calloc(length, sizeof(int64_t));
+      int64_t *g = gs;
+      if (length == 1) *gs = 0;
+      else {
+	*gs++ = vals[1] - vals[0];
+	for (i = 1; i < length - 1; i++) *gs++ = (vals[i+1] - vals[i-1]) / 2;
+	*gs = vals[length-1] - vals[length-2];
+      }
+      gradients = dfuCreateDynListWithVals(DYN_LIST_DATATYPE(dl), length, g);
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      double *gs = (double *) calloc(length, sizeof(double));
+      double *g = gs;
+      if (length == 1) *gs = 0.0;
+      else {
+	*gs++ = vals[1] - vals[0];
+	for (i = 1; i < length - 1; i++) *gs++ = (vals[i+1] - vals[i-1]) / 2.0;
+	*gs = vals[length-1] - vals[length-2];
+      }
+      gradients = dfuCreateDynListWithVals(DYN_LIST_DATATYPE(dl), length, g);
+    }
+    break;
   case DF_SHORT:
     {
       short *vals = (short *) DYN_LIST_VALS(dl);
@@ -8321,6 +8470,14 @@ static int dynListAnyFlat(DYN_LIST *dl)
       }
     }
     break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    {
+      dlw_getd_fn get = dlwDoubleReader(DYN_LIST_DATATYPE(dl));
+      for (i = 0; i < DYN_LIST_N(dl); i++)
+        if (get(DYN_LIST_VALS(dl), i) != 0.0) return 1;
+    }
+    break;
   default:
     return 0;
   }
@@ -8364,6 +8521,14 @@ static int dynListAllFlat(DYN_LIST *dl)
       for (i = 0; i < DYN_LIST_N(dl); i++) {
         if (!vals[i]) return 0;
       }
+    }
+    break;
+  case DF_INT64:
+  case DF_DOUBLE:
+    {
+      dlw_getd_fn get = dlwDoubleReader(DYN_LIST_DATATYPE(dl));
+      for (i = 0; i < DYN_LIST_N(dl); i++)
+        if (get(DYN_LIST_VALS(dl), i) == 0.0) return 0;
     }
     break;
   default:
@@ -8752,6 +8917,10 @@ DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false)
   /* Determine result type - promote to float if mixed */
   if (DYN_LIST_DATATYPE(if_true) == DYN_LIST_DATATYPE(if_false)) {
     result_type = DYN_LIST_DATATYPE(if_true);
+  } else if (dlwIsWide(DYN_LIST_DATATYPE(if_true)) ||
+             dlwIsWide(DYN_LIST_DATATYPE(if_false))) {
+    result_type = dlwPromote(DYN_LIST_DATATYPE(if_true), DYN_LIST_DATATYPE(if_false));
+    if (result_type < 0) return NULL;
   } else if (DYN_LIST_DATATYPE(if_true) == DF_FLOAT ||
              DYN_LIST_DATATYPE(if_false) == DF_FLOAT) {
     result_type = DF_FLOAT;
@@ -9361,6 +9530,18 @@ static int dynListLessThanShort(const void *a, const void *b)
   return(*x - *y);
 }
 
+static int dynListLessThanInt64(const void *a, const void *b)
+{
+  const int64_t *x = a, *y = b;
+  return (*x > *y) - (*x < *y);
+}
+
+static int dynListLessThanDouble(const void *a, const void *b)
+{
+  const double *x = a, *y = b;
+  return (*x > *y) - (*x < *y);
+}
+
 static int dynListLessThanString(const void *a, const void *b)
 { 
   const char **x = (const char **) a;
@@ -9397,6 +9578,21 @@ static int dynListLessThanShortI(const void *a, const void *b)
   const SHORT_I *x = a;
   const SHORT_I *y = b;
   return(x->val - y->val);
+}
+
+typedef struct { int i; int64_t val; } INT64_I;
+typedef struct { int i; double  val; } DOUBLE_I;
+
+static int dynListLessThanInt64I(const void *a, const void *b)
+{
+  const INT64_I *x = a, *y = b;
+  return (x->val > y->val) - (x->val < y->val);
+}
+
+static int dynListLessThanDoubleI(const void *a, const void *b)
+{
+  const DOUBLE_I *x = a, *y = b;
+  return (x->val > y->val) - (x->val < y->val);
 }
 
 static int dynListLessThanStringI(const void *a, const void *b)
@@ -9442,6 +9638,12 @@ DYN_LIST *dynListSortList(DYN_LIST *d1)
       qsort(vals, DYN_LIST_N(dl), sizeof(char), dynListLessThanChar);
     }
   break;
+  case DF_INT64:
+    qsort(DYN_LIST_VALS(dl), DYN_LIST_N(dl), sizeof(int64_t), dynListLessThanInt64);
+    break;
+  case DF_DOUBLE:
+    qsort(DYN_LIST_VALS(dl), DYN_LIST_N(dl), sizeof(double), dynListLessThanDouble);
+    break;
   case DF_STRING:
     {
       char **vals = (char **) DYN_LIST_VALS(dl);
@@ -9541,6 +9743,28 @@ DYN_LIST *dynListSortListIndices(DYN_LIST *dl)
       for (i = 0; i < DYN_LIST_N(dl); i++) { 
 	dfuAddDynListLong(indices, li[i].i);
       }
+      free((void *) li);
+    }
+  break;
+  case DF_INT64:
+    {
+      int i;
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      INT64_I *li = (INT64_I *) calloc(DYN_LIST_N(dl), sizeof(INT64_I));
+      for (i = 0; i < DYN_LIST_N(dl); i++) { li[i].i = i; li[i].val = vals[i]; }
+      qsort(li, DYN_LIST_N(dl), sizeof(INT64_I), dynListLessThanInt64I);
+      for (i = 0; i < DYN_LIST_N(dl); i++) dfuAddDynListLong(indices, li[i].i);
+      free((void *) li);
+    }
+  break;
+  case DF_DOUBLE:
+    {
+      int i;
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      DOUBLE_I *li = (DOUBLE_I *) calloc(DYN_LIST_N(dl), sizeof(DOUBLE_I));
+      for (i = 0; i < DYN_LIST_N(dl); i++) { li[i].i = i; li[i].val = vals[i]; }
+      qsort(li, DYN_LIST_N(dl), sizeof(DOUBLE_I), dynListLessThanDoubleI);
+      for (i = 0; i < DYN_LIST_N(dl); i++) dfuAddDynListLong(indices, li[i].i);
       free((void *) li);
     }
   break;
@@ -9752,6 +9976,20 @@ int dynListCompareElements(DYN_LIST *l1, int i1, DYN_LIST *l2, int i2)
       return(dynListLessThanChar(&v1[i1], &v2[i2]));
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *v1 = (int64_t *) DYN_LIST_VALS(l1);
+      int64_t *v2 = (int64_t *) DYN_LIST_VALS(l2);
+      return(dynListLessThanInt64(&v1[i1], &v2[i2]));
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *v1 = (double *) DYN_LIST_VALS(l1);
+      double *v2 = (double *) DYN_LIST_VALS(l2);
+      return(dynListLessThanDouble(&v1[i1], &v2[i2]));
+    }
+    break;
   case DF_STRING:
     {
       char **v1 = (char **) DYN_LIST_VALS(l1);
@@ -9861,6 +10099,22 @@ static DYN_LIST *dynListDoUniqueNoSortList(DYN_LIST *sortlist)
       }
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(sortlist);
+      dfuAddDynListInt64(uniques, vals[0]);
+      for (i = 1; i < DYN_LIST_N(sortlist); i++)
+	if (vals[i] != vals[i-1]) dfuAddDynListInt64(uniques, vals[i]);
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(sortlist);
+      dfuAddDynListDouble(uniques, vals[0]);
+      for (i = 1; i < DYN_LIST_N(sortlist); i++)
+	if (vals[i] != vals[i-1]) dfuAddDynListDouble(uniques, vals[i]);
+    }
+    break;
   case DF_STRING:
     {
       char **vals = (char **) DYN_LIST_VALS(sortlist);
@@ -9883,6 +10137,8 @@ DYN_LIST *dynListUniqueList(DYN_LIST *dl)
   case DF_LONG:
   case DF_SHORT:
   case DF_FLOAT:
+  case DF_INT64:
+  case DF_DOUBLE:
   case DF_CHAR:
   case DF_STRING:
     {
@@ -9936,6 +10192,8 @@ DYN_LIST *dynListUniqueNoSortList(DYN_LIST *dl)
   case DF_LONG:
   case DF_SHORT:
   case DF_FLOAT:
+  case DF_INT64:
+  case DF_DOUBLE:
   case DF_CHAR:
   case DF_STRING:
     {

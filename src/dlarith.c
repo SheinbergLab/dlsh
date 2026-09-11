@@ -27,6 +27,7 @@
 
 #include "df.h"
 #include "dfana.h"
+#include "dlwide.h"
 
 #include <utilc.h>
 
@@ -40,6 +41,14 @@ DYN_LIST *dynListArithListList(DYN_LIST *l1, DYN_LIST *l2, int func)
   DYN_LIST *flist = NULL, *nonflist = NULL;
 
   if (!l1 || !l2) return(NULL);
+
+  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2))) {
+    if ((DYN_LIST_DATATYPE(l1) != DF_LIST && DYN_LIST_N(l1) == 0) ||
+	(DYN_LIST_DATATYPE(l2) != DF_LIST && DYN_LIST_N(l2) == 0)) {
+      int t = dlwPromote(DYN_LIST_DATATYPE(l1), DYN_LIST_DATATYPE(l2));
+      return dfuCreateDynList(t < 0 ? DF_DOUBLE : t, 1);
+    }
+  }
 
   /* If either operand is the empty list, just return it */
   if (DYN_LIST_DATATYPE(l1) != DF_LIST && DYN_LIST_N(l1) == 0) {
@@ -192,6 +201,10 @@ DYN_LIST *dynListArithListList(DYN_LIST *l1, DYN_LIST *l2, int func)
       return(list);
     }
   }
+
+  /* An 8-byte operand: the generic kernel handles every pairing. */
+  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)))
+    return dlwArith(l1, l2, func, copymode, length);
 
   if (DYN_LIST_DATATYPE(l1) != DYN_LIST_DATATYPE(l2)) {
     sametype = 0;
@@ -1821,6 +1834,10 @@ DYN_LIST *dynListRelationListList(DYN_LIST *l1, DYN_LIST *l2, int op)
   }
 
 
+  /* An 8-byte operand: the generic kernel handles every pairing. */
+  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)))
+    return dlwRelation(l1, l2, op, copymode, length, 0);
+
   if (DYN_LIST_DATATYPE(l1) != DYN_LIST_DATATYPE(l2)) {
     sametype = 0;
     if (DYN_LIST_DATATYPE(l1) == DF_FLOAT) {
@@ -3165,6 +3182,10 @@ DYN_LIST *dynListRelationListListIndices(DYN_LIST *l1, DYN_LIST *l2, int op)
   }
 
 
+  /* An 8-byte operand: the generic kernel handles every pairing. */
+  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)))
+    return dlwRelation(l1, l2, op, copymode, length, 1);
+
   if (DYN_LIST_DATATYPE(l1) != DYN_LIST_DATATYPE(l2)) {
     sametype = 0;
     if (DYN_LIST_DATATYPE(l1) == DF_FLOAT) {
@@ -4427,6 +4448,18 @@ DYN_LIST *dynListNotList(DYN_LIST *dl)
 	for (i = 0; i < DYN_LIST_N(dl); i++) newvals[i] = !vals[i];
 	break;
       }
+    case DF_INT64:
+      {
+	int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+	for (i = 0; i < DYN_LIST_N(dl); i++) newvals[i] = !vals[i];
+	break;
+      }
+    case DF_DOUBLE:
+      {
+	double *vals = (double *) DYN_LIST_VALS(dl);
+	for (i = 0; i < DYN_LIST_N(dl); i++) newvals[i] = !vals[i];
+	break;
+      }
     case DF_STRING:
       {
 	char **vals = (char **) DYN_LIST_VALS(dl);
@@ -4470,6 +4503,10 @@ int dynListTestVal(DYN_LIST *dl, int i)
       return(vals[i] != 0);
     }
     break;
+  case DF_INT64:
+    return ((int64_t *) DYN_LIST_VALS(dl))[i] != 0;
+  case DF_DOUBLE:
+    return ((double *) DYN_LIST_VALS(dl))[i] != 0.0;
   default:
     return(-1);
   }
@@ -4499,80 +4536,7 @@ DYN_LIST *dynListSumProdLists(DYN_LIST *dl, int op)
   }
   dfuFreeDynList(emptylist);
   
-  /* determine if we need a float list, or if ints will do */
-  vals = (DYN_LIST **) DYN_LIST_VALS(working);
-  for (i = 0; i < DYN_LIST_N(working); i++) {
-    if (DYN_LIST_N(vals[i]) == 0) continue;
-    if (DYN_LIST_DATATYPE(vals[i]) == DF_FLOAT) need_float = 1;
-  }
-  if (need_float) {
-    list = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(working));
-    for (i = 0; i < DYN_LIST_N(working); i++) {
-      if (DYN_LIST_N(vals[i]) == 0) dfuAddDynListFloat(list, 0.0);
-      else {
-	switch (DYN_LIST_DATATYPE(vals[i])) {
-	case DF_FLOAT:
-	  {
-	    float *val = (float *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListFloat(list, val[0]);
-	  }
-	  break;
-	case DF_LONG:
-	  {
-	    int *val = (int *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListFloat(list, (float) val[0]);
-	  }
-	  break;
-	case DF_SHORT:
-	  {
-	    short *val = (short *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListFloat(list, val[0]);
-	  }
-	  break;
-	case DF_CHAR:
-	  {
-	    char *val = (char *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListFloat(list, val[0]);
-	  }
-	  break;
-	}
-      }
-    }
-  }
-  else {			/* make a list of longs */
-    list = dfuCreateDynList(DF_LONG, DYN_LIST_N(working));
-    for (i = 0; i < DYN_LIST_N(working); i++) {
-      if (DYN_LIST_N(vals[i]) == 0) dfuAddDynListLong(list, 0);
-      else {
-	switch (DYN_LIST_DATATYPE(vals[i])) {
-	case DF_FLOAT:
-	  {
-	    float *val = (float *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListLong(list, (int) val[0]);
-	  }
-	  break;
-	case DF_LONG:
-	  {
-	    int *val = (int *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListLong(list, val[0]);
-	  }
-	  break;
-	case DF_SHORT:
-	  {
-	    short *val = (short *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListLong(list, val[0]);
-	  }
-	  break;
-	case DF_CHAR:
-	  {
-	    char *val = (char *) DYN_LIST_VALS(vals[i]);
-	    dfuAddDynListLong(list, val[0]);
-	  }
-	  break;
-	}
-      }
-    }
-  }
+  list = dlwScalarsToList(working);
   dfuFreeDynList(working);
   return(list);
 }
@@ -4624,6 +4588,12 @@ int dynListSumInt64(DYN_LIST *dl, long long *out)
       for (i = 0; i < DYN_LIST_N(dl); i++) acc += vals[i];
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) acc += vals[i];
+    }
+    break;
   default:
     return 0;
   }
@@ -4644,6 +4614,13 @@ int dynListSumDouble(DYN_LIST *dl, double *out)
   float *vals;
 
   if (!dl || DYN_LIST_N(dl) == 0) return 0;
+  if (DYN_LIST_DATATYPE(dl) == DF_DOUBLE) {
+    double *dv = (double *) DYN_LIST_VALS(dl);
+    for (i = 0; i < DYN_LIST_N(dl); i++)
+      if (!isnan(dv[i])) acc += dv[i];
+    *out = acc;
+    return 1;
+  }
   if (DYN_LIST_DATATYPE(dl) != DF_FLOAT) return 0;
 
   vals = (float *) DYN_LIST_VALS(dl);
@@ -4713,6 +4690,45 @@ DYN_LIST *dynListSumProdList(DYN_LIST *dl, int op)
 	retlist = dfuCreateDynList(DF_FLOAT, 1);
 	dfuAddDynListFloat(retlist, (float) retval);
       }
+    }
+    break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      int64_t retval = (op == DL_SUM_LIST) ? 0 : 1;
+      double dretval = (op == DL_SUM_LIST) ? 0.0 : 1.0;
+      int overflow = 0;
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+	if (op == DL_SUM_LIST) {
+	  if (__builtin_add_overflow(retval, vals[i], &retval)) overflow = 1;
+	  dretval += vals[i];
+	}
+	else {
+	  if (__builtin_mul_overflow(retval, vals[i], &retval)) overflow = 1;
+	  dretval *= vals[i];
+	}
+      }
+      if (!overflow) {
+	retlist = dfuCreateDynList(DF_INT64, 1);
+	dfuAddDynListInt64(retlist, retval);
+      }
+      else {
+	/* Beyond int64: a double is the closest thing on offer. */
+	retlist = dfuCreateDynList(DF_DOUBLE, 1);
+	dfuAddDynListDouble(retlist, dretval);
+      }
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      double retval = (op == DL_SUM_LIST) ? 0.0 : 1.0;
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+	if (op == DL_SUM_LIST) retval += vals[i];
+	else retval *= vals[i];
+      }
+      retlist = dfuCreateDynList(DF_DOUBLE, 1);
+      dfuAddDynListDouble(retlist, retval);
     }
     break;
   case DF_FLOAT:
@@ -4913,6 +4929,28 @@ DYN_LIST *dynListCumSumProdList(DYN_LIST *dl, int op)
       }
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      int64_t retval = (op == DL_SUM_LIST) ? 0 : 1;
+      retlist = dfuCreateDynList(DF_INT64, DYN_LIST_N(dl));
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+	if (op == DL_SUM_LIST) retval += vals[i]; else retval *= vals[i];
+	dfuAddDynListInt64(retlist, retval);
+      }
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      double retval = (op == DL_SUM_LIST) ? 0.0 : 1.0;
+      retlist = dfuCreateDynList(DF_DOUBLE, DYN_LIST_N(dl));
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+	if (op == DL_SUM_LIST) retval += vals[i]; else retval *= vals[i];
+	dfuAddDynListDouble(retlist, retval);
+      }
+    }
+    break;
   case DF_FLOAT:
     {
       float *vals = (float *) DYN_LIST_VALS(dl);
@@ -5063,6 +5101,22 @@ DYN_LIST *dynListSignList(DYN_LIST *dl)
       }
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      signs = dfuCreateDynList(DYN_LIST_DATATYPE(dl), DYN_LIST_N(dl));
+      for (i = 0; i < DYN_LIST_N(dl); i++)
+	dfuAddDynListInt64(signs, vals[i] < 0 ? -1 : (vals[i] > 0 ? 1 : 0));
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      signs = dfuCreateDynList(DYN_LIST_DATATYPE(dl), DYN_LIST_N(dl));
+      for (i = 0; i < DYN_LIST_N(dl); i++)
+	dfuAddDynListDouble(signs, vals[i] < 0. ? -1. : (vals[i] > 0. ? 1. : 0.));
+    }
+    break;
   case DF_LIST:
     {
       DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
@@ -5124,6 +5178,20 @@ DYN_LIST *dynListNegateList(DYN_LIST *dl)
       for (i = 0; i < DYN_LIST_N(dl); i++) {
 	dfuAddDynListChar(negs, (char) -vals[i]);
       }
+    }
+    break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      negs = dfuCreateDynList(DYN_LIST_DATATYPE(dl), DYN_LIST_N(dl));
+      for (i = 0; i < DYN_LIST_N(dl); i++) dfuAddDynListInt64(negs, -vals[i]);
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      negs = dfuCreateDynList(DYN_LIST_DATATYPE(dl), DYN_LIST_N(dl));
+      for (i = 0; i < DYN_LIST_N(dl); i++) dfuAddDynListDouble(negs, -vals[i]);
     }
     break;
   case DF_LIST:

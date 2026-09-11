@@ -979,18 +979,22 @@ typedef struct {
  * Wide-type guard
  *
  *    DF_INT64 and DF_DOUBLE lists (2026) are supported at the storage
- *  level: create, append, get/put, copy, select, convert, serialize.  The
- *  hundred-odd analysis commands built on per-type switches in dfana.c and
- *  dlarith.c have not been taught about them, and a switch with no arm for
- *  a type does not fail -- it returns an empty result, a wrong number, or
- *  reads memory at the wrong stride (dl_sort came back unsorted, dl_mean
- *  answered 0.0, dl_comp segfaulted).
+ *  level and, through the kernels in dlwide.c plus wide arms in dfana.c
+ *  and dlarith.c, by the arithmetic, comparison, sorting and reduction
+ *  commands.  The analysis commands that have NOT been taught about them
+ *  dispatch on element type with no default arm, and a switch with no arm
+ *  for a type does not fail -- it returns an empty result, a wrong number,
+ *  or reads memory at the wrong stride (dl_sort came back unsorted, dl_mean
+ *  answered 0.0, dl_recode segfaulted, before they were done).
  *
  *    So every dl_* command NOT on the verified list below is registered
  *  through dlWideGuardCmd, which refuses any argument that resolves to a
  *  list holding an int64 or double leaf, with a message naming the command.
  *  Teaching a command about the wide types means adding its name to the
- *  list; when the sweep is complete this guard goes away.
+ *  list, with a check in tests/test_wide_types.tcl; when the sweep is
+ *  complete this guard goes away.  Verified commands still pass through the
+ *  wrapper: it sets dlinfo->wideContext so literal arguments are parsed at
+ *  the operands' precision.
  *
  *    The check is a hash lookup per argument (no error result is ever set
  *  for a non-list argument), and a walk of the sublist structure -- not the
@@ -1002,6 +1006,7 @@ typedef struct {
   Tcl_CmdProc *proc;
   ClientData cd;
   const char *name;
+  int guarded;			/* refuse wide args (1) or just note them (0) */
 } DL_WIDEGUARD;
 
 static const char *dlWideOkCommands[] = {
@@ -1029,6 +1034,26 @@ static const char *dlWideOkCommands[] = {
   "dl_fromString64", "dl_dump", "dl_dumpMatrix", "dl_dumpMatrixInCols",
   "dl_dumpMatrixInRows", "dl_dumpAsRow", "dl_dumpBytes", "dl_dumpBytesAs",
   "dl_write", "dl_writeAs", "dl_read",
+  /* arithmetic and comparison: dlwArith / dlwRelation in dlwide.c */
+  "dl_add", "dl_sub", "dl_mult", "dl_div", "dl_pow", "dl_atan2", "dl_fmod",
+  "dl_and", "dl_or", "dl_eq", "dl_noteq", "dl_lt", "dl_gt", "dl_lte", "dl_gte",
+  "dl_oneof", "dl_mod", "dl_andIndex", "dl_orIndex", "dl_eqIndex",
+  "dl_noteqIndex", "dl_ltIndex", "dl_gtIndex", "dl_lteIndex", "dl_gteIndex",
+  "dl_not", "dl_where",
+  /* elementwise math: wide cases in dynListMathOneArg and friends */
+  "dl_abs", "dl_acos", "dl_asin", "dl_atan", "dl_ceil", "dl_cos", "dl_cosh",
+  "dl_exp", "dl_lgamma", "dl_floor", "dl_round", "dl_log", "dl_log10",
+  "dl_sin", "dl_sinh", "dl_sqrt", "dl_tan", "dl_tanh", "dl_sign", "dl_negate",
+  "dl_diff", "dl_gradient", "dl_cumsum", "dl_cumprod",
+  /* ordering */
+  "dl_sort", "dl_bsort", "dl_sortIndices", "dl_bsortIndices", "dl_rank",
+  "dl_recode", "dl_unique", "dl_uniqueNoSort", "dl_find", "dl_findAll",
+  /* reductions */
+  "dl_min", "dl_max", "dl_any", "dl_all", "dl_minIndex", "dl_maxIndex",
+  "dl_sum", "dl_prod", "dl_mean", "dl_std", "dl_var",
+  "dl_mins", "dl_maxs", "dl_anys", "dl_alls", "dl_minIndices", "dl_maxIndices",
+  "dl_minPositions", "dl_maxPositions", "dl_sums", "dl_prods", "dl_means",
+  "dl_stds", "dl_vars",
   NULL
 };
 
@@ -1111,24 +1136,36 @@ static DYN_LIST *dlPeekDynList(DLSHINFO *dlinfo, const char *name)
   return dl;
 }
 
+/*
+ * Every dl_* command from the table goes through here.  It looks at the
+ * arguments once: a verified command runs with dlinfo->wideContext set when
+ * any argument is (or contains) an int64/double list, so that literal
+ * arguments are parsed at matching precision (see tclTclListToDynList); an
+ * unverified command refuses such arguments outright.
+ */
 static int dlWideGuardCmd(ClientData data, Tcl_Interp *interp,
 			  int argc, const char *argv[])
 {
   DL_WIDEGUARD *g = (DL_WIDEGUARD *) data;
   DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
-  int i;
+  int i, wide = 0, saved, rc;
 
-  if (dlinfo) {
-    for (i = 1; i < argc; i++) {
-      if (dlListHasWideLeaf(dlPeekDynList(dlinfo, argv[i]))) {
-	Tcl_AppendResult(interp, g->name,
-			 ": int64/double lists are not supported by this "
-			 "command yet (convert with dl_int or dl_float)", NULL);
-	return TCL_ERROR;
-      }
-    }
+  if (!dlinfo) return g->proc(g->cd, interp, argc, argv);
+
+  for (i = 1; i < argc; i++) {
+    if (dlListHasWideLeaf(dlPeekDynList(dlinfo, argv[i]))) { wide = 1; break; }
   }
-  return g->proc(g->cd, interp, argc, argv);
+  if (wide && g->guarded) {
+    Tcl_AppendResult(interp, g->name,
+		     ": int64/double lists are not supported by this "
+		     "command yet (convert with dl_int or dl_float)", NULL);
+    return TCL_ERROR;
+  }
+  saved = dlinfo->wideContext;
+  dlinfo->wideContext = wide;
+  rc = g->proc(g->cd, interp, argc, argv);
+  dlinfo->wideContext = saved;
+  return rc;
 }
 
 static void dlWideGuardFree(ClientData cd)
@@ -1280,18 +1317,21 @@ int Dl_Init(Tcl_Interp *interp)
 		   (void *) dlshinfo);
 
   while (DLcommands[i].name) {
-    if (dlWideOk(DLcommands[i].name)) {
+    if (strncmp(DLcommands[i].name, "dl_", 3)) {
+      /* dg_* and the rest: no wide-type handling needed */
       Tcl_CreateCommand(interp, DLcommands[i].name,
 			(Tcl_CmdProc *) DLcommands[i].func,
 			(ClientData) DLcommands[i].cd,
 			(Tcl_CmdDeleteProc *) NULL);
     }
     else {
-      /* Not yet taught about int64/double lists: see dlWideGuardCmd. */
+      /* See dlWideGuardCmd: verified commands get the wide-context flag,
+	 the others are refused int64/double arguments. */
       DL_WIDEGUARD *g = (DL_WIDEGUARD *) ckalloc(sizeof(DL_WIDEGUARD));
       g->proc = (Tcl_CmdProc *) DLcommands[i].func;
       g->cd = (ClientData) DLcommands[i].cd;
       g->name = DLcommands[i].name;
+      g->guarded = !dlWideOk(DLcommands[i].name);
       Tcl_CreateCommand(interp, DLcommands[i].name, dlWideGuardCmd,
 			(ClientData) g, dlWideGuardFree);
     }
@@ -6061,6 +6101,52 @@ DYN_LIST *tclTclListToDynList(Tcl_Interp *interp, char *list)
     return NULL;
   }
 
+  /* Inside a command that has an int64/double list among its arguments,
+     parse literals at that precision: integers that fit int32 still make a
+     long list, wider integers an int64 list, and any fraction a double list.
+     A float32 "0.1" would otherwise never compare equal to a double 0.1,
+     and "5000000001" used to quietly become a float. */
+  {
+    DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
+    if (dlinfo && dlinfo->wideContext) {
+      int use_double = 0, use_wide = 0;
+      Tcl_WideInt wval;
+      Tcl_Obj *o;
+      for (i = 0; i < varArgc && !use_double; i++) {
+	o = Tcl_NewStringObj(varArgv[i], -1);
+	Tcl_IncrRefCount(o);
+	if (Tcl_GetWideIntFromObj(interp, o, &wval) == TCL_OK) {
+	  if (wval > INT_MAX || wval < INT_MIN) use_wide = 1;
+	}
+	else if (Tcl_GetDoubleFromObj(interp, o, &fval) == TCL_OK) use_double = 1;
+	else { Tcl_DecrRefCount(o); Tcl_Free((void *) varArgv); Tcl_ResetResult(interp); return NULL; }
+	Tcl_DecrRefCount(o);
+      }
+      Tcl_ResetResult(interp);
+      if (use_double || use_wide) {
+	newlist = dfuCreateDynList(use_double ? DF_DOUBLE : DF_INT64, varArgc);
+	for (i = 0; i < varArgc; i++) {
+	  o = Tcl_NewStringObj(varArgv[i], -1);
+	  Tcl_IncrRefCount(o);
+	  if (use_double) {
+	    Tcl_GetDoubleFromObj(interp, o, &fval);
+	    dfuAddDynListDouble(newlist, fval);
+	  }
+	  else {
+	    Tcl_GetWideIntFromObj(interp, o, &wval);
+	    dfuAddDynListInt64(newlist, (int64_t) wval);
+	  }
+	  Tcl_DecrRefCount(o);
+	}
+	Tcl_Free((void *) varArgv);
+	tclPutList(interp, newlist);
+	Tcl_ResetResult(interp);
+	return newlist;
+      }
+      /* everything fits int32: fall through to the ordinary long list */
+    }
+  }
+
   /* default to int list, only switch to float if necessary */
   ilist = dfuCreateDynList(DF_LONG, varArgc);
   for (i = 0; i < varArgc; i++) {
@@ -8895,7 +8981,7 @@ static int tclReduceList (ClientData data, Tcl_Interp *interp,
 			  int argc, char *argv[])
 {
   DYN_LIST *dl, *retlist, *collapsed;
-  float retval = 0.0;
+  double retval = 0.0;	/* was float: narrowed the double the reducers return */
   int intval;
 
   int operation = (Tcl_Size) data;

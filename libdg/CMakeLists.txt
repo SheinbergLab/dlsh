@@ -24,6 +24,7 @@ add_library(dg
   ../src/dgjson.c
   ../src/dfana.c
   ../src/dlarith.c
+  ../src/dlwide.c
 )
 
 # Base includes

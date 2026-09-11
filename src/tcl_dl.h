@@ -72,6 +72,13 @@ typedef struct _dlshinfo {
      hot path. */
   int namesRecycled;
 
+  /* Set by the dl_* command wrapper while a command whose arguments include
+     an int64 or double list is running.  tclTclListToDynList reads it: in
+     that context a literal "0.1" or "5000000001" becomes a double / int64
+     temp list, so it is compared or combined at full precision; otherwise
+     literals stay float / long exactly as they always have. */
+  int wideContext;
+
   TMPLIST_STACK *TmpListStack;
   DYN_LIST *TmpListRecordList;
     

@@ -278,26 +278,42 @@ two 8-byte types as well:
 `long` is still 32 bits and `float` still 32; nothing about existing lists
 changed.
 
-**What works on wide lists today** is the storage layer: create, append,
-prepend, insert, `dl_get`/`dl_put`, `dl_tcllist`, `dl_foreach`, copy,
-reverse, select, choose, permute, repeat, concat, interleave, the
-conversions in both directions, `dg_write`/`dg_read`, `dg_toString`,
-`dl_toString`, JSON, msgpack, and Arrow (where they round-trip losslessly,
-which they never did before).
+**What works on wide lists:** the storage layer (create, append, get/put,
+`dl_tcllist`, `dl_foreach`, copy, select, permute, concat, conversions,
+`dg_write`/`dg_read`, JSON, msgpack, Arrow), and the analysis core:
+arithmetic (`dl_add` .. `dl_fmod`), comparisons and their `Index` forms,
+`dl_not`, `dl_where`, the elementwise math functions, `dl_negate`,
+`dl_diff`, `dl_gradient`, `dl_cumsum`, sorting and `dl_sortIndices`,
+`dl_unique`, `dl_rank`, `dl_recode`, `dl_find`, and the reductions
+(`dl_sum`, `dl_prod`, `dl_mean`, `dl_std`, `dl_var`, `dl_min`, `dl_max`,
+`dl_any`, `dl_all`, their `s` and `Index`/`Positions` forms).
 
-**Everything else errors** rather than answering: `dl_sum`, `dl_sort`,
-`dl_mean`, the comparison and arithmetic commands, and the rest of the
-analysis surface refuse a wide list with
+**Promotion.** A result is as wide as its widest operand: char < short <
+long < int64 < float < double, except that int64 combined with float gives
+double, because a float cannot hold an int64. int64 arithmetic wraps on
+overflow exactly as long does; `dl_sum` and `dl_prod` of an int64 list
+fall back to double rather than wrap. Comparisons between integer types are
+exact in 64 bits.
 
-    dl_sum: int64/double lists are not supported by this command yet
+**Literals follow the operand.** In a command that has a wide list among
+its arguments, a literal such as `0.1` or `5000000001` is parsed as a
+double or an int64, so `dl_eq $doubles 0.1` is true where a float32 `0.1`
+never could be. Without a wide list present, literals stay float and long
+exactly as before.
+
+**What still errors** rather than answering: the commands not yet verified
+on wide lists (`dl_hist`, `dl_findIndices`, `dl_countOccurences`, the
+`dl_b*`/`dl_h*` reducers, `dl_idiff`, `dl_recodeWithTies`, and a long
+tail) refuse a wide list with
+
+    dl_hist: int64/double lists are not supported by this command yet
     (convert with dl_int or dl_float)
 
-That refusal is deliberate. The analysis commands dispatch on element type
-with no default arm, and before the guard a wide list came back unsorted
-from `dl_sort` and with `0.0` from `dl_mean`. Convert with `dl_int` or
-`dl_float` when 32 bits is enough for the computation, and see
-`dlWideOkCommands` in `src/tcl_dl.c` for the list of commands that have
-been verified.
+That refusal is deliberate: those commands dispatch on element type with no
+default arm, and before the guard a wide list came back unsorted from
+`dl_sort` and with `0.0` from `dl_mean`. `dlWideOkCommands` in
+`src/tcl_dl.c` is the list of verified commands; the wide-type kernels they
+share live in `src/dlwide.c`.
 
 **Files that contain a wide column can only be opened by readers that know
 tags 11 and 12**: dlsh from this version on, dgread 1.2.1+ for Python (int64
