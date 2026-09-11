@@ -161,6 +161,26 @@ set acc {}
 dl_dotimes a 2 { dl_dotimes b 2 { lappend acc $a$b } }
 check "dotimes nested" $acc {00 01 10 11}
 
+# --- the same call must also survive interpreter TEARDOWN (regression) ---
+# A script run with `dlsh -e` deletes its interpreter instead of calling
+# exit, so this exercises Tcl_DeleteInterp. A failed command keeps its
+# argument objects alive in the interp's errorStack, and a handle object
+# freed that late used to call into libdlsh after Tcl had dlclose'd it
+# (libdlsh exported a no-op Dlsh_Unload). Same for a bare handle result.
+# `exec` errors on a non-zero exit or a signal, so a crash fails the check.
+set exe [info nameofexecutable]
+if {[string match dlsh* [file tail $exe]]} {
+    check "teardown after refused call" \
+        [catch {exec $exe -e {set i [dl_ilist 1 2 3]; catch {dl_foreach $i $i {}}; puts [dl_tcllist $i]}} out] 0
+    check "teardown output" $out {1 2 3}
+    check "teardown with failed cmd holding a handle" \
+        [catch {exec $exe -e {set i [dl_ilist 1 2 3]; catch {nosuchcmd $i}; puts ok}} out] 0
+    check "teardown with handle as script result" \
+        [catch {exec $exe -e {dl_ilist 1 2 3}} out] 0
+} else {
+    puts "SKIP teardown checks (not running under dlsh: $exe)"
+}
+
 # --- stress: per-element temp lists churn through create+free without crashing ---
 set rows {}
 for {set i 0} {$i < 2000} {incr i} { lappend rows [dl_ilist $i [expr {$i*2}]] }

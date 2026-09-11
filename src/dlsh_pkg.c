@@ -44,15 +44,25 @@ EXPORT(int,Dlsh_SafeInit) (Tcl_Interp *interp)
   return Dlsh_Init(interp);
 }
 
-EXPORT(int,Dlsh_Unload) (Tcl_Interp *interp)
-{
-  return TCL_OK;
-}
-
-EXPORT(int,Dlsh_SafeUnload) (Tcl_Interp *interp)
-{
-  return TCL_OK;
-}
+/*
+ * Deliberately NO Dlsh_Unload / Dlsh_SafeUnload.
+ *
+ * Exporting an unload proc tells Tcl the library may be dlclose'd, and Tcl
+ * does exactly that when the last interpreter that loaded it is deleted
+ * (tclLoad.c LoadCleanupProc -> UnloadLibrary -> Tcl_FSUnloadFile, under
+ * TCL_UNLOAD_DLLS which is on for every Unix build).  That happens from the
+ * assoc-data callbacks in DeleteInterpProc, i.e. BEFORE the interpreter frees
+ * its result, errorInfo/errorStack and literals -- and any of those may hold a
+ * Tcl_Obj of the "dynlist" type (dlref.c), whose Tcl_ObjType struct and
+ * freeIntRepProc live in this library.  TclFreeObj then calls through an
+ * unmapped pointer: `dlsh -e 'dl_ilist 1 2 3'` segfaulted at exit, as did any
+ * `-e` script in which a command failed with a list handle among its
+ * arguments.  The library also registers the obj type process-wide and
+ * installs dfuDynListFreeHook, neither of which can be taken back.
+ *
+ * With no unload proc, UnloadLibrary just detaches the interp and leaves the
+ * code mapped, which is the only safe thing for this library.
+ */
 
 #ifdef WIN32
 BOOL APIENTRY
