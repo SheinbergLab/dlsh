@@ -1330,7 +1330,9 @@ static int dslog_add_dsvars(FILE *fp, DYN_LIST *namelist,
    *              (unchanged from the historical format)
    *   <dst>name  per-RECORD timestamps, ms from that obs's BEGINOBS --
    *              the same clock and anchor as e_times, so datapoint
-   *              records and events sort on one axis
+   *              records and events sort on one axis.  DF_LONG (whole
+   *              ms), or DF_DOUBLE with the microsecond fraction kept
+   *              when dslog_wide_types is on -- same unit either way.
    *   <dsn>name  per-RECORD value counts, which split the concatenated
    *              <ds> values back into records (log buffering coalesces
    *              several datapoints into one record; extio ain blocks
@@ -1365,10 +1367,11 @@ static int dslog_add_dsvars(FILE *fp, DYN_LIST *namelist,
  *  File-level columns for blob-typed variables (JPEG/PPM frames):
  *
  *    <blob>name   DF_LIST -- one DF_CHAR byte vector per record
- *    <blobt>name  DF_LONG -- per-record ms from the file's first record
+ *    <blobt>name  per-record ms from the file's first record
  *                 (same anchor as obs_start_ms, so per-obs request events
  *                  can be paired with capture times: request_abs_ms =
- *                  obs_start_ms[obs] + e_time)
+ *                  obs_start_ms[obs] + e_time).  DF_LONG, or DF_DOUBLE with
+ *                  the microsecond fraction when dslog_wide_types is on.
  *
  *  Deliberately NOT split per obs by log position: a frame requested near
  *  the end of an obs is encoded asynchronously and can be written after
@@ -1404,7 +1407,8 @@ static int dslog_add_blob_vars(FILE *fp, DYN_LIST *namelist, DYN_GROUP *dg,
     val_cols[i] = dfuAddDynGroupNewList(dg, listname, DF_LIST, 8);
     free(listname);
     listname = make_ds_listname("<blobt>", varnames[i]);
-    time_cols[i] = dfuAddDynGroupNewList(dg, listname, DF_LONG, 8);
+    time_cols[i] = dfuAddDynGroupNewList(dg, listname,
+					 dslog_wide_types ? DF_DOUBLE : DF_LONG, 8);
     free(listname);
   }
 
@@ -1420,8 +1424,12 @@ static int dslog_add_blob_vars(FILE *fp, DYN_LIST *namelist, DYN_GROUP *dg,
 	if (!strcmp(d->varname, varnames[i])) {
 	  payload = create_val_list(d->data.type, d->data.len, d->data.buf);
 	  dfuMoveDynListList(DYN_GROUP_LIST(dg, val_cols[i]), payload);
-	  dfuAddDynListLong(DYN_GROUP_LIST(dg, time_cols[i]),
-			    (int)((int64_t)(d->timestamp - ctx->file_t0)/1000));
+	  if (dslog_wide_types)
+	    dfuAddDynListDouble(DYN_GROUP_LIST(dg, time_cols[i]),
+				(double)(int64_t)(d->timestamp - ctx->file_t0)/1000.0);
+	  else
+	    dfuAddDynListLong(DYN_GROUP_LIST(dg, time_cols[i]),
+			      (int)((int64_t)(d->timestamp - ctx->file_t0)/1000));
 	  break;
 	}
       }
@@ -1662,9 +1670,16 @@ static int addDservObsPeriod(
       for (i = 0; i < nvars; i++) {
 	if (!strcmp(d->varname, varnames[i])) {
 	  dls[i] = add_dpoint_to_list(dls[i], d);
-	  if (!tls[i]) tls[i] = dfuCreateDynList(DF_LONG, 8);
-	  dfuAddDynListLong(tls[i],
-			    (int)((int64_t)(d->timestamp - obs_t0)/1000));
+	  if (dslog_wide_types) {
+	    if (!tls[i]) tls[i] = dfuCreateDynList(DF_DOUBLE, 8);
+	    dfuAddDynListDouble(tls[i],
+				(double)(int64_t)(d->timestamp - obs_t0)/1000.0);
+	  }
+	  else {
+	    if (!tls[i]) tls[i] = dfuCreateDynList(DF_LONG, 8);
+	    dfuAddDynListLong(tls[i],
+			      (int)((int64_t)(d->timestamp - obs_t0)/1000));
+	  }
 	  if (!nls[i]) nls[i] = dfuCreateDynList(DF_LONG, 8);
 	  dfuAddDynListLong(nls[i], dpoint_val_count(d));
 	  dpoint_free(d);
@@ -1707,7 +1722,7 @@ static int addDservObsPeriod(
 	    DYN_LIST *empty = dfuCreateDynList(df_type_for_dstype(vartypes[i]), 1);
 	    dfuMoveDynListList(DYN_GROUP_LIST(dg, val_cols[i]), empty);
 	    dfuMoveDynListList(DYN_GROUP_LIST(dg, time_cols[i]),
-			       dfuCreateDynList(DF_LONG, 1));
+			       dfuCreateDynList(dslog_wide_types ? DF_DOUBLE : DF_LONG, 1));
 	    dfuMoveDynListList(DYN_GROUP_LIST(dg, cnt_cols[i]),
 			       dfuCreateDynList(DF_LONG, 1));
 	  }

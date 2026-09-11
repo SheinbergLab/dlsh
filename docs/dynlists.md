@@ -306,7 +306,10 @@ and float64 arrays), R 1.1.1+ (both arrive as doubles; int64 is exact to
 viewers. Older readers report the file as corrupt or a newer format. For
 that reason `dslog::read` and `dslog::readESS` still narrow doubles to float
 and drop int64 values by default; turn on `dslog::wideTypes 1` once every
-consumer of a rig's files has been updated.
+consumer of a rig's files has been updated. With it on, the per-record time
+columns `<dst>NAME` and `<blobt>NAME` also become `double`: still
+milliseconds from the same anchors, but with the microsecond fraction kept
+instead of truncated.
 
 ---
 

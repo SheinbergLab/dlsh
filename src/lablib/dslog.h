@@ -24,9 +24,12 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg);
 
 /* Whether DSERV_DOUBLE and DSERV_INT64 datapoints become DF_DOUBLE and
    DF_INT64 columns (1), or are narrowed to float / dropped as they always
-   were (0, the default).  Off by default because a dg holding the 8-byte
-   tags cannot be opened by any reader built before those tags existed;
-   turn it on per rig once every consumer of its files has been updated.
+   were (0, the default).  On, the per-record time columns <dst>NAME and
+   <blobt>NAME are DF_DOUBLE too -- still milliseconds from the same
+   anchors, but keeping the microsecond fraction instead of truncating to
+   whole ms.  Off by default because a dg holding the 8-byte tags cannot
+   be opened by any reader built before those tags existed; turn it on per
+   rig once every consumer of its files has been updated.
    dslog_set_wide_types returns the previous setting. */
 int dslog_set_wide_types(int on);
 int dslog_get_wide_types(void);
