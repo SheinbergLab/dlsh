@@ -272,6 +272,9 @@ EXPORTS
 	rand_fill
 	rand_choose
 	file_basename
+	file_basename_n
+	file_rootname_n
+	file_pathname_n
 	raninit
 	gzopen
 	gzclose

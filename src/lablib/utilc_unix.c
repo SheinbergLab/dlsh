@@ -159,13 +159,13 @@ int find_matching_files(char *template, char *path)
   else if (FL_FILENAMES(fl)) free_file_list(fl);
   
   if (path) {
-    strcpy(FL_PATH(fl), path);
-    file_basename(FL_PATTERN(fl), template);
+    snprintf(FL_PATH(fl), sizeof(FL_PATH(fl)), "%s", path);
+    file_basename_n(FL_PATTERN(fl), sizeof(FL_PATTERN(fl)), template);
   }
   
   else {
-    file_pathname(FL_PATH(fl), template);
-    file_basename(FL_PATTERN(fl), template);
+    file_pathname_n(FL_PATH(fl), sizeof(FL_PATH(fl)), template);
+    file_basename_n(FL_PATTERN(fl), sizeof(FL_PATTERN(fl)), template);
 
     if (!strlen(FL_PATH(fl))) strcpy(FL_PATH(fl),"./");
   }
@@ -201,7 +201,7 @@ int find_matching_files(char *template, char *path)
   }
   
   do {
-    file_basename(filename_only,entry->d_name);
+    file_basename_n(filename_only, sizeof(filename_only), entry->d_name);
     if (!rejected(filename_only) && re_exec(filename_only)) FL_NMATCHES(fl)++;
   } while (entry = readdir(dir));
   
@@ -237,7 +237,7 @@ int find_matching_files(char *template, char *path)
   }
 
   do {
-    file_basename(filename_only,entry->d_name);
+    file_basename_n(filename_only, sizeof(filename_only), entry->d_name);
     if (!rejected(filename_only) && re_exec(filename_only)) {
       FL_FILENAME(fl, FL_CURRENT_MATCH(fl)) = 
 	(char *) malloc(strlen(entry->d_name)+strlen(FL_PATH(fl))+1);
@@ -337,56 +337,87 @@ int free_file_list(FileList *fl)
 
 #endif
 
-int file_rootname(char *rootname, char *name)
-{
-  char bname[128], *pch;
+/*
+ * Filename component helpers.
+ *
+ * The *_n variants take the destination size (bytes, including NUL),
+ * always NUL-terminate, and truncate when the component does not fit.
+ * They return 1 on success and 0 if dst/name is NULL or size is 0.
+ * Both '/' and '\\' are treated as path separators.
+ *
+ * The legacy unbounded forms (file_basename, file_rootname,
+ * file_pathname) remain only for ABI compatibility with external
+ * consumers of lablib; they are wrappers over the *_n forms with no
+ * limit and must not be used for new code.  Every in-tree caller uses
+ * the bounded forms.
+ */
 
-  file_basename(bname, name);
-  if(pch = strrchr(bname, '.')) {
-    *pch = 0;
-  }
-  strcpy(rootname, bname);
-  
-  if(pch) return(1);
-  else return(0);
+/* return pointer to the last path separator in name, or NULL */
+static const char *last_separator(const char *name)
+{
+  const char *s = strrchr(name, '/');
+  const char *b = strrchr(name, '\\');
+  if (!s) return b;
+  if (!b) return s;
+  return (s > b) ? s : b;
 }
 
+/* bounded copy of len bytes of src into dst (size bytes), NUL-terminated */
+static void copy_bounded(char *dst, size_t size, const char *src, size_t len)
+{
+  if (len > size-1) len = size-1;
+  memcpy(dst, src, len);
+  dst[len] = '\0';
+}
+
+int file_basename_n(char *dst, size_t size, const char *name)
+{
+  const char *sep;
+  if (!dst || !size || !name) return 0;
+  sep = last_separator(name);
+  if (sep) name = sep+1;
+  copy_bounded(dst, size, name, strlen(name));
+  return 1;
+}
+
+int file_rootname_n(char *dst, size_t size, const char *name)
+{
+  char *dot;
+  if (!file_basename_n(dst, size, name)) return 0;
+  if ((dot = strrchr(dst, '.'))) {
+    *dot = '\0';
+    return 1;
+  }
+  return 0;
+}
+
+int file_pathname_n(char *dst, size_t size, const char *name)
+{
+  const char *sep;
+  if (!dst || !size || !name) return 0;
+  sep = last_separator(name);
+  if (!sep) {
+    dst[0] = '\0';
+    return 0;
+  }
+  copy_bounded(dst, size, name, sep-name);
+  return 1;
+}
+
+/* legacy unbounded wrappers -- see note above */
+int file_rootname(char *rootname, char *name)
+{
+  return file_rootname_n(rootname, (size_t) -1, name);
+}
 
 int file_basename(char *basename, char *name)
 {
-  int i;
-  if (!strchr(name,'\\') && !strchr(name,'/')) {
-    strcpy(basename, name);
-    return(1);
-  }
-  
-  i = strlen(name);
-  while(--i) {
-    if (name[i] == '\\' || name[i] == '/') {
-      strcpy(basename, &name[i+1]);
-      return(1);
-    }
-  }
-  return(0);
+  return file_basename_n(basename, (size_t) -1, name);
 }
 
 int file_pathname(char *path, char *name)
 {
-  int i;
-  if (!strchr(name,'\\') && !strchr(name,'/')) {
-    strcpy(path, "");
-    return(0);
-  }
-  
-  i = strlen(name);
-  while(--i) {
-    if (name[i] == '\\' || name[i] == '/') {
-      strncpy(path, name, i);
-      path[i] = 0;
-      return(1);
-    }
-  }
-  return(0);
+  return file_pathname_n(path, (size_t) -1, name);
 }
 
 /*

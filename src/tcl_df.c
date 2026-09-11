@@ -185,7 +185,7 @@ static int tclOpenDataFile (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  file_basename(filebase, argv[1]);
+  file_basename_n(filebase, sizeof(filebase), argv[1]);
 
   if ((entryPtr = Tcl_FindHashEntry(&dfTable, filebase))) {
     char resultstr[128];
@@ -258,7 +258,7 @@ static int tclDataFileOpen (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  file_basename(filebase, argv[1]);
+  file_basename_n(filebase, sizeof(filebase), argv[1]);
   if ((entryPtr = Tcl_FindHashEntry(&dfTable, argv[1])) ||
       (entryPtr = Tcl_FindHashEntry(&dfTable, filebase))) {
     Tcl_SetObjResult(interp, Tcl_NewIntObj(1));
@@ -295,7 +295,7 @@ static int tclCloseDataFile (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  file_basename(filebase, argv[1]);
+  file_basename_n(filebase, sizeof(filebase), argv[1]);
   if ((entryPtr = Tcl_FindHashEntry(&dfTable, argv[1])) ||
       (entryPtr = Tcl_FindHashEntry(&dfTable, filebase))) {
     Tcl_DeleteHashEntry(entryPtr);
@@ -370,7 +370,7 @@ static int tclWriteDataFile (ClientData data, Tcl_Interp *interp,
     outfile = argv[3];
   }
 
-  file_basename(filebase, argv[1]);
+  file_basename_n(filebase, sizeof(filebase), argv[1]);
   if ((entryPtr = Tcl_FindHashEntry(&dfTable, argv[1])) ||
       (entryPtr = Tcl_FindHashEntry(&dfTable, filebase))) {
     if ((df = Tcl_GetHashValue(entryPtr))) {
@@ -423,8 +423,8 @@ static int tclGetDataFile (ClientData data, Tcl_Interp *interp,
    */
   if (argc > 1 && strchr(argv[1],':')) {
     if ((colon = strchr(argv[1],':'))) {
-      strncpy(filebase, argv[1], colon-argv[1]);
-      filebase[colon-argv[1]] = 0;
+      snprintf(filebase, sizeof(filebase), "%.*s",
+	       (int) (colon-argv[1]), argv[1]);
 
       if ((entryPtr = Tcl_FindHashEntry(&dfTable, filebase))) {
 	if (!(df = Tcl_GetHashValue(entryPtr))) {
@@ -477,7 +477,7 @@ static int tclGetDataFile (ClientData data, Tcl_Interp *interp,
   }
 
   
-  file_basename(filebase, argv[1]);
+  file_basename_n(filebase, sizeof(filebase), argv[1]);
   if ((entryPtr = Tcl_FindHashEntry(&dfTable, argv[1])) ||
       (entryPtr = Tcl_FindHashEntry(&dfTable, filebase))) {
     if (!(df = Tcl_GetHashValue(entryPtr))) {
@@ -654,8 +654,8 @@ static int tclObsGetDataFile (ClientData data, Tcl_Interp *interp,
     int i, retval;
     char **newargv;
     if ((colon = strchr(argv[1],':'))) {
-      strncpy(filebase, argv[1], colon-argv[1]);
-      filebase[colon-argv[1]] = 0;
+      snprintf(filebase, sizeof(filebase), "%.*s",
+	       (int) (colon-argv[1]), argv[1]);
       
       if ((entryPtr = Tcl_FindHashEntry(&dfTable, filebase)))
 	df = Tcl_GetHashValue(entryPtr);
@@ -711,7 +711,7 @@ static int tclObsGetDataFile (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
   
-  file_basename(filebase, argv[1]);
+  file_basename_n(filebase, sizeof(filebase), argv[1]);
   if ((entryPtr = Tcl_FindHashEntry(&dfTable, argv[1])) ||
       (entryPtr = Tcl_FindHashEntry(&dfTable, filebase))) {
     df = Tcl_GetHashValue(entryPtr);
@@ -1351,7 +1351,7 @@ static int tclSetDataFile (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  file_basename(filebase, argv[1]);
+  file_basename_n(filebase, sizeof(filebase), argv[1]);
   if ((entryPtr = Tcl_FindHashEntry(&dfTable, argv[1])) ||
       (entryPtr = Tcl_FindHashEntry(&dfTable, filebase))) {
     df = Tcl_GetHashValue(entryPtr);
