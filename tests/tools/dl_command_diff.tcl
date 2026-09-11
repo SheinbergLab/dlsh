@@ -46,6 +46,16 @@ proc norm {r} {
     regsub -all {%[a-zA-Z]*[0-9]+%} $r {<tmp>} r
     regsub -all {>[0-9]+<} $r {<ret>} r
     regsub -all {&[^& ]*_[0-9]+&} $r {<loc>} r
+    # Tcl's own error messages cut long text short and append "..." -- an
+    # expr error quotes only the head of the expression, so a name in it can
+    # arrive as "%list85..." with its closing marker gone.  Without this the
+    # counter inside shows through and two builds that merely allocate a
+    # different number of temps before that call read as a diff.
+    # The ">" form needs a digit, or it would re-match the ">..." tail of a
+    # <tmp>... placeholder the line above just produced.
+    regsub -all {%[a-zA-Z]*[0-9]*\.\.\.} $r {<tmp>...} r
+    regsub -all {>[0-9]+\.\.\.} $r {<ret>...} r
+    regsub -all {&[^& ]*_[0-9]*\.\.\.} $r {<loc>...} r
     if {[string length $r] > 200} { set r "[string range $r 0 199]...(trunc)" }
     return [string map {\n " "} $r]
 }
