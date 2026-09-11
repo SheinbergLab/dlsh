@@ -10890,6 +10890,8 @@ static int tclForEach(ClientData data, Tcl_Interp * interp, int objc,
   varName = objv[1];
   body    = objv[3];
 
+  if (tclCheckLoopVar(interp, objv[0], varName) != TCL_OK) return TCL_ERROR;
+
   if (tclFindDynList(interp, Tcl_GetString(objv[2]), &dl) != TCL_OK)
     return TCL_ERROR;
 

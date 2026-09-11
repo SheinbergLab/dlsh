@@ -103,6 +103,30 @@ set a done; dl_foreach x [dl_ilist] { set a ran }; check "empty list" $a done
 check "error in body propagates" [catch { dl_foreach x [dl_ilist 1 2] { error boom } }] 1
 dl_foreach x [dl_ilist 1 2 3] { }; check "loop var unset after" [info exists x] 0
 
+# --- loop var that IS a list handle (regression: used to segfault) ---
+# A temp list's name ("%listN%") is also the name of the hidden variable
+# whose write/unset trace frees the list. Binding the loop var to that name
+# fired the trace and freed the list being iterated. It must be a clean
+# error and the list must survive -- directly in dl_foreach, and through the
+# comprehension procs, which upvar the caller's variable of that name.
+set i [dl_ilist 1 2 3]
+check "handle as loop var errors" [catch { dl_foreach $i $i { } } msg] 1
+check "handle as loop var message" [string match "*loop variable*is the dynlist*" $msg] 1
+check "list survives" [dl_tcllist $i] {1 2 3}
+check "comp handle as var errors"   [catch { dl_comp $i $i } msg] 1
+check "list survives dl_comp"       [dl_tcllist $i] {1 2 3}
+check "map handle as var errors"    [catch { dl_map $i $i {expr 1} } msg] 1
+check "filter handle as var errors" [catch { dl_filter $i $i {expr 1} } msg] 1
+check "reduce handle as var errors" [catch { dl_reduce a $i $i {expr 1} 0 } msg] 1
+check "list survives all"           [dl_tcllist $i] {1 2 3}
+# same handle as var AND a different list to iterate: still refused
+set j [dl_ilist 9]
+check "handle var, other list" [catch { dl_foreach $i $j { } }] 1
+check "both survive" [list [dl_tcllist $i] [dl_tcllist $j]] {{1 2 3} 9}
+# dl_dotimes binds a loop var the same way (it used to free the list silently)
+check "dotimes handle as var errors" [catch { dl_dotimes $i 3 { } }] 1
+check "list survives dl_dotimes" [dl_tcllist $i] {1 2 3}
+
 # --- dl_dotimes (regression: same shared-Tcl_Obj panic as dl_foreach) ---
 # It used to set the loop var once and Tcl_SetIntObj the same object every
 # iteration; the first body that read the var made it shared and the next
