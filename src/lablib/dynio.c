@@ -143,21 +143,9 @@ static int get_list_length(DYN_LIST *dl)
   vals = (DYN_LIST **) DYN_LIST_VALS(dl);
 
   if (DYN_LIST_DATATYPE(dl) != DF_LIST) {
-    switch (DYN_LIST_DATATYPE(dl)) {
-    case DF_LONG:
-    case DF_FLOAT:
-      return 4*DYN_LIST_N(dl);
-      break;
-    case DF_SHORT:
-      return 2*DYN_LIST_N(dl);
-      break;
-    case DF_STRING:
+    if (DYN_LIST_DATATYPE(dl) == DF_STRING)
       return 8*DYN_LIST_N(dl);	/* just a guess */
-      break;
-    case DF_CHAR:
-      return DYN_LIST_N(dl);
-      break;
-    }
+    return (int) (dfuDatatypeSize(DYN_LIST_DATATYPE(dl)) * DYN_LIST_N(dl));
   }
   else {
     vals = (DYN_LIST **) DYN_LIST_VALS(dl);
@@ -2118,7 +2106,7 @@ int dguFileToStruct(FILE *InFP, DYN_GROUP *dg)
       status = dguFileToDynGroup(InFP, dg);
       break;
     default:
-      fprintf(stderr,"unknown event type %d\n", c);
+      fprintf(stderr,"dg: unknown tag %d (corrupt file, or written by a newer dlsh?)\n", c);
       status = DF_ABORT;
       break;
     }
@@ -2153,12 +2141,20 @@ int dguFileToDynGroup(FILE *InFP, DYN_GROUP *dg)
 	DYN_LIST *dl = (DYN_LIST *) calloc(1, sizeof(DYN_LIST));
 	DYN_LIST_INCREMENT(dl) = 10;
 	status = dguFileToDynList(InFP, dl);
+	if (status == DF_ABORT || dgReadError) {
+	  /* A list that failed mid-parse has no valid datatype (calloc'd
+	     zero, == DF_VERSION), and handing it to a caller that ignores
+	     our return value has crashed every binding that switches on
+	     datatype without a default.  Drop it. */
+	  dfuFreeDynList(dl);
+	  break;
+	}
 	dfuAddDynGroupExistingList(dg, DYN_LIST_NAME(dl), dl);
 	n++;
       }
       break;
     default:
-      fprintf(stderr,"unknown event type %d\n", c);
+      fprintf(stderr,"dg: unknown tag %d (corrupt file, or written by a newer dlsh?)\n", c);
       status = DF_ABORT;
       break;
     }
@@ -2300,7 +2296,7 @@ int dguFileToDynList(FILE *InFP, DYN_LIST *dl)
       }
       break;
     default:
-      fprintf(stderr,"unknown event type %d\n", c);
+      fprintf(stderr,"dg: unknown tag %d (corrupt file, or written by a newer dlsh?)\n", c);
       status = DF_ABORT;
       break;
     }
@@ -2413,7 +2409,7 @@ int dguBufferToStruct(unsigned char *vbuf, int bufsize, DYN_GROUP *dg)
       status = dguBufferToDynGroup(bdata, dg);
       break;
     default:
-      fprintf(stderr,"unknown event type %d\n", c);
+      fprintf(stderr,"dg: unknown tag %d (corrupt file, or written by a newer dlsh?)\n", c);
       status = DF_ABORT;
       break;
     }
@@ -2457,12 +2453,17 @@ static int dguBufferToDynGroup(BUF_DATA *bdata, DYN_GROUP *dg)
 	DYN_LIST *dl = (DYN_LIST *) calloc(1, sizeof(DYN_LIST));
 	DYN_LIST_INCREMENT(dl) = 10;
 	status = dguBufferToDynList(bdata, dl);
+	if (status == DF_ABORT || dgReadError) {
+	  /* See dguFileToDynGroup: never hand back a half-parsed list. */
+	  dfuFreeDynList(dl);
+	  break;
+	}
 	dfuAddDynGroupExistingList(dg, DYN_LIST_NAME(dl), dl);
 	n++;
       }
       break;
     default:
-      fprintf(stderr,"unknown event type %d\n", c);
+      fprintf(stderr,"dg: unknown tag %d (corrupt file, or written by a newer dlsh?)\n", c);
       status = DF_ABORT;
       break;
     }
@@ -2619,7 +2620,7 @@ static int dguBufferToDynList(BUF_DATA *bdata, DYN_LIST *dl)
       }
       break;
     default:
-      fprintf(stderr,"unknown event type %d\n", c);
+      fprintf(stderr,"dg: unknown tag %d (corrupt file, or written by a newer dlsh?)\n", c);
       status = DF_ABORT;
       break;
     }
@@ -2701,7 +2702,7 @@ void dguBufferToAscii(unsigned char *vbuf, int bufsize, FILE *OutFP)
       advance_bytes = vread_long(c, (int *) &vbuf[i], OutFP);
       break;
     default:
-      fprintf(stderr,"unknown event type %d\n", c);
+      fprintf(stderr,"dg: unknown tag %d (corrupt file, or written by a newer dlsh?)\n", c);
       break;
     }
   }
@@ -2771,7 +2772,7 @@ void dguFileToAscii(FILE *InFP, FILE *OutFP)
       read_long(c, InFP, OutFP);
       break;
     default:
-      fprintf(stderr,"unknown event type %d\n", c);
+      fprintf(stderr,"dg: unknown tag %d (corrupt file, or written by a newer dlsh?)\n", c);
       break;
     }
   }

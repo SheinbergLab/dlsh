@@ -22,6 +22,7 @@
 #ifndef _DF_H_
 #define _DF_H_
 
+#include <stddef.h>		/* size_t, for dfuDatatypeSize() */
 
 #define DF_ASCII  1
 #define DF_BINARY 2
@@ -932,6 +933,14 @@ void dfuSetEmWindow(EM_DATA *emdata, int v0, int v1, int v2, int v3);
 
 void dfuSetSpChSource(SP_DATA *spdata, int channel, char source);
 void dfuSetSpChCellnum(SP_DATA *spdata, int channel, int cellnum);
+
+/* Element size in bytes for a DYN_LIST datatype (DF_LONG -> 4, DF_STRING ->
+ * sizeof(char *), DF_LIST -> sizeof(DYN_LIST *), ...), or 0 for anything
+ * that is not a list element type.  This is the one place that knows the
+ * storage width of each type; everything that allocates, copies or grows
+ * list storage should go through it rather than spelling sizeof(int) inline.
+ * A datatype is valid as a list element type exactly when this is nonzero. */
+size_t dfuDatatypeSize(int datatype);
 
 DYN_LIST *dfuCreateDynList(int type, int increment);
 DYN_GROUP *dfuCreateDynGroup(int nlists);
