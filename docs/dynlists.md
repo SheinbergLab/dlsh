@@ -69,6 +69,14 @@ result.
 
 That is the whole model. Everything below is a consequence.
 
+One reference Tcl holds on your behalf is worth knowing about: when a
+command fails, Tcl records that command and its argument objects in the
+`-errorstack` return option (`info errorstack`), and keeps them until the
+next error replaces them. A dynlist passed to a command that errored
+therefore outlives its frame until another error occurs, or until
+`dl_clean`. It is bounded to one command's arguments and is only visible
+as an off-by-one in a `dl_dir` census taken right after a caught error.
+
 The important property is that it is **additive**: a reference can only
 *extend* a lifetime, never shorten one. Nothing that worked before behaves
 differently now.

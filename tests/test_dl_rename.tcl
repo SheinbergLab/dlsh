@@ -112,9 +112,11 @@ dl_delete $t
 proc inline_onto_selection {} {
     return [catch {dl_set L:0:1 [dl_ilist 0]} r]
 }
-# The first run of ANY proc whose body errors on an inline temp leaves one
-# list registered, on every build back to the installed one; the second and
-# later runs are clean.  Not this bug, so measure a warmed-up call.
+# A failing command's argument objects -- the inline temp's handle included
+# -- are retained in Tcl's -errorstack until the next error overwrites it,
+# which keeps the list alive past its frame (see "Lifetimes" in
+# docs/dynlists.md).  So the census is off by one after the first erroring
+# call and stable from then on: run one, then measure the next.
 inline_onto_selection
 set before [nlists]
 check "inline source onto a selection is an error" [inline_onto_selection] 1
