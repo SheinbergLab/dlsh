@@ -41,6 +41,8 @@ set a {}; dl_foreach x [dl_short [dl_ilist 1 2 3]]      { lappend a $x }; check 
 set a {}; dl_foreach x [dl_flist 1.5 2.5]               { lappend a $x }; check "float"  $a {1.5 2.5}
 set a {}; dl_foreach x [dl_uchar [dl_ilist 65 66 67]]   { lappend a $x }; check "char"   $a {65 66 67}
 set a {}; dl_foreach x [dl_slist p q r]                 { lappend a $x }; check "string" $a {p q r}
+set a {}; dl_foreach x [dl_wlist 5000000000 -1]         { lappend a $x }; check "int64"  $a {5000000000 -1}
+set a {}; dl_foreach x [dl_dlist 0.1 1e300]             { lappend a $x }; check "double" $a {0.1 1e+300}
 
 # --- negatives / signedness ---
 set a {}; dl_foreach x [dl_ilist -3 -2 -1]          { lappend a $x }; check "negative long"  $a {-3 -2 -1}

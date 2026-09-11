@@ -31,7 +31,8 @@ struct TableEntry {
 };
 
 enum DL_FORMAT_IDS { FMT_LONG, FMT_SHORT, FMT_FLOAT,
-		     FMT_STRING, FMT_LIST, FMT_CHAR, N_FMT_STRINGS };
+		     FMT_STRING, FMT_LIST, FMT_CHAR,
+		     FMT_INT64, FMT_DOUBLE, N_FMT_STRINGS };
 #define MAX_FORMAT_STRING  128
 extern char DLFormatTable[][128];	/* contains format strings for data */
 
@@ -43,6 +44,12 @@ int dynListSetMatherrCheck(int);
 
 int dynGetDatatypeID(char *tname, int *tid);
 char *dynGetDatatypeName(int tid);
+
+/* Convert any numeric or string list to any numeric element type, through
+   a plain C cast per element (strings via strtoll/strtod).  Used for every
+   conversion involving DF_INT64 or DF_DOUBLE; unsigned_chars reads a
+   DF_CHAR source as 0..255. */
+DYN_LIST *dynListConvertNumeric(DYN_LIST *dl, int type, int unsigned_chars);
 
 int  dynGroupMaxRows(DYN_GROUP *dg);
 int  dynGroupMaxCols(DYN_GROUP *dg);

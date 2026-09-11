@@ -546,6 +546,33 @@ void flipfloats(int n, float *vals)
   for (i = 0; i < n; i++) vals[i] = flipfloat(vals[i]);
 }
 
+/* 8-byte flips for the DF_INT64 / DF_DOUBLE element types.  (Keep in step
+   with flipfuncs.c, which is the copy libdg and dgread compile.) */
+int64_t
+flipint64(int64_t oldv)
+{
+  int64_t newv;
+  char *old, *new;
+  int i;
+
+  old = (char *) &oldv;
+  new = (char *) &newv;
+  for (i = 0; i < 8; i++) new[i] = old[7-i];
+  return(newv);
+}
+
+void flipint64s(int n, int64_t *vals)
+{
+  int i;
+  for (i = 0; i < n; i++) vals[i] = flipint64(vals[i]);
+}
+
+void flipdoubles(int n, double *vals)
+{
+  int i;
+  for (i = 0; i < n; i++) vals[i] = flipdouble(vals[i]);
+}
+
 float canonicalize_angle(float angle)
 {
   float newangle;

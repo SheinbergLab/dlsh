@@ -41,15 +41,19 @@
 
 namespace eval ::dl {}
 
-# Infer a dl datatype name (int|float|string) from collected Tcl scalars.
+# Infer a dl datatype name (int|int64|float|string) from collected Tcl
+# scalars.  Integers that do not fit in 32 bits become int64 rather than
+# failing in dl_create; non-integers stay float, as they always have.
 proc ::dl::_infer_type {vals} {
     if {[llength $vals] == 0} { return float }
-    set allint 1
+    set allint 1; set wide 0
     foreach v $vals {
         if {![string is double -strict $v]} { return string }
-        if {![string is integer -strict $v]} { set allint 0 }
+        if {![string is integer -strict $v]} { set allint 0; continue }
+        if {$v > 2147483647 || $v < -2147483648} { set wide 1 }
     }
-    return [expr {$allint ? "int" : "float"}]
+    if {!$allint} { return float }
+    return [expr {$wide ? "int64" : "int"}]
 }
 
 # dl_map var listname body ?type?

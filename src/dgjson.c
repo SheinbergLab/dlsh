@@ -72,7 +72,23 @@ json_t *dl_to_json(DYN_LIST *dl)
 	  json_array_append_new(array, json_real(vals[i]));
 	}
       }
-      break;      
+      break;
+    case DF_INT64:
+      {
+	int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+	for (i = 0; i < DYN_LIST_N(dl); i++) {
+	  json_array_append_new(array, json_integer((json_int_t) vals[i]));
+	}
+      }
+      break;
+    case DF_DOUBLE:
+      {
+	double *vals = (double *) DYN_LIST_VALS(dl);
+	for (i = 0; i < DYN_LIST_N(dl); i++) {
+	  json_array_append_new(array, json_real(vals[i]));
+	}
+      }
+      break;
     case DF_STRING:
       {
 	char **vals = (char **) DYN_LIST_VALS(dl);
@@ -128,7 +144,19 @@ json_t *dl_element_to_json(DYN_LIST *dl, int element_id)
 	float *vals = (float *) DYN_LIST_VALS(dl);
 	return json_real(vals[element_id]);
       }
-      break;      
+      break;
+    case DF_INT64:
+      {
+	int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+	return json_integer((json_int_t) vals[element_id]);
+      }
+      break;
+    case DF_DOUBLE:
+      {
+	double *vals = (double *) DYN_LIST_VALS(dl);
+	return json_real(vals[element_id]);
+      }
+      break;
     case DF_STRING:
       {
 	char **vals = (char **) DYN_LIST_VALS(dl);

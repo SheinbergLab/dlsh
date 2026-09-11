@@ -51,13 +51,17 @@ static struct TableEntry DataTypeTable[] = {
   { "int",    DF_LONG },
   { "float",  DF_FLOAT },
   { "string", DF_STRING },
-  { "list",   DF_LIST }
+  { "list",   DF_LIST },
+  { "int64",  DF_INT64 },
+  { "wide",   DF_INT64 },	/* Tcl's own name for a 64-bit integer */
+  { "double", DF_DOUBLE }
 };
 
 /*
- * How data are formatted when they get printed 
+ * How data are formatted when they get printed.  Indexed by DL_FORMAT_IDS.
  */
-char DLFormatTable[][128] = { "%d", "%d", "%f", "%s", "List(%d,%d)", "%d" };
+char DLFormatTable[][128] = { "%d", "%d", "%f", "%s", "List(%d,%d)", "%d",
+			      "%lld", "%.15g" };
 
 #if defined(XXXWIN32)
 double round(double x)
@@ -2818,11 +2822,72 @@ DYN_LIST *dynListReplicate(DYN_LIST *dl, int n)
 }
 
 
+DYN_LIST *dynListConvertNumeric(DYN_LIST *dl, int type, int unsigned_chars)
+{
+  int i, n;
+  size_t elsize;
+  void *newvals;
+
+  if (!dl) return NULL;
+  n = DYN_LIST_N(dl);
+  elsize = dfuDatatypeSize(type);
+  if (!elsize || type == DF_STRING || type == DF_LIST) return NULL;
+  if (!n) return dfuCreateDynList(type, 10);
+
+  if (!(newvals = calloc(n, elsize))) return NULL;
+
+  /* One arm per source type; DST is the C type of the destination and
+     STRCONV how a string element is parsed into it. */
+#define CONVERT_FROM(DST, STRCONV)					\
+  switch (DYN_LIST_DATATYPE(dl)) {					\
+  case DF_CHAR: {							\
+    char *s = (char *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
+    if (unsigned_chars) for (i = 0; i < n; i++) d[i] = (DST) (unsigned char) s[i]; \
+    else                for (i = 0; i < n; i++) d[i] = (DST) s[i];	\
+    break; }								\
+  case DF_SHORT: {							\
+    short *s = (short *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
+    for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
+  case DF_LONG: {							\
+    int *s = (int *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
+    for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
+  case DF_FLOAT: {							\
+    float *s = (float *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
+    for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
+  case DF_INT64: {							\
+    int64_t *s = (int64_t *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals; \
+    for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
+  case DF_DOUBLE: {							\
+    double *s = (double *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
+    for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
+  case DF_STRING: {							\
+    char **s = (char **) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
+    for (i = 0; i < n; i++) d[i] = (DST) (STRCONV); break; }		\
+  default:								\
+    free(newvals); return NULL;						\
+  }
+
+  switch (type) {
+  case DF_CHAR:   CONVERT_FROM(char,    strtoll(s[i], NULL, 10)); break;
+  case DF_SHORT:  CONVERT_FROM(short,   strtoll(s[i], NULL, 10)); break;
+  case DF_LONG:   CONVERT_FROM(int,     strtoll(s[i], NULL, 10)); break;
+  case DF_INT64:  CONVERT_FROM(int64_t, strtoll(s[i], NULL, 10)); break;
+  case DF_FLOAT:  CONVERT_FROM(float,   strtod(s[i], NULL));      break;
+  case DF_DOUBLE: CONVERT_FROM(double,  strtod(s[i], NULL));      break;
+  default:
+    free(newvals);
+    return NULL;
+  }
+#undef CONVERT_FROM
+
+  return dfuCreateDynListWithVals(type, n, newvals);
+}
+
 DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
 {
   int i;
   DYN_LIST *newlist = NULL;
-  
+
   if (DYN_LIST_DATATYPE(dl) == DF_LIST) {
     DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
     DYN_LIST *curlist;
@@ -2845,12 +2910,20 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
     case DF_LONG:
     case DF_CHAR:
     case DF_SHORT:
+    case DF_INT64:
+    case DF_DOUBLE:
       return dfuCreateDynList(type, 10);
       break;
     default:
       return NULL;
     }
   }
+
+  /* Any conversion touching an 8-byte type goes through the generic
+     numeric converter; the hand-written matrices below predate them. */
+  if (type == DF_INT64 || type == DF_DOUBLE ||
+      DYN_LIST_DATATYPE(dl) == DF_INT64 || DYN_LIST_DATATYPE(dl) == DF_DOUBLE)
+    return dynListConvertNumeric(dl, type, 0);
 
   switch (type) {
   case DF_FLOAT:
@@ -3104,12 +3177,20 @@ DYN_LIST *dynListUnsignedConvertList(DYN_LIST *dl, int type)
     case DF_LONG:
     case DF_CHAR:
     case DF_SHORT:
+    case DF_INT64:
+    case DF_DOUBLE:
       return dfuCreateDynList(type, 10);
       break;
     default:
       return NULL;
     }
   }
+
+  /* Any conversion touching an 8-byte type goes through the generic
+     numeric converter; the hand-written matrices below predate them. */
+  if (type == DF_INT64 || type == DF_DOUBLE ||
+      DYN_LIST_DATATYPE(dl) == DF_INT64 || DYN_LIST_DATATYPE(dl) == DF_DOUBLE)
+    return dynListConvertNumeric(dl, type, 1);
 
   switch (type) {
   case DF_FLOAT:
@@ -9094,8 +9175,21 @@ int dynListSetValLong(DYN_LIST *dl, int i, int val)
       vals[i] = val;
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      vals[i] = val;
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      vals[i] = val;
+    }
+    break;
   case DF_LIST:
   case DF_STRING:
+  default:
     return(0);
     break;
   }
@@ -9131,6 +9225,16 @@ int dynListSetIntVals(DYN_LIST *dl, int val, int n)
       for (i = 0; i < n; i++) dfuAddDynListChar(dl, val);
     }
     break;
+  case DF_INT64:
+    {
+      for (i = 0; i < n; i++) dfuAddDynListInt64(dl, val);
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      for (i = 0; i < n; i++) dfuAddDynListDouble(dl, val);
+    }
+    break;
   case DF_LIST:
     {
       DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
@@ -9157,6 +9261,8 @@ char *dynListSetFormat(int datatype, char *format)
   case DF_LIST:    type = FMT_LIST;   break;
   case DF_FLOAT:   type = FMT_FLOAT;  break;
   case DF_STRING:  type = FMT_STRING;  break;
+  case DF_INT64:   type = FMT_INT64;  break;
+  case DF_DOUBLE:  type = FMT_DOUBLE; break;
   default:
     return NULL;
   }
@@ -9195,10 +9301,22 @@ int dynListPrintVal(DYN_LIST *dl, int i, FILE *stream)
       fprintf(stream, DLFormatTable[FMT_CHAR], vals[i]);
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      fprintf(stream, DLFormatTable[FMT_INT64], (long long) vals[i]);
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      fprintf(stream, DLFormatTable[FMT_DOUBLE], vals[i]);
+    }
+    break;
   case DF_LIST:
     {
       DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
-      fprintf(stream,DLFormatTable[FMT_LIST], DYN_LIST_DATATYPE(vals[i]), 
+      fprintf(stream,DLFormatTable[FMT_LIST], DYN_LIST_DATATYPE(vals[i]),
 	      DYN_LIST_N(vals[i]));
     }
     break;
@@ -10633,6 +10751,18 @@ int dynListCopyElement(DYN_LIST *source, int i, DYN_LIST *dest)
       dfuAddDynListChar(dest, v1[i]);
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *v1 = (int64_t *) DYN_LIST_VALS(source);
+      dfuAddDynListInt64(dest, v1[i]);
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *v1 = (double *) DYN_LIST_VALS(source);
+      dfuAddDynListDouble(dest, v1[i]);
+    }
+    break;
   case DF_STRING:
     {
       char **v1 = (char **) DYN_LIST_VALS(source);
@@ -10645,6 +10775,8 @@ int dynListCopyElement(DYN_LIST *source, int i, DYN_LIST *dest)
       dfuAddDynListList(dest, v1[i]);
     }
     break;
+  default:
+    return(0);
   }
   return(1);
 }

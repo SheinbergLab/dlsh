@@ -198,6 +198,17 @@ EXPORTS
 	dfuAddDynListLong
 	dfuAddDynListShort
 	dfuAddDynListFloat
+	dfuAddDynListInt64
+	dfuAddDynListDouble
+	dfuPrependDynListInt64
+	dfuPrependDynListDouble
+	dfuInsertDynListInt64
+	dfuInsertDynListDouble
+	dgRecordInt64Array
+	dgRecordDoubleArray
+	flipint64
+	flipint64s
+	flipdoubles
 	dfuAddDynListChar
 	dfuAddDynListList
 	dfuAddDynListString

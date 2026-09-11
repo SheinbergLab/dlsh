@@ -35,6 +35,8 @@ static enum ArrowType dynlist_get_arrow_type(DYN_LIST* dl) {
         case DF_SHORT:  return NANOARROW_TYPE_INT16;
         case DF_CHAR:   return NANOARROW_TYPE_UINT8;
         case DF_FLOAT:  return NANOARROW_TYPE_FLOAT;
+        case DF_INT64:  return NANOARROW_TYPE_INT64;
+        case DF_DOUBLE: return NANOARROW_TYPE_DOUBLE;
         case DF_STRING: return NANOARROW_TYPE_STRING;
         case DF_LIST:   return NANOARROW_TYPE_LIST;
         default:        return NANOARROW_TYPE_NA;
@@ -170,6 +172,7 @@ static int init_array_from_schema(struct ArrowSchema* schema, struct ArrowArray*
         else if (strcmp(schema->format, "C") == 0) type = NANOARROW_TYPE_UINT8;
         else if (strcmp(schema->format, "f") == 0) type = NANOARROW_TYPE_FLOAT;
         else if (strcmp(schema->format, "g") == 0) type = NANOARROW_TYPE_DOUBLE;
+        else if (strcmp(schema->format, "l") == 0) type = NANOARROW_TYPE_INT64;
         else if (strcmp(schema->format, "u") == 0) type = NANOARROW_TYPE_STRING;
         
         if (ArrowArrayInitFromType(array, type) != NANOARROW_OK) {
@@ -240,6 +243,20 @@ static int append_dynlist_data(DYN_LIST* dl, struct ArrowArray* array) {
                 float* vals = (float*)DYN_LIST_VALS(dl);
                 for (int i = 0; i < n; i++) {
                     if (ArrowArrayAppendDouble(array, (double)vals[i]) != NANOARROW_OK) return -1;
+                }
+                break;
+            }
+            case DF_INT64: {
+                int64_t* vals = (int64_t*)DYN_LIST_VALS(dl);
+                for (int i = 0; i < n; i++) {
+                    if (ArrowArrayAppendInt(array, vals[i]) != NANOARROW_OK) return -1;
+                }
+                break;
+            }
+            case DF_DOUBLE: {
+                double* vals = (double*)DYN_LIST_VALS(dl);
+                for (int i = 0; i < n; i++) {
+                    if (ArrowArrayAppendDouble(array, vals[i]) != NANOARROW_OK) return -1;
                 }
                 break;
             }
@@ -351,6 +368,26 @@ static int dynlist_to_nanoarrow_array(DYN_LIST* dl, struct ArrowArray* array,
                 float* vals = (float*)DYN_LIST_VALS(dl);
                 for (int i = 0; i < n; i++) {
                     if (ArrowArrayAppendDouble(array, (double)vals[i]) != NANOARROW_OK) {
+                        ArrowArrayRelease(array);
+                        return -1;
+                    }
+                }
+                break;
+            }
+            case DF_INT64: {
+                int64_t* vals = (int64_t*)DYN_LIST_VALS(dl);
+                for (int i = 0; i < n; i++) {
+                    if (ArrowArrayAppendInt(array, vals[i]) != NANOARROW_OK) {
+                        ArrowArrayRelease(array);
+                        return -1;
+                    }
+                }
+                break;
+            }
+            case DF_DOUBLE: {
+                double* vals = (double*)DYN_LIST_VALS(dl);
+                for (int i = 0; i < n; i++) {
+                    if (ArrowArrayAppendDouble(array, vals[i]) != NANOARROW_OK) {
                         ArrowArrayRelease(array);
                         return -1;
                     }
@@ -714,7 +751,8 @@ static int arrow_type_to_df_type(const char* format) {
     else if (strcmp(format, "s") == 0) return DF_SHORT;  // int16
     else if (strcmp(format, "C") == 0) return DF_CHAR;   // uint8
     else if (strcmp(format, "f") == 0) return DF_FLOAT;  // float
-    else if (strcmp(format, "g") == 0) return DF_FLOAT;  // double -> float
+    else if (strcmp(format, "g") == 0) return DF_DOUBLE; // double (was narrowed to float)
+    else if (strcmp(format, "l") == 0) return DF_INT64;  // int64 (was unsupported)
     else if (strcmp(format, "u") == 0) return DF_STRING; // string
     else if (strcmp(format, "+l") == 0) return DF_LIST;  // list
     else return -1; // Unsupported type
@@ -895,7 +933,33 @@ static DYN_LIST* nanoarrow_array_to_dynlist(const struct ArrowArrayView* array_v
             }
             break;
         }
-        
+
+        case DF_INT64: {
+            const int64_t* src = array_view->buffer_views[1].data.as_int64;
+            if (!src) {
+                dfuFreeDynList(dl);
+                return NULL;
+            }
+            for (int64_t i = 0; i < n; i++) {
+                int64_t val = ArrowArrayViewIsNull(array_view, i) ? 0 : src[offset + i];
+                dfuAddDynListInt64(dl, val);
+            }
+            break;
+        }
+
+        case DF_DOUBLE: {
+            const double* src = array_view->buffer_views[1].data.as_double;
+            if (!src) {
+                dfuFreeDynList(dl);
+                return NULL;
+            }
+            for (int64_t i = 0; i < n; i++) {
+                double val = ArrowArrayViewIsNull(array_view, i) ? 0.0 : src[offset + i];
+                dfuAddDynListDouble(dl, val);
+            }
+            break;
+        }
+
         case DF_STRING: {
             const int32_t* offsets = array_view->buffer_views[1].data.as_int32;
             const char* str_data = (const char*)array_view->buffer_views[2].data.as_char;

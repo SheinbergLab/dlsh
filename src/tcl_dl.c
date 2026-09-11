@@ -162,7 +162,7 @@ enum DL_GENERATOR    { DL_ZEROS, DL_ONES, DL_URAND, DL_ZRAND, DL_RANDFILL,
      		       DL_RANDCHOOSE, DL_IRAND, DL_GAUSSIAN_2D,
                        DL_SHUFFLE};
 enum DL_SERIES_MAKERS { DL_SERIES, DL_FROMTO };
-enum DL_CONVERT      { DL_FLOAT, DL_INT, DL_CHAR, DL_SHORT };
+enum DL_CONVERT      { DL_FLOAT, DL_INT, DL_CHAR, DL_SHORT, DL_INT64, DL_DOUBLE };
 enum DL_FINDERS      { DL_FIND, DL_FIND_ALL, DL_COUNT_OCCURENCES, 
 		       DL_FIND_PATTERNS, DL_FIND_INDICES };
 enum DL_COMPARATORS  { DL_EQUAL_TO, DL_LESS_THAN, DL_GREATER_THAN, 
@@ -326,8 +326,12 @@ static TCL_COMMANDS DLcommands[] = {
       "create an int dynList" },
   { "dl_slist",           tclCreateDynList,       (void *) DF_STRING, 
       "create a string dynList" },
-  { "dl_llist",           tclCreateDynList,       (void *) DF_LIST, 
+  { "dl_llist",           tclCreateDynList,       (void *) DF_LIST,
       "create a dynList of lists" },
+  { "dl_wlist",           tclCreateDynList,       (void *) DF_INT64,
+      "create an int64 (wide int) dynList" },
+  { "dl_dlist",           tclCreateDynList,       (void *) DF_DOUBLE,
+      "create a double dynList" },
   { "dl_datatype",         tclDynListDatatype,    (void *) DL_DATATYPE, 
       "returns datatype of dynList" },
   { "dl_isMatrix",         tclDynListDatatype,    (void *) DL_IS_MATRIX, 
@@ -471,6 +475,10 @@ static TCL_COMMANDS DLcommands[] = {
       "convert list to bytes" },
   { "dl_short",            tclConvertDynList,     (void *) DL_SHORT,
       "convert list to bytes" },
+  { "dl_int64",            tclConvertDynList,     (void *) DL_INT64,
+      "convert list to 64-bit ints" },
+  { "dl_double",           tclConvertDynList,     (void *) DL_DOUBLE,
+      "convert list to doubles" },
   { "dl_ufloat",           tclUnsignedConvertDynList,     (void *) DL_FLOAT,
       "convert list to floats" },
   { "dl_uint",             tclUnsignedConvertDynList,     (void *) DL_INT,
@@ -479,6 +487,10 @@ static TCL_COMMANDS DLcommands[] = {
       "convert list to bytes" },
   { "dl_ushort",           tclUnsignedConvertDynList,     (void *) DL_SHORT,
       "convert list to bytes" },
+  { "dl_uint64",           tclUnsignedConvertDynList,     (void *) DL_INT64,
+      "convert list to 64-bit ints, chars as unsigned" },
+  { "dl_udouble",          tclUnsignedConvertDynList,     (void *) DL_DOUBLE,
+      "convert list to doubles, chars as unsigned" },
   { "dl_not",              tclDynListNot,         NULL,
       "elementwise not operation" },
   { "dl_and",              tclCompareDynList,     (void *) DL_AND,
@@ -858,21 +870,27 @@ static int tclScanList(ClientData data, Tcl_Interp * interp, int objc,
  *     through the stored function pointer is what faults;
  *   - `dlsh -e 'puts hi'`, using no dl_ command at all, is enough to trigger.
  *
- * So the pointer Tcl holds is unusable by the time it calls it, and the zip
- * load path is what makes the difference.  The mechanism is NOT pinned down:
- * Tcl copies a VFS library to a temp file, loads that and unlinks it
- * immediately, and TclFinalizeLoad only dlcloses under TCL_UNLOAD_DLLS, which
- * is not set here -- so a simple "it was unloaded first" story does not quite
- * fit.  Note though that TclFinalizeLoad carries a comment describing exactly
- * this hazard: "you get a core on exit because it wants to call a function in
- * the dll after it has been unloaded".
+ * So the pointer Tcl holds is unusable by the time it calls it.
+ *
+ * UPDATE (2026-09): the mechanism IS now pinned down, and it was "unloaded
+ * first" after all.  libdlsh used to export a no-op Dlsh_Unload, which tells
+ * Tcl the library may be dlclose'd; TCL_UNLOAD_DLLS is on in every Unix Tcl
+ * build, so tclLoad.c's LoadCleanupProc -- itself an assoc-data delete
+ * callback, run from the same loop in DeleteInterpProc as this one would be
+ * -- unmapped the library when the last interp that loaded it went away.
+ * Whichever of the two callbacks the hash table happened to visit first won;
+ * if "tclLoad" went first, this function was already unmapped when Tcl called
+ * it, which is exactly "never entered, faulting PC has no symbol".  The same
+ * unload also crashed every `dlsh -e` script whose result or errorStack held
+ * a dynlist handle object, since TclFreeObj then called dlref.c's
+ * freeIntRepProc through an unmapped pointer.  See the comment in
+ * src/dlsh_pkg.c: the unload exports are gone, so the code now outlives
+ * interpreter teardown, and registering this function should be revisited.
  *
  * dserv, stim2 and the dlsh interpreter all load libdlsh from dlsh.zip, so
- * this is the configuration that matters, not an edge case.  Any fix must
- * guarantee the code outlives interpreter teardown; an exit handler is likely
- * to have the same problem.
+ * this is the configuration that matters, not an edge case.
  *
- * The body below is correct and ready if that ever changes.  dfuFreeDynList
+ * The body below is correct and ready.  dfuFreeDynList
  * runs the refcount free hook, so outstanding handles are detached rather
  * than left dangling.  tests/tools/interp_teardown_leak.tcl measures the leak.
  */
@@ -955,6 +973,177 @@ typedef struct {
   Tcl_CmdProc *proc;
   ClientData cd;
 } DL_OBJWRAP;
+
+/*****************************************************************************
+ *
+ * Wide-type guard
+ *
+ *    DF_INT64 and DF_DOUBLE lists (2026) are supported at the storage
+ *  level: create, append, get/put, copy, select, convert, serialize.  The
+ *  hundred-odd analysis commands built on per-type switches in dfana.c and
+ *  dlarith.c have not been taught about them, and a switch with no arm for
+ *  a type does not fail -- it returns an empty result, a wrong number, or
+ *  reads memory at the wrong stride (dl_sort came back unsorted, dl_mean
+ *  answered 0.0, dl_comp segfaulted).
+ *
+ *    So every dl_* command NOT on the verified list below is registered
+ *  through dlWideGuardCmd, which refuses any argument that resolves to a
+ *  list holding an int64 or double leaf, with a message naming the command.
+ *  Teaching a command about the wide types means adding its name to the
+ *  list; when the sweep is complete this guard goes away.
+ *
+ *    The check is a hash lookup per argument (no error result is ever set
+ *  for a non-list argument), and a walk of the sublist structure -- not the
+ *  elements -- for nested lists.
+ *
+ *****************************************************************************/
+
+typedef struct {
+  Tcl_CmdProc *proc;
+  ClientData cd;
+  const char *name;
+} DL_WIDEGUARD;
+
+static const char *dlWideOkCommands[] = {
+  /* creation and lifecycle */
+  "dl_create", "dl_wlist", "dl_dlist", "dl_ilist", "dl_flist", "dl_clist",
+  "dl_slist", "dl_llist", "dl_delete", "dl_clean", "dl_reset", "dl_rename",
+  "dl_dir", "dl_exists", "dl_pushTemps", "dl_popTemps", "dl_cleanReturns",
+  "dl_noOp", "dl_help", "dl_deleteTrace", "dl_setFormat", "dl_setMatherrCheck",
+  /* element access and shape */
+  "dl_append", "dl_prepend", "dl_insert", "dl_get", "dl_put", "dl_first",
+  "dl_last", "dl_length", "dl_llength", "dl_datatype", "dl_tcllist",
+  "dl_index", "dl_depth", "dl_isMatrix", "dl_sublist", "dl_pickone",
+  /* copying and rearranging: all go through dynListCopyElement */
+  "dl_copy", "dl_reverse", "dl_reverseAll", "dl_breverse", "dl_select",
+  "dl_choose", "dl_permute", "dl_repeat", "dl_repeatElements",
+  "dl_replicate", "dl_concat", "dl_combine", "dl_interleave", "dl_cycle",
+  "dl_bcycle", "dl_shift", "dl_bshift", "dl_shuffle", "dl_sortByLists",
+  "dl_cross", "dl_zip", "dl_restructure", "dl_to_dg",
+  /* conversion (dynListConvertNumeric) */
+  "dl_double", "dl_int64", "dl_float", "dl_int", "dl_char", "dl_short",
+  "dl_udouble", "dl_uint64", "dl_ufloat", "dl_uint", "dl_uchar", "dl_ushort",
+  "dl_conv", "dl_conv2",
+  /* I/O and serialization */
+  "dl_json", "dl_toJSON", "dl_toString", "dl_toString64", "dl_fromString",
+  "dl_fromString64", "dl_dump", "dl_dumpMatrix", "dl_dumpMatrixInCols",
+  "dl_dumpMatrixInRows", "dl_dumpAsRow", "dl_dumpBytes", "dl_dumpBytesAs",
+  "dl_write", "dl_writeAs", "dl_read",
+  NULL
+};
+
+static int dlListHasWideLeaf(DYN_LIST *dl)
+{
+  int i;
+  if (!dl) return 0;
+  switch (DYN_LIST_DATATYPE(dl)) {
+  case DF_INT64:
+  case DF_DOUBLE:
+    return 1;
+  case DF_LIST: {
+    DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
+    for (i = 0; i < DYN_LIST_N(dl); i++)
+      if (dlListHasWideLeaf(vals[i])) return 1;
+    return 0;
+  }
+  default:
+    return 0;
+  }
+}
+
+/* Resolve a list name the way tclFindDynList does -- a top-level list,
+   group:list, list:index, group:list:index:... -- but without touching the
+   interpreter result or the refcount layer, and without ever creating a
+   list (a literal Tcl list "1 2 3" resolves to NULL).  A selector that is
+   not a plain index (a range, an expression) stops the walk and answers
+   with the list reached so far, which is the conservative side: it holds
+   anything the selector could pick out. */
+static DYN_LIST *dlPeekDynList(DLSHINFO *dlinfo, const char *name)
+{
+  Tcl_HashEntry *entryPtr;
+  const char *colon;
+  char head[128];
+  DYN_LIST *dl;
+
+  if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, name)))
+    return (DYN_LIST *) Tcl_GetHashValue(entryPtr);
+
+  colon = strchr(name, ':');
+  if (!colon || colon == name || (size_t) (colon - name) >= sizeof(head))
+    return NULL;
+  memcpy(head, name, colon - name);
+  head[colon - name] = 0;
+
+  if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dgTable, head))) {
+    /* group:list or group:index, then optional selectors */
+    DYN_GROUP *dg = (DYN_GROUP *) Tcl_GetHashValue(entryPtr);
+    const char *rest = colon + 1;
+    const char *next = strchr(rest, ':');
+    size_t llen = next ? (size_t) (next - rest) : strlen(rest);
+    if (!dg || !llen || llen >= sizeof(head)) return NULL;
+    memcpy(head, rest, llen);
+    head[llen] = 0;
+    dl = dynGroupFindList(dg, head);
+    if (!dl && head[0] >= '0' && head[0] <= '9') {
+      char *end;
+      long idx = strtol(head, &end, 10);
+      if (!*end && idx >= 0 && idx < DYN_GROUP_NLISTS(dg))
+	dl = DYN_GROUP_LIST(dg, idx);
+    }
+    colon = next;
+  }
+  else if ((entryPtr = Tcl_FindHashEntry(&dlinfo->dlTable, head))) {
+    dl = (DYN_LIST *) Tcl_GetHashValue(entryPtr);
+  }
+  else return NULL;
+
+  while (dl && colon) {
+    const char *sel = colon + 1;
+    char *end;
+    long idx;
+    if (DYN_LIST_DATATYPE(dl) != DF_LIST) return dl;	/* element pick */
+    idx = strtol(sel, &end, 10);
+    if (end == sel || (*end && *end != ':') || idx < 0 || idx >= DYN_LIST_N(dl))
+      return dl;
+    dl = ((DYN_LIST **) DYN_LIST_VALS(dl))[idx];
+    colon = (*end == ':') ? end : NULL;
+  }
+  return dl;
+}
+
+static int dlWideGuardCmd(ClientData data, Tcl_Interp *interp,
+			  int argc, const char *argv[])
+{
+  DL_WIDEGUARD *g = (DL_WIDEGUARD *) data;
+  DLSHINFO *dlinfo = Tcl_GetAssocData(interp, DLSH_ASSOC_DATA_KEY, NULL);
+  int i;
+
+  if (dlinfo) {
+    for (i = 1; i < argc; i++) {
+      if (dlListHasWideLeaf(dlPeekDynList(dlinfo, argv[i]))) {
+	Tcl_AppendResult(interp, g->name,
+			 ": int64/double lists are not supported by this "
+			 "command yet (convert with dl_int or dl_float)", NULL);
+	return TCL_ERROR;
+      }
+    }
+  }
+  return g->proc(g->cd, interp, argc, argv);
+}
+
+static void dlWideGuardFree(ClientData cd)
+{
+  ckfree((char *) cd);
+}
+
+static int dlWideOk(const char *name)
+{
+  int i;
+  if (strncmp(name, "dl_", 3)) return 1;	/* only dl_* is guarded */
+  for (i = 0; dlWideOkCommands[i]; i++)
+    if (!strcmp(name, dlWideOkCommands[i])) return 1;
+  return 0;
+}
 
 static int dlSharedAwareObjCmd(ClientData data, Tcl_Interp *interp,
 			       int objc, Tcl_Obj *const objv[])
@@ -1091,10 +1280,21 @@ int Dl_Init(Tcl_Interp *interp)
 		   (void *) dlshinfo);
 
   while (DLcommands[i].name) {
-    Tcl_CreateCommand(interp, DLcommands[i].name, 
-		      (Tcl_CmdProc *) DLcommands[i].func, 
-		      (ClientData) DLcommands[i].cd, 
-		      (Tcl_CmdDeleteProc *) NULL);
+    if (dlWideOk(DLcommands[i].name)) {
+      Tcl_CreateCommand(interp, DLcommands[i].name,
+			(Tcl_CmdProc *) DLcommands[i].func,
+			(ClientData) DLcommands[i].cd,
+			(Tcl_CmdDeleteProc *) NULL);
+    }
+    else {
+      /* Not yet taught about int64/double lists: see dlWideGuardCmd. */
+      DL_WIDEGUARD *g = (DL_WIDEGUARD *) ckalloc(sizeof(DL_WIDEGUARD));
+      g->proc = (Tcl_CmdProc *) DLcommands[i].func;
+      g->cd = (ClientData) DLcommands[i].cd;
+      g->name = DLcommands[i].name;
+      Tcl_CreateCommand(interp, DLcommands[i].name, dlWideGuardCmd,
+			(ClientData) g, dlWideGuardFree);
+    }
     i++;
   }
 
@@ -2365,22 +2565,8 @@ static int tclDynListToString(ClientData data, Tcl_Interp * interp, int objc,
     return TCL_ERROR;
   }
 
-  switch (DYN_LIST_DATATYPE(dl)) {
-  case DF_LONG:
-  case DF_FLOAT:
-    nbytes = 4*DYN_LIST_N(dl);
-    break;
-  case DF_SHORT:
-    nbytes = 2*DYN_LIST_N(dl);
-    break;
-  case DF_STRING:
-    nbytes = 8*DYN_LIST_N(dl);	/* just a guess */
-    break;
-  case DF_CHAR:
-    nbytes = DYN_LIST_N(dl);
-    break;
-  }
-  
+  nbytes = (int) (dfuDatatypeSize(DYN_LIST_DATATYPE(dl)) * DYN_LIST_N(dl));
+
   if (!encode64) {
     o = Tcl_NewByteArrayObj(DYN_LIST_VALS(dl), nbytes);
   }
@@ -2622,6 +2808,23 @@ static int tclDynListFromString(ClientData cdata, Tcl_Interp * interp,
       for (i = 0; i < length; i++)
 	dfuAddDynListChar(dl, data[i]);
       break;
+    case DF_INT64:
+    case DF_DOUBLE:
+      if (length % 8 == 0) {
+	dfuResetDynList(dl);
+	for (i = 0; i < length; i += 8) {
+	  if (DYN_LIST_DATATYPE(dl) == DF_INT64) {
+	    int64_t v; memcpy(&v, &data[i], 8); dfuAddDynListInt64(dl, v);
+	  } else {
+	    double v; memcpy(&v, &data[i], 8); dfuAddDynListDouble(dl, v);
+	  }
+	}
+      }
+      else {
+	Tcl_AppendResult(interp, "dl_fromString: invalid data", NULL);
+	return TCL_ERROR;
+      }
+      break;
     }
   }
   else {
@@ -2684,6 +2887,24 @@ static int tclDynListFromString(ClientData cdata, Tcl_Interp * interp,
       dfuResetDynList(dl);
       for (i = 0; i < decoded_length; i++)
 	dfuAddDynListChar(dl, decoded_data[i]);
+      break;
+    case DF_INT64:
+    case DF_DOUBLE:
+      if (decoded_length % 8 == 0) {
+	dfuResetDynList(dl);
+	for (i = 0; i < decoded_length; i += 8) {
+	  if (DYN_LIST_DATATYPE(dl) == DF_INT64) {
+	    int64_t v; memcpy(&v, &decoded_data[i], 8); dfuAddDynListInt64(dl, v);
+	  } else {
+	    double v; memcpy(&v, &decoded_data[i], 8); dfuAddDynListDouble(dl, v);
+	  }
+	}
+      }
+      else {
+	free(decoded_data);
+	Tcl_AppendResult(interp, "dl_fromString64: invalid data", NULL);
+	return TCL_ERROR;
+      }
       break;
     }
     free(decoded_data);
@@ -3697,6 +3918,20 @@ static int tclDynListDatatype (ClientData data, Tcl_Interp *interp,
  *    Creates a new dynlist
  *
  *****************************************************************************/
+
+/* Parse a 64-bit integer from a C string, with Tcl's own rules and error
+   message.  The argc/argv commands have no Tcl_Obj to hand to
+   Tcl_GetWideIntFromObj, so wrap one. */
+static int tclGetWideIntFromString(Tcl_Interp *interp, const char *s,
+				   Tcl_WideInt *out)
+{
+  int rc;
+  Tcl_Obj *o = Tcl_NewStringObj(s, -1);
+  Tcl_IncrRefCount(o);
+  rc = Tcl_GetWideIntFromObj(interp, o, out);
+  Tcl_DecrRefCount(o);
+  return rc;
+}
 
 static int tclCreateDynList (ClientData data, Tcl_Interp *interp,
 			     int argc, char *argv[])
@@ -5112,7 +5347,35 @@ static int tclGetPutDynList (ClientData data, Tcl_Interp *interp,
 	  return TCL_ERROR;
 	}
 	vals[i] = (float) element;
-	Tcl_AppendResult(interp, argv[1], NULL);	
+	Tcl_AppendResult(interp, argv[1], NULL);
+      }
+      else Tcl_SetObjResult(interp, Tcl_NewDoubleObj(vals[i]));
+      break;
+    }
+  case DF_INT64:
+     {
+       int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+       if (mode == DL_PUT) {
+	Tcl_WideInt element;
+	if (tclGetWideIntFromString(interp, argv[3], &element) != TCL_OK) {
+	  return TCL_ERROR;
+	}
+	vals[i] = (int64_t) element;
+	Tcl_AppendResult(interp, argv[1], NULL);
+      }
+      else Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt) vals[i]));
+      break;
+    }
+  case DF_DOUBLE:
+     {
+       double *vals = (double *) DYN_LIST_VALS(dl);
+       if (mode == DL_PUT) {
+	double element;
+	if (Tcl_GetDouble(interp, argv[3], &element) != TCL_OK) {
+	  return TCL_ERROR;
+	}
+	vals[i] = element;
+	Tcl_AppendResult(interp, argv[1], NULL);
       }
       else Tcl_SetObjResult(interp, Tcl_NewDoubleObj(vals[i]));
       break;
@@ -5294,6 +5557,36 @@ static int tclAppendDynList (ClientData data, Tcl_Interp *interp,
 	case DL_APPEND:    dfuAddDynListFloat(dl, element);          break;
 	case DL_PREPEND:   dfuPrependDynListFloat(dl, element);      break;
 	case DL_INSERT:    dfuInsertDynListFloat(dl, element, pos);  break;
+	}
+      }
+      break;
+    }
+  case DF_INT64:
+    {
+      Tcl_WideInt element;
+      for (i = start; i < argc; i++, pos++) {
+	if (tclGetWideIntFromString(interp, argv[i], &element) != TCL_OK) {
+	  return TCL_ERROR;
+	}
+	switch (mode) {
+	case DL_APPEND:    dfuAddDynListInt64(dl, element);          break;
+	case DL_PREPEND:   dfuPrependDynListInt64(dl, element);      break;
+	case DL_INSERT:    dfuInsertDynListInt64(dl, element, pos);  break;
+	}
+      }
+      break;
+    }
+  case DF_DOUBLE:
+    {
+      double element;
+      for (i = start; i < argc; i++, pos++) {
+	if (Tcl_GetDouble(interp, argv[i], &element) != TCL_OK) {
+	  return TCL_ERROR;
+	}
+	switch (mode) {
+	case DL_APPEND:    dfuAddDynListDouble(dl, element);          break;
+	case DL_PREPEND:   dfuPrependDynListDouble(dl, element);      break;
+	case DL_INSERT:    dfuInsertDynListDouble(dl, element, pos);  break;
 	}
       }
       break;
@@ -5682,6 +5975,23 @@ Tcl_Obj *tclDynListToTclObj(Tcl_Interp *interp, DYN_LIST *dl)
       }
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+	Tcl_ListObjAppendElement(interp, listPtr,
+				 Tcl_NewWideIntObj((Tcl_WideInt) vals[i]));
+      }
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      for (i = 0; i < DYN_LIST_N(dl); i++) {
+	Tcl_ListObjAppendElement(interp, listPtr, Tcl_NewDoubleObj(vals[i]));
+      }
+    }
+    break;
   case DF_STRING:
     {
       char **vals = (char **) DYN_LIST_VALS(dl);
@@ -5860,6 +6170,8 @@ static int tclDumpDynList (ClientData data, Tcl_Interp *interp,
     case DF_FLOAT:
     case DF_SHORT:
     case DF_CHAR:
+    case DF_INT64:
+    case DF_DOUBLE:
       if (!(outChannel = Tcl_GetChannel(interp, argv[2], &mode))) {
 	Tcl_ResetResult(interp);
 	outfp = fopen(argv[2], "wb");
@@ -5883,13 +6195,24 @@ static int tclDumpDynList (ClientData data, Tcl_Interp *interp,
     switch (DYN_LIST_DATATYPE(dl)) {
     case DF_LONG:
       if (outChannel) {
-	n = Tcl_Write(outChannel, (char *) DYN_LIST_VALS(dl), 
+	n = Tcl_Write(outChannel, (char *) DYN_LIST_VALS(dl),
 		      sizeof(int)*DYN_LIST_N(dl));
 	n /= sizeof(int);
       }
       else {
-	n = fwrite((char *) DYN_LIST_VALS(dl), sizeof(int), 
+	n = fwrite((char *) DYN_LIST_VALS(dl), sizeof(int),
 		   DYN_LIST_N(dl), outfp);
+      }
+      break;
+    case DF_INT64:
+    case DF_DOUBLE:
+      if (outChannel) {
+	n = Tcl_Write(outChannel, (char *) DYN_LIST_VALS(dl),
+		      8*DYN_LIST_N(dl));
+	n /= 8;
+      }
+      else {
+	n = fwrite((char *) DYN_LIST_VALS(dl), 8, DYN_LIST_N(dl), outfp);
       }
       break;
     case DF_FLOAT:
@@ -6134,6 +6457,12 @@ static int tclConvertDynList (ClientData data, Tcl_Interp *interp,
   case DL_SHORT:
     newlist = dynListConvertList(dl, DF_SHORT);
     break;
+  case DL_INT64:
+    newlist = dynListConvertList(dl, DF_INT64);
+    break;
+  case DL_DOUBLE:
+    newlist = dynListConvertList(dl, DF_DOUBLE);
+    break;
   default:
     newlist = NULL;
     break;
@@ -6213,6 +6542,12 @@ static int tclUnsignedConvertDynList (ClientData data, Tcl_Interp *interp,
     break;
   case DL_SHORT:
     newlist = dynListUnsignedConvertList(dl, DF_SHORT);
+    break;
+  case DL_INT64:
+    newlist = dynListUnsignedConvertList(dl, DF_INT64);
+    break;
+  case DL_DOUBLE:
+    newlist = dynListUnsignedConvertList(dl, DF_DOUBLE);
     break;
   default:
     newlist = NULL;
@@ -10774,10 +11109,24 @@ int dynListPrintValChan(Tcl_Interp * interp, DYN_LIST *dl, int i,
       write_or_result(interp, chan, buf, -1);
     }
     break;
+  case DF_INT64:
+    {
+      int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+      snprintf(buf, sizeof(buf), DLFormatTable[FMT_INT64], (long long) vals[i]);
+      write_or_result(interp, chan, buf, -1);
+    }
+    break;
+  case DF_DOUBLE:
+    {
+      double *vals = (double *) DYN_LIST_VALS(dl);
+      snprintf(buf, sizeof(buf), DLFormatTable[FMT_DOUBLE], vals[i]);
+      write_or_result(interp, chan, buf, -1);
+    }
+    break;
   case DF_LIST:
     {
       DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
-      sprintf(buf, DLFormatTable[FMT_LIST], DYN_LIST_DATATYPE(vals[i]), 
+      sprintf(buf, DLFormatTable[FMT_LIST], DYN_LIST_DATATYPE(vals[i]),
 	      DYN_LIST_N(vals[i]));
       write_or_result(interp, chan, buf, -1);
     }
@@ -10899,7 +11248,8 @@ static int tclForEach(ClientData data, Tcl_Interp * interp, int objc,
   n  = DYN_LIST_N(dl);
 
   if (dt != DF_LONG && dt != DF_SHORT && dt != DF_FLOAT &&
-      dt != DF_CHAR && dt != DF_STRING && dt != DF_LIST) {
+      dt != DF_CHAR && dt != DF_STRING && dt != DF_LIST &&
+      dt != DF_INT64 && dt != DF_DOUBLE) {
     Tcl_AppendResult(interp, "dl_foreach: unsupported list datatype", NULL);
     return TCL_ERROR;
   }
@@ -10923,6 +11273,10 @@ static int tclForEach(ClientData data, Tcl_Interp * interp, int objc,
       val = Tcl_NewIntObj(((unsigned char *) DYN_LIST_VALS(dl))[i]); break;
     case DF_FLOAT:
       val = Tcl_NewDoubleObj(((float *) DYN_LIST_VALS(dl))[i]); break;
+    case DF_INT64:
+      val = Tcl_NewWideIntObj((Tcl_WideInt) ((int64_t *) DYN_LIST_VALS(dl))[i]); break;
+    case DF_DOUBLE:
+      val = Tcl_NewDoubleObj(((double *) DYN_LIST_VALS(dl))[i]); break;
     case DF_STRING:
       val = Tcl_NewStringObj(((char **) DYN_LIST_VALS(dl))[i], -1); break;
     case DF_LIST: {

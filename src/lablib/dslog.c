@@ -60,6 +60,22 @@ static int is_blob_dstype(int type)
    sublists used to be created with the raw ds type (DSERV_FLOAT -> DF_CHAR,
    DSERV_INT -> DF_FLOAT, ...), making columns type-heterogeneous whenever
    an obs had no samples. */
+/* See dslog.h.  Off: doubles narrow to float32 and int64s are dropped, the
+   historical behaviour, so the files stay readable everywhere. */
+static int dslog_wide_types = 0;
+
+int dslog_set_wide_types(int on)
+{
+  int old = dslog_wide_types;
+  dslog_wide_types = on ? 1 : 0;
+  return old;
+}
+
+int dslog_get_wide_types(void)
+{
+  return dslog_wide_types;
+}
+
 static int df_type_for_dstype(int type)
 {
   switch (type) {
@@ -67,7 +83,8 @@ static int df_type_for_dstype(int type)
   case DSERV_STRING: return DF_STRING;
   case DSERV_JSON:   return DF_STRING;
   case DSERV_FLOAT:  return DF_FLOAT;
-  case DSERV_DOUBLE: return DF_FLOAT;
+  case DSERV_DOUBLE: return dslog_wide_types ? DF_DOUBLE : DF_FLOAT;
+  case DSERV_INT64:  return dslog_wide_types ? DF_INT64 : DF_LONG;
   case DSERV_SHORT:  return DF_SHORT;
   case DSERV_JPEG:   return DF_CHAR;
   case DSERV_PPM:    return DF_CHAR;
@@ -87,6 +104,7 @@ static int dpoint_val_count(ds_datapoint_t *d)
   case DSERV_SHORT:  return d->data.len / sizeof(short);
   case DSERV_INT:    return d->data.len / sizeof(int);
   case DSERV_DOUBLE: return d->data.len / sizeof(double);
+  case DSERV_INT64:  return dslog_wide_types ? d->data.len / sizeof(int64_t) : 0;
   case DSERV_STRING: return 1;
   case DSERV_JSON:   return 1;
   default:           return 0;
@@ -347,8 +365,13 @@ static DYN_LIST *create_val_list(ds_datatype_t type, int len, unsigned char *buf
       dl = dfuCreateDynList(DF_CHAR, 1);
       break;
     case DSERV_DOUBLE:
+      dl = dfuCreateDynList(dslog_wide_types ? DF_DOUBLE : DF_FLOAT, 1);
+      break;
     case DSERV_FLOAT:
       dl = dfuCreateDynList(DF_FLOAT, 1);
+      break;
+    case DSERV_INT64:
+      if (dslog_wide_types) dl = dfuCreateDynList(DF_INT64, 1);
       break;
     case DSERV_SHORT:
       dl = dfuCreateDynList(DF_SHORT, 1);
@@ -395,13 +418,29 @@ static DYN_LIST *create_val_list(ds_datatype_t type, int len, unsigned char *buf
       dl = dfuCreateDynListWithVals(DF_LONG, n, vals);
       break;
     case DSERV_DOUBLE:
-      d = (double *) buf;
       n = len/sizeof(double);
+      if (dslog_wide_types) {
+	vals = malloc(len);
+	memcpy(vals, buf, len);
+	dl = dfuCreateDynListWithVals(DF_DOUBLE, n, vals);
+	break;
+      }
+      d = (double *) buf;
       dl = dfuCreateDynList(DF_FLOAT, n);
 
       /* was `i < len`: read 8x past the buffer and appended 8x too many */
       for (i = 0; i < n; i++) {
 	dfuAddDynListFloat(dl, (float) d[i]);
+      }
+      break;
+    case DSERV_INT64:
+      /* Without wide types there is nothing narrower to store an int64 in
+	 without lying, so it falls to the empty placeholder below. */
+      if (dslog_wide_types) {
+	n = len/sizeof(int64_t);
+	vals = malloc(len);
+	memcpy(vals, buf, len);
+	dl = dfuCreateDynListWithVals(DF_INT64, n, vals);
       }
       break;
     case DSERV_STRING:
@@ -415,8 +454,7 @@ static DYN_LIST *create_val_list(ds_datatype_t type, int len, unsigned char *buf
 
       break;
     default:
-      /* DSERV_INT64 and friends: no 64-bit dg type exists, so these fall
-	 through to the empty placeholder below rather than truncating. */
+      /* Unknown types fall through to the empty placeholder below. */
       break;
     }
   }
@@ -472,11 +510,26 @@ static DYN_LIST *add_dpoint_to_list(DYN_LIST *dl, ds_datapoint_t *dpoint)
     break;
   case DSERV_DOUBLE:
     n = dpoint->data.len/sizeof(double);
+    d = (double *) dpoint->data.buf;
+    if (dslog_wide_types) {
+      if (!dl) dl = dfuCreateDynList(DF_DOUBLE, n);
+      if (!dl) return NULL;
+      for (i = 0; i < n; i++) dfuAddDynListDouble(dl, d[i]);
+      break;
+    }
     if (!dl) dl = dfuCreateDynList(DF_FLOAT, n);
     if (!dl) return NULL;
-    d = (double *) dpoint->data.buf;
     for (i = 0; i < n; i++) {
       dfuAddDynListFloat(dl, (float) d[i]);
+    }
+    break;
+  case DSERV_INT64:
+    if (dslog_wide_types) {
+      int64_t *w = (int64_t *) dpoint->data.buf;
+      n = dpoint->data.len/sizeof(int64_t);
+      if (!dl) dl = dfuCreateDynList(DF_INT64, n);
+      if (!dl) return NULL;
+      for (i = 0; i < n; i++) dfuAddDynListInt64(dl, w[i]);
     }
     break;
   case DSERV_STRING:

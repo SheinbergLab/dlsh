@@ -264,6 +264,52 @@ you run on *that* never touch the handle.
 
 ---
 
+## Element types, and the two wide ones
+
+A dynlist holds one element type: `char`, `short`, `long` (32-bit; `int`
+is a synonym), `float` (32-bit), `string`, or `list`. Since 2026 there are
+two 8-byte types as well:
+
+| Type | Create | Convert to | Notes |
+|---|---|---|---|
+| `int64` (`wide`) | `dl_wlist 5000000000` or `dl_create int64 ...` | `dl_int64 $x` | exact 64-bit integers; a microsecond epoch timestamp fits |
+| `double` | `dl_dlist 0.1` or `dl_create double ...` | `dl_double $x` | full 64-bit precision, where `float` keeps ~7 digits |
+
+`long` is still 32 bits and `float` still 32; nothing about existing lists
+changed.
+
+**What works on wide lists today** is the storage layer: create, append,
+prepend, insert, `dl_get`/`dl_put`, `dl_tcllist`, `dl_foreach`, copy,
+reverse, select, choose, permute, repeat, concat, interleave, the
+conversions in both directions, `dg_write`/`dg_read`, `dg_toString`,
+`dl_toString`, JSON, msgpack, and Arrow (where they round-trip losslessly,
+which they never did before).
+
+**Everything else errors** rather than answering: `dl_sum`, `dl_sort`,
+`dl_mean`, the comparison and arithmetic commands, and the rest of the
+analysis surface refuse a wide list with
+
+    dl_sum: int64/double lists are not supported by this command yet
+    (convert with dl_int or dl_float)
+
+That refusal is deliberate. The analysis commands dispatch on element type
+with no default arm, and before the guard a wide list came back unsorted
+from `dl_sort` and with `0.0` from `dl_mean`. Convert with `dl_int` or
+`dl_float` when 32 bits is enough for the computation, and see
+`dlWideOkCommands` in `src/tcl_dl.c` for the list of commands that have
+been verified.
+
+**Files that contain a wide column can only be opened by readers that know
+tags 11 and 12**: dlsh from this version on, dgread 1.2.1+ for Python (int64
+and float64 arrays), R 1.1.1+ (both arrive as doubles; int64 is exact to
+2^53), the matching MATLAB MEX (both as doubles), and dserv's updated web
+viewers. Older readers report the file as corrupt or a newer format. For
+that reason `dslog::read` and `dslog::readESS` still narrow doubles to float
+and drop int64 values by default; turn on `dslog::wideTypes 1` once every
+consumer of a rig's files has been updated.
+
+---
+
 ## See also
 
 - `dservctl docs show <command>` — per-command reference

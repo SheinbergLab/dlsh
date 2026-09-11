@@ -107,6 +107,10 @@ foreach c $cmds {
         } else {
             puts $out "$c \[$p\] OK  [norm $r]"
         }
+        # Flush per line: if a command segfaults the process, the transcript
+        # then ends at the exact call that killed it instead of at whatever
+        # stdio buffer boundary happened to precede it.
+        flush $out
     }
 }
 flush $out

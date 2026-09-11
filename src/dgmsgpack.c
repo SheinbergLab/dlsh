@@ -71,7 +71,23 @@ int dl_to_msgpack(DYN_LIST *dl, msgpack_packer *pk)
                 if (msgpack_pack_float(pk, vals[i]) != 0) return -1;
             }
         }
-        break;      
+        break;
+    case DF_INT64:
+        {
+            int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+            for (i = 0; i < DYN_LIST_N(dl); i++) {
+                if (msgpack_pack_int64(pk, vals[i]) != 0) return -1;
+            }
+        }
+        break;
+    case DF_DOUBLE:
+        {
+            double *vals = (double *) DYN_LIST_VALS(dl);
+            for (i = 0; i < DYN_LIST_N(dl); i++) {
+                if (msgpack_pack_double(pk, vals[i]) != 0) return -1;
+            }
+        }
+        break;
     case DF_STRING:
         {
             char **vals = (char **) DYN_LIST_VALS(dl);
@@ -227,6 +243,18 @@ int dg_to_hybrid_msgpack_buffer(DYN_GROUP *dg, char **buffer, size_t *buffer_siz
                 {
                     float *vals = (float *) DYN_LIST_VALS(dl);
                     if (msgpack_pack_float(&pk, vals[i]) != 0) goto error;
+                }
+                break;
+            case DF_INT64:
+                {
+                    int64_t *vals = (int64_t *) DYN_LIST_VALS(dl);
+                    if (msgpack_pack_int64(&pk, vals[i]) != 0) goto error;
+                }
+                break;
+            case DF_DOUBLE:
+                {
+                    double *vals = (double *) DYN_LIST_VALS(dl);
+                    if (msgpack_pack_double(&pk, vals[i]) != 0) goto error;
                 }
                 break;
             case DF_STRING:

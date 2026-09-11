@@ -587,6 +587,32 @@ static int dslogInfoCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+/*
+ * dslog::wideTypes ?0|1?
+ *
+ *   Query or set whether DSERV_DOUBLE / DSERV_INT64 datapoints are kept at
+ *   full width (DF_DOUBLE / DF_INT64 columns) by dslog::read and
+ *   dslog::readESS.  Off by default: a dg with 8-byte columns cannot be
+ *   opened by readers that predate them.  Returns the setting in effect
+ *   after the call.
+ */
+static int dslogWideTypesCmd(ClientData data, Tcl_Interp *interp,
+			     int objc, Tcl_Obj *const objv[])
+{
+  int on;
+
+  if (objc > 2) {
+    Tcl_WrongNumArgs(interp, 1, objv, "?0|1?");
+    return TCL_ERROR;
+  }
+  if (objc == 2) {
+    if (Tcl_GetBooleanFromObj(interp, objv[1], &on) != TCL_OK) return TCL_ERROR;
+    dslog_set_wide_types(on);
+  }
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(dslog_get_wide_types()));
+  return TCL_OK;
+}
+
 /*****************************************************************************
  *
  * EXPORT
@@ -657,6 +683,11 @@ int Dslog_Init(Tcl_Interp *interp)
 
   Tcl_CreateObjCommand(interp, "dslog::info",
 		       (Tcl_ObjCmdProc *) dslogInfoCmd,
+		       (ClientData) NULL,
+		       (Tcl_CmdDeleteProc *) NULL);
+
+  Tcl_CreateObjCommand(interp, "dslog::wideTypes",
+		       (Tcl_ObjCmdProc *) dslogWideTypesCmd,
 		       (ClientData) NULL,
 		       (Tcl_CmdDeleteProc *) NULL);
 
