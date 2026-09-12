@@ -260,6 +260,18 @@ check "recode double"      [dl_tcllist [dl_recode [dl_dlist 0.5 0.1 0.5]]] {1 0 
 check "find int64"         [dl_tcllist [dl_find $W [dl_wlist -1 7]]] 1
 check "median (Tcl proc over sort/get)" [dl_median $W] 7
 
+# --- structural commands: identical to their int/float behaviour ---------
+set WL [dl_llist [dl_wlist 5000000000 1 3] [dl_wlist 9 2 4]]
+check "lengths"      [dl_tcllist [dl_lengths $WL]] {3 3}
+check "collapse"     [dl_tcllist [dl_collapse $WL]] {5000000000 1 3 9 2 4}
+check "collapse type" [dl_datatype [dl_collapse $WL]] int64
+check "transpose"    [dl_tcllist [dl_transpose $WL]] {{5000000000 9} {1 2} {3 4}}
+check "unpack"       [dl_tcllist [dl_unpack $WL]] {5000000000 1 3 9 2 4}
+check "unpackLists"  [dl_tcllist [dl_unpackLists [dl_llist $WL]]] {{5000000000 1 3} {9 2 4}}
+check "recodeWithTies double" [dl_tcllist [dl_recodeWithTies [dl_dlist 0.5 0.1 0.5]]] \
+    [dl_tcllist [dl_recodeWithTies [dl_flist 0.5 0.1 0.5]]]
+errors "subshift stays guarded (per-type zero fill)" { dl_subshift $WL 1 }
+
 # --- still guarded: no verified implementation yet ----------------------
 foreach {label script} {
     "dl_findIndices int64"     { dl_findIndices $W $W }

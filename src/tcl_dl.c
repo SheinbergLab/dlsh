@@ -1048,6 +1048,11 @@ static const char *dlWideOkCommands[] = {
   /* ordering */
   "dl_sort", "dl_bsort", "dl_sortIndices", "dl_bsortIndices", "dl_rank",
   "dl_recode", "dl_unique", "dl_uniqueNoSort", "dl_find", "dl_findAll",
+  /* structural: no element-type dispatch, verified against int lists
+     (dl_subshift is NOT here: its zero fill is per-type and drops wide
+     elements; dl_cut, dl_transposeAt, dl_deepUnpack unverified) */
+  "dl_lengths", "dl_collapse", "dl_transpose", "dl_unpack",
+  "dl_unpackLists", "dl_recodeWithTies",
   /* reductions */
   "dl_min", "dl_max", "dl_any", "dl_all", "dl_minIndex", "dl_maxIndex",
   "dl_sum", "dl_prod", "dl_mean", "dl_std", "dl_var",
