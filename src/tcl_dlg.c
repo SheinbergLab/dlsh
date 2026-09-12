@@ -26,6 +26,31 @@
 #include <df.h>
 #include "dfana.h"
 #include "tcl_dl.h"
+#include "dlwide.h"
+
+/*
+ * Plotting needs no more than float precision, so the drawing code below
+ * only knows the pre-2026 element types.  Fetch a list the way
+ * tclFindDynList does, but when it (or any sublist) is int64 or double,
+ * hand back a float copy instead.  The copy is registered as a temporary
+ * like a literal argument's list, so it is freed with the others.
+ */
+static int dlgFindDynList(Tcl_Interp *interp, char *name, DYN_LIST **dl)
+{
+  DYN_LIST *conv;
+  if (tclFindDynList(interp, name, dl) != TCL_OK) return TCL_ERROR;
+  if (!dlwHasWideLeaf(*dl)) return TCL_OK;
+  conv = dynListConvertList(*dl, DF_FLOAT);
+  if (!conv) {
+    Tcl_AppendResult(interp, "unable to convert list \"", name,
+		     "\" to float for plotting", NULL);
+    return TCL_ERROR;
+  }
+  tclPutList(interp, conv);
+  Tcl_ResetResult(interp);
+  *dl = conv;
+  return TCL_OK;
+}
 
 #include <rawapi.h>
 
@@ -879,14 +904,14 @@ static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
 	i-=1;
       }
       else if (!strcmp(argv[i],"-sizes")) {
-	if (tclFindDynList(interp, argv[i+1], &sizes) != TCL_OK)
+	if (dlgFindDynList(interp, argv[i+1], &sizes) != TCL_OK)
 	  goto error;
 	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
 	argc-=2;
 	i-=1;
       }
       else if (!strcmp(argv[i],"-colors")) {
-	if (tclFindDynList(interp, argv[i+1], &colors) != TCL_OK)
+	if (dlgFindDynList(interp, argv[i+1], &colors) != TCL_OK)
 	  goto error;
 	for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
 	argc-=2;
@@ -984,8 +1009,8 @@ static int tclMarkerDynList (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
   
-  tclFindDynList(interp, argv[1], &dlx);
-  tclFindDynList(interp, argv[2], &dly);
+  dlgFindDynList(interp, argv[1], &dlx);
+  dlgFindDynList(interp, argv[2], &dly);
   
   if (!dlx && !dly) {		/* both scalars? */
     if (Tcl_GetDouble(interp, argv[1], &val) != TCL_OK) {
@@ -2177,7 +2202,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
         i-=1;
       }
       else if (!strcmp(argv[i],"-linecolors")) {
-        if (tclFindDynList(interp, argv[i+1], &linecolors) != TCL_OK)
+        if (dlgFindDynList(interp, argv[i+1], &linecolors) != TCL_OK)
           goto error;
         linfo.linecolors = linecolors;
         for (j = i+2; j < argc; j++) argv[j-2] = argv[j];
@@ -2185,7 +2210,7 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
         i-=1;
       }
       else if (!strcmp(argv[i],"-fillcolors")) {
-        if (tclFindDynList(interp, argv[i+1], &fillcolors) != TCL_OK)
+        if (dlgFindDynList(interp, argv[i+1], &fillcolors) != TCL_OK)
           goto error;
         linfo.fillcolors = fillcolors;
         linfo.filled = 1;
@@ -2215,8 +2240,8 @@ static int tclLineDynList (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
 
-  tclFindDynList(interp, argv[1], &dlx);
-  tclFindDynList(interp, argv[2], &dly);
+  dlgFindDynList(interp, argv[1], &dlx);
+  dlgFindDynList(interp, argv[2], &dly);
 
   /* 
    * If both are lists and either is a list of length one, while the other is 
@@ -3035,7 +3060,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
         i-=1;
       }
       else if (!strcmp(argv[i],"-colors")) {
-        if (tclFindDynList(interp, argv[i+1], &colors) != TCL_OK)
+        if (dlgFindDynList(interp, argv[i+1], &colors) != TCL_OK)
           goto error;
         if (DYN_LIST_DATATYPE(colors) != DF_LONG) {
           Tcl_AppendResult(interp, argv[0], 
@@ -3100,8 +3125,8 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
   
-  tclFindDynList(interp, argv[1], &dlx);
-  tclFindDynList(interp, argv[2], &dly);
+  dlgFindDynList(interp, argv[1], &dlx);
+  dlgFindDynList(interp, argv[2], &dly);
 
   /* 
    * If both are lists and either is a list of length one, while the other is 
@@ -3177,7 +3202,7 @@ static int tclTextDynList (ClientData data, Tcl_Interp *interp,
     Tcl_ResetResult(interp);
   }
 
-  if (tclFindDynList(interp, argv[3], &dldata) != TCL_OK) {
+  if (dlgFindDynList(interp, argv[3], &dldata) != TCL_OK) {
     int i;
     int length = DYN_LIST_N(dlx);
     if (DYN_LIST_N(dly) > length) length = DYN_LIST_N(dly);
@@ -3804,7 +3829,7 @@ static int tclFindImageData(Tcl_Interp *interp, char *name,
   DYN_LIST *dl;
   DYN_LIST **sublists;
   int temp;
-  if (tclFindDynList(interp, name, &dl) != TCL_OK) return TCL_ERROR;
+  if (dlgFindDynList(interp, name, &dl) != TCL_OK) return TCL_ERROR;
 
   if (*w && *h) {		/* user specified the dims */
     int size = (*w) * (*h);
@@ -4339,7 +4364,7 @@ static int tclNiceDpoints (ClientData data, Tcl_Interp *interp,
 		     " dynlist", (char *) NULL);
     return TCL_ERROR;
   }
-  if (tclFindDynList(interp, argv[1], &dl) != TCL_OK) return TCL_ERROR;
+  if (dlgFindDynList(interp, argv[1], &dl) != TCL_OK) return TCL_ERROR;
 
   if (DYN_LIST_N(dl) < 2 || DYN_LIST_DATATYPE(dl) != DF_FLOAT) dpoints = 0;
   else {
@@ -4986,7 +5011,7 @@ static int tclRGBColors (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
   
-  if (tclFindDynList(interp, argv[1], &r_list) != TCL_OK) {
+  if (dlgFindDynList(interp, argv[1], &r_list) != TCL_OK) {
   usage:
     Tcl_ResetResult(interp);
     Tcl_AppendResult(interp, "usage: ", argv[0], " r_list g_list b_list", 
@@ -5004,7 +5029,7 @@ static int tclRGBColors (ClientData data, Tcl_Interp *interp,
   }
   length = DYN_LIST_N(r_list);
 
-  if (tclFindDynList(interp, argv[2], &g_list) != TCL_OK) goto usage;
+  if (dlgFindDynList(interp, argv[2], &g_list) != TCL_OK) goto usage;
 
   /* Insist that it's a int list */
   else {
@@ -5022,7 +5047,7 @@ static int tclRGBColors (ClientData data, Tcl_Interp *interp,
     }
   }
 
-  if (tclFindDynList(interp, argv[3], &b_list) != TCL_OK) goto usage;
+  if (dlgFindDynList(interp, argv[3], &b_list) != TCL_OK) goto usage;
   else if (DYN_LIST_DATATYPE(b_list) != DF_LONG) goto color_int_error;
   /* Make sure the length is OK */
   if (DYN_LIST_N(b_list) != 1) {
@@ -5102,7 +5127,7 @@ static int tclRGB2Hex (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
   
-  if (tclFindDynList(interp, argv[1], &r_list) != TCL_OK) {
+  if (dlgFindDynList(interp, argv[1], &r_list) != TCL_OK) {
   usage:
     Tcl_ResetResult(interp);
     Tcl_AppendResult(interp, "usage: ", argv[0], " r_list g_list b_list", 
@@ -5120,7 +5145,7 @@ static int tclRGB2Hex (ClientData data, Tcl_Interp *interp,
   }
   length = DYN_LIST_N(r_list);
 
-  if (tclFindDynList(interp, argv[2], &g_list) != TCL_OK) goto usage;
+  if (dlgFindDynList(interp, argv[2], &g_list) != TCL_OK) goto usage;
 
   /* Insist that it's a int list */
   else {
@@ -5138,7 +5163,7 @@ static int tclRGB2Hex (ClientData data, Tcl_Interp *interp,
     }
   }
 
-  if (tclFindDynList(interp, argv[3], &b_list) != TCL_OK) goto usage;
+  if (dlgFindDynList(interp, argv[3], &b_list) != TCL_OK) goto usage;
   else if (DYN_LIST_DATATYPE(b_list) != DF_LONG) goto color_int_error;
   /* Make sure the length is OK */
   if (DYN_LIST_N(b_list) != 1) {
@@ -5207,7 +5232,7 @@ static int tclImageData2Photo(ClientData data, Tcl_Interp *interp,
         return TCL_ERROR;
     }
     
-    if (tclFindDynList(interp, argv[1], &data_dl) != TCL_OK) {
+    if (dlgFindDynList(interp, argv[1], &data_dl) != TCL_OK) {
         return TCL_ERROR;
     }
     
@@ -5378,7 +5403,7 @@ static int tclPolarLAB2RGBColors (ClientData data, Tcl_Interp *interp,
     return TCL_ERROR;
   }
   
-  if (tclFindDynList(interp, argv[1], &L_list) != TCL_OK) {
+  if (dlgFindDynList(interp, argv[1], &L_list) != TCL_OK) {
   usage:
     Tcl_ResetResult(interp);
     Tcl_AppendResult(interp, "usage: ", argv[0], " L_list C_list H_list", 
@@ -5396,7 +5421,7 @@ static int tclPolarLAB2RGBColors (ClientData data, Tcl_Interp *interp,
   }
   length = DYN_LIST_N(L_list);
 
-  if (tclFindDynList(interp, argv[2], &C_list) != TCL_OK) goto usage;
+  if (dlgFindDynList(interp, argv[2], &C_list) != TCL_OK) goto usage;
 
   /* Insist that it's a float list */
   else {
@@ -5414,7 +5439,7 @@ static int tclPolarLAB2RGBColors (ClientData data, Tcl_Interp *interp,
     }
   }
 
-  if (tclFindDynList(interp, argv[3], &H_list) != TCL_OK) goto usage;
+  if (dlgFindDynList(interp, argv[3], &H_list) != TCL_OK) goto usage;
   else if (DYN_LIST_DATATYPE(H_list) != DF_FLOAT) goto color_int_error;
   /* Make sure the length is OK */
   if (DYN_LIST_N(H_list) != 1) {

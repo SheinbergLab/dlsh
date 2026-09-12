@@ -44,6 +44,7 @@ extern "C" {
 int dlwIsNumeric(int datatype);	/* one of the six above */
 int dlwIsInteger(int datatype);	/* char, short, long, int64 */
 int dlwIsWide(int datatype);	/* int64 or double */
+int dlwHasWideLeaf(DYN_LIST *dl);	/* the list, or any sublist, is wide */
 int dlwPromote(int a, int b);	/* common result type, or -1 */
 
 /* Element readers: convert element i of a typed value array */

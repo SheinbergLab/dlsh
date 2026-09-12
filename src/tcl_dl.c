@@ -37,6 +37,7 @@
 #include <df.h>
 #include <dynio.h>
 #include "dfana.h"
+#include "dlwide.h"
 #include <labtcl.h>
 #include "tcl_dl.h"
 #include "dlref.h"
@@ -1071,24 +1072,7 @@ static const char *dlWideOkCommands[] = {
   NULL
 };
 
-static int dlListHasWideLeaf(DYN_LIST *dl)
-{
-  int i;
-  if (!dl) return 0;
-  switch (DYN_LIST_DATATYPE(dl)) {
-  case DF_INT64:
-  case DF_DOUBLE:
-    return 1;
-  case DF_LIST: {
-    DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
-    for (i = 0; i < DYN_LIST_N(dl); i++)
-      if (dlListHasWideLeaf(vals[i])) return 1;
-    return 0;
-  }
-  default:
-    return 0;
-  }
-}
+#define dlListHasWideLeaf dlwHasWideLeaf	/* lives in dlwide.c now */
 
 /* Resolve a list name the way tclFindDynList does -- a top-level list,
    group:list, list:index, group:list:index:... -- but without touching the

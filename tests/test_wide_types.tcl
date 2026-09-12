@@ -339,6 +339,21 @@ check "sumList int64 exact"   [dl_tcllist [dl_sumList [dl_llist [dl_wlist 500000
 check "sumList int64 type"    [dl_datatype [dl_sumList $WL2]] int64
 check "sumList double"        [dl_tcllist [dl_sumList $DL2]] {14.0 3.0 7.0}
 
+# --- plotting: wide inputs are drawn as floats ----------------------------
+# The drawing code knows only the legacy types; the dlg_* commands hand it a
+# float copy of a wide list.  Same graphics-buffer bytes as the float call.
+proc drawn {script} { gbufreset; uplevel 1 $script; return [gbufsize] }
+check "dlg_lines double == float"  [drawn {dlg_lines [dl_dlist 0 1 2] [dl_dlist 0 1 4]}] [drawn {dlg_lines [dl_flist 0 1 2] [dl_flist 0 1 4]}]
+check "dlg_lines int64 == float"   [drawn {dlg_lines [dl_wlist 0 1 2] [dl_wlist 0 1 4]}] [drawn {dlg_lines [dl_flist 0 1 2] [dl_flist 0 1 4]}]
+check "dlg_markers double"         [drawn {dlg_markers [dl_dlist 0 1 2] [dl_dlist 0 1 4]}] [drawn {dlg_markers [dl_flist 0 1 2] [dl_flist 0 1 4]}]
+check "dlg_bars double"            [drawn {dlg_bars [dl_dlist 0 1 2] [dl_dlist 0 1 4]}] [drawn {dlg_bars [dl_flist 0 1 2] [dl_flist 0 1 4]}]
+check "dlg_steps double"           [drawn {dlg_steps [dl_dlist 0 1 2] [dl_dlist 0 1 4]}] [drawn {dlg_steps [dl_flist 0 1 2] [dl_flist 0 1 4]}]
+check "dlg_text double"            [drawn {dlg_text [dl_dlist 0 1] [dl_dlist 0 1] [dl_slist a b]}] [drawn {dlg_text [dl_flist 0 1] [dl_flist 0 1] [dl_slist a b]}]
+check "dlg_lines nested double"    [drawn {dlg_lines [dl_llist [dl_dlist 0 1] [dl_dlist 2 3]] [dl_llist [dl_dlist 0 1] [dl_dlist 4 9]]}] [drawn {dlg_lines [dl_llist [dl_flist 0 1] [dl_flist 2 3]] [dl_llist [dl_flist 0 1] [dl_flist 4 9]]}]
+set plotted [dl_dlist 0 1]; dlg_lines $plotted $plotted
+check "plotted list untouched"     [dl_datatype $plotted] double
+gbufreset
+
 # --- still guarded: no verified implementation yet ----------------------
 foreach {label script} {
     "dl_fill double"           { dl_fill $D2 [dl_ilist 0 1] [dl_ilist 0 2] }

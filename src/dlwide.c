@@ -37,6 +37,25 @@ int dlwIsWide(int t)
   return t == DF_INT64 || t == DF_DOUBLE;
 }
 
+int dlwHasWideLeaf(DYN_LIST *dl)
+{
+  int i;
+  if (!dl) return 0;
+  switch (DYN_LIST_DATATYPE(dl)) {
+  case DF_INT64:
+  case DF_DOUBLE:
+    return 1;
+  case DF_LIST: {
+    DYN_LIST **vals = (DYN_LIST **) DYN_LIST_VALS(dl);
+    for (i = 0; i < DYN_LIST_N(dl); i++)
+      if (dlwHasWideLeaf(vals[i])) return 1;
+    return 0;
+  }
+  default:
+    return 0;
+  }
+}
+
 static int rank(int t)
 {
   switch (t) {

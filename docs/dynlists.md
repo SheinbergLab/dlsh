@@ -305,7 +305,10 @@ Also covered: histograms and counting (`dl_hist`, `dl_count`, ...), the
 find family (`dl_findIndices` hashes int64 keys exactly), positions and
 shape (`dl_subshift`, `dl_cut`, `dl_pack`, `dl_reshape`, splice, ...),
 `dl_replace`, the category sorts, and the `dl_b*`/`dl_h*` reducers, which
-answer in double for wide leaves.
+answer in double for wide leaves. The plotting commands (`dlg_lines`,
+`dlg_markers`, ...) draw a wide list as a float copy: a double time axis
+plots exactly as its float conversion would, and the list itself is not
+touched.
 
 **What still errors** rather than answering: the commands that take no
 wide list by design (string and path ops, generators, `dl_srand`), the
