@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <iostream>
 #include <vector>
 #include <DTW.hpp>
@@ -29,17 +30,75 @@ static int dl_to_2d_vector(DYN_LIST *dl, std::vector<std::vector<double> > &v)
   return 1;
 }
 
+/*
+ * Explain why dl is not a usable xy path, or return NULL if it is one.
+ *
+ * Every structural test has to happen before the DYN_LIST ** cast below:
+ * a list that is not DF_LIST holds floats/ints, and one that is DF_LIST but
+ * does not hold exactly two elements has no sublists[1] to read.  Casting
+ * either one to DYN_LIST ** and dereferencing it is a segfault, not a
+ * failed test.
+ */
+static const char *path_problem(DYN_LIST *dl)
+{
+  DYN_LIST **sublists, *dlx, *dly;
+
+  if (!dl) return "path is null";
+  if (DYN_LIST_DATATYPE(dl) != DF_LIST)
+    return "path must be a list of lists";
+  if (DYN_LIST_N(dl) != 2)
+    return "path must hold exactly two sublists (x and y)";
+
+  sublists = (DYN_LIST **) DYN_LIST_VALS(dl);
+  dlx = sublists[0];
+  dly = sublists[1];
+  if (!dlx || !dly) return "path sublists must not be null";
+  if (DYN_LIST_DATATYPE(dlx) != DF_FLOAT ||
+      DYN_LIST_DATATYPE(dly) != DF_FLOAT)
+    return "path x and y sublists must both be float lists";
+  if (DYN_LIST_N(dlx) != DYN_LIST_N(dly))
+    return "path x and y sublists must be the same length";
+  return NULL;
+}
+
 static int is_single_path(DYN_LIST *dl)
 {
-  DYN_LIST *dlx, *dly;
-  if (DYN_LIST_DATATYPE(dl) != DF_LIST &&
-      DYN_LIST_N(dl) != 2) return 0;
-  dlx = ((DYN_LIST **) DYN_LIST_VALS(dl))[0];
-  dly = ((DYN_LIST **) DYN_LIST_VALS(dl))[1];
-  if (DYN_LIST_N(dlx) != DYN_LIST_N(dly)) return 0;
-  if (DYN_LIST_DATATYPE(dlx) != DF_FLOAT ||
-      DYN_LIST_DATATYPE(dly) != DF_FLOAT) return 0;
-  return 1;
+  return path_problem(dl) == NULL;
+}
+
+/*
+ * Check that dl is a non-empty list whose every element is a valid path,
+ * leaving a specific error in interp if it is not.
+ */
+static int check_path_list(Tcl_Interp *interp, const char *cmd,
+			   const char *argname, DYN_LIST *dl)
+{
+  DYN_LIST **sublists;
+  const char *why;
+
+  if (DYN_LIST_DATATYPE(dl) != DF_LIST) {
+    Tcl_AppendResult(interp, cmd, ": ", argname,
+		     " must be a list of paths, each path a list of two"
+		     " equal length float lists", NULL);
+    return TCL_ERROR;
+  }
+  if (DYN_LIST_N(dl) < 1) {
+    Tcl_AppendResult(interp, cmd, ": ", argname,
+		     " must hold at least one path", NULL);
+    return TCL_ERROR;
+  }
+
+  sublists = (DYN_LIST **) DYN_LIST_VALS(dl);
+  for (int i = 0; i < DYN_LIST_N(dl); i++) {
+    if ((why = path_problem(sublists[i]))) {
+      char idx[32];
+      snprintf(idx, sizeof(idx), "%d", i);
+      Tcl_AppendResult(interp, cmd, ": ", argname, " element ", idx,
+		       ": ", why, NULL);
+      return TCL_ERROR;
+    }
+  }
+  return TCL_OK;
 }
 
 // the p-norm to use; 2.0 = euclidean, 1.0 = manhattan
@@ -134,7 +193,6 @@ static DYN_LIST *distance_only(DYN_LIST *dl, double pnorm)
 
   // now fill rest of matrix
   for (int i = 0; i < DYN_LIST_N(dl); i++) {
-    DYN_LIST *curlist = dfuCreateDynList(DF_FLOAT, DYN_LIST_N(dl));
     std::vector<std::vector<double> > v1;
     if (!dl_to_2d_vector(sublists[i], v1)) {
       for (int k = 0; k < DYN_LIST_N(dl); k++) free(rows[k]);
@@ -173,26 +231,47 @@ dtw_distance_only_func(ClientData data, Tcl_Interp *interp,
 {
   DYN_LIST *dl1, *dl2;
   DYN_LIST *retlist = NULL;
-  
-  if (objc < 2) {
+  const char *cmd;
+
+  if (objc < 2 || objc > 3) {
     Tcl_WrongNumArgs(interp, 1, objv, "dl1 [dl2]");
     return (TCL_ERROR);
   }
+  cmd = Tcl_GetString(objv[0]);
 
   if (tclFindDynList(interp, Tcl_GetString(objv[1]), &dl1) != TCL_OK)
     return TCL_ERROR;
 
   double pnorm = 2;
   if (objc == 2) {
+    /* single argument: a list of paths, compared pairwise */
+    if (check_path_list(interp, cmd, "argument", dl1) != TCL_OK)
+      return TCL_ERROR;
     retlist = distance_only(dl1, pnorm);
   }
 
   else {
     if (tclFindDynList(interp, Tcl_GetString(objv[2]), &dl2) != TCL_OK)
       return TCL_ERROR;
+
+    /* each argument is either one path or a list of paths, and at least
+       one of the two has to be a single path */
+    if (!is_single_path(dl1) &&
+	check_path_list(interp, cmd, "first argument", dl1) != TCL_OK)
+      return TCL_ERROR;
+    if (!is_single_path(dl2) &&
+	check_path_list(interp, cmd, "second argument", dl2) != TCL_OK)
+      return TCL_ERROR;
+    if (!is_single_path(dl1) && !is_single_path(dl2)) {
+      Tcl_AppendResult(interp, cmd, ": comparing two lists of paths is not"
+		       " supported; at least one argument must be a single"
+		       " path", NULL);
+      return TCL_ERROR;
+    }
+
     retlist = distance_only(dl1, dl2, pnorm);
   }
-  
+
   if (retlist)
     return(tclPutList(interp, retlist));
   else {
