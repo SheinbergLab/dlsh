@@ -1048,11 +1048,20 @@ static const char *dlWideOkCommands[] = {
   /* ordering */
   "dl_sort", "dl_bsort", "dl_sortIndices", "dl_bsortIndices", "dl_rank",
   "dl_recode", "dl_unique", "dl_uniqueNoSort", "dl_find", "dl_findAll",
-  /* structural: no element-type dispatch, verified against int lists
-     (dl_subshift is NOT here: its zero fill is per-type and drops wide
-     elements; dl_cut, dl_transposeAt, dl_deepUnpack unverified) */
+  /* structural, shape and position commands */
   "dl_lengths", "dl_collapse", "dl_transpose", "dl_unpack",
-  "dl_unpackLists", "dl_recodeWithTies",
+  "dl_unpackLists", "dl_recodeWithTies", "dl_subshift", "dl_cut",
+  "dl_pack", "dl_deepPack", "dl_deepUnpack", "dl_reshape",
+  "dl_spliceBefore", "dl_spliceAfter", "dl_transposeAt", "dl_firstPos",
+  "dl_lastPos", "dl_indices", "dl_zeroCrossings", "dl_recip", "dl_idiff",
+  "dl_replace", "dl_replaceByIndex", "dl_incr", "dl_increment",
+  /* histograms, counting, finding */
+  "dl_hist", "dl_hists", "dl_bins", "dl_count", "dl_counts", "dl_lcounts",
+  "dl_findIndices", "dl_countOccurences", "dl_findPatterns",
+  /* category sorts and the b/h reducers */
+  "dl_sortByList", "dl_sortBySelected", "dl_uniqueCross",
+  "dl_bmins", "dl_bmaxs", "dl_bmeans", "dl_bstds", "dl_bsums",
+  "dl_hmeans", "dl_hstds", "dl_hvars", "dl_meanList", "dl_sumList",
   /* reductions */
   "dl_min", "dl_max", "dl_any", "dl_all", "dl_minIndex", "dl_maxIndex",
   "dl_sum", "dl_prod", "dl_mean", "dl_std", "dl_var",
@@ -5718,15 +5727,21 @@ static int tclConsDynList (ClientData data, Tcl_Interp *interp,
       int index, *vals;
       if (tclFindDynList(interp, argv[1], &dl1) != TCL_OK) return TCL_ERROR;
       if (Tcl_GetInt(interp, argv[2], &index) != TCL_OK) return TCL_ERROR;
-      if (DYN_LIST_DATATYPE(dl1) != DF_LONG) {
-	Tcl_AppendResult(interp, argv[0], ": list must be ints", 
+      if (DYN_LIST_DATATYPE(dl1) != DF_LONG && DYN_LIST_DATATYPE(dl1) != DF_INT64) {
+	Tcl_AppendResult(interp, argv[0], ": list must be ints",
 		       (char *) NULL);
 	return TCL_ERROR;
       }
       if (index >= DYN_LIST_N(dl1) || index < 0) {
-	Tcl_AppendResult(interp, argv[0], ": index out of range", 
+	Tcl_AppendResult(interp, argv[0], ": index out of range",
 			 (char *) NULL);
 	return TCL_ERROR;
+      }
+      if (DYN_LIST_DATATYPE(dl1) == DF_INT64) {
+	int64_t *wvals = (int64_t *) DYN_LIST_VALS(dl1);
+	wvals[index]++;
+	Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt) wvals[index]));
+	return TCL_OK;
       }
       vals = (int *) DYN_LIST_VALS(dl1);
       vals[index]++;

@@ -270,35 +270,82 @@ check "unpack"       [dl_tcllist [dl_unpack $WL]] {5000000000 1 3 9 2 4}
 check "unpackLists"  [dl_tcllist [dl_unpackLists [dl_llist $WL]]] {{5000000000 1 3} {9 2 4}}
 check "recodeWithTies double" [dl_tcllist [dl_recodeWithTies [dl_dlist 0.5 0.1 0.5]]] \
     [dl_tcllist [dl_recodeWithTies [dl_flist 0.5 0.1 0.5]]]
-errors "subshift stays guarded (per-type zero fill)" { dl_subshift $WL 1 }
+
+# --- tier two: histograms, finding, positions, shape, category sorts ------
+# Where the operation is type-independent, the wide answer must match the
+# same values as int / float lists; where it is not, the check is explicit.
+set W2 [dl_wlist 5 1 3 9 2 4]
+set I2 [dl_ilist 5 1 3 9 2 4]
+set D2 [dl_dlist 5 1 3 9 2 4]
+set F2 [dl_flist 5 1 3 9 2 4]
+set WL2 [dl_llist [dl_wlist 5 1 3] [dl_wlist 9 2 4]]
+set IL2 [dl_llist [dl_ilist 5 1 3] [dl_ilist 9 2 4]]
+set DL2 [dl_llist [dl_dlist 5 1 3] [dl_dlist 9 2 4]]
+set FL2 [dl_llist [dl_flist 5 1 3] [dl_flist 9 2 4]]
+
+proc same {label cmdw cmdi} {
+    set rw [catch {uplevel 1 [list dl_tcllist [uplevel 1 $cmdw]]} w]
+    set ri [catch {uplevel 1 [list dl_tcllist [uplevel 1 $cmdi]]} i]
+    check $label "$rw $w" "$ri $i"
+}
+same "hist int64/int"         {dl_hist $W2 0 10 5} {dl_hist $I2 0 10 5}
+same "hist double/float"      {dl_hist $D2 0 10 5} {dl_hist $F2 0 10 5}
+same "hists nested"           {dl_hists $WL2 0 10 2} {dl_hists $IL2 0 10 2}
+same "count int64"            {dl_count $W2 2 5} {dl_count $I2 2 5}
+same "counts double"          {dl_counts $DL2 2 5} {dl_counts $FL2 2 5}
+check "count with fractional range" [dl_count $W2 2.5 5.5] 3
+check "bins"                  [dl_tcllist [dl_bins 0 1 4]] {0.125 0.375 0.625 0.875}
+same "findIndices int64"      {dl_findIndices $W2 [dl_wlist 9 7 1]} {dl_findIndices $I2 [dl_ilist 9 7 1]}
+check "findIndices int64 exact" [dl_tcllist [dl_findIndices [dl_wlist 5000000000 5000000001] [dl_wlist 5000000001]]] 1
+same "countOccurences int64"  {dl_countOccurences $W2 [dl_wlist 1 3]} {dl_countOccurences $I2 [dl_ilist 1 3]}
+same "findPatterns int64"     {dl_findPatterns $W2 [dl_wlist 3 9]} {dl_findPatterns $I2 [dl_ilist 3 9]}
+same "replace double"         {dl_replace $D2 [dl_ilist 1 0 0 0 0 1] 0} {dl_replace $F2 [dl_ilist 1 0 0 0 0 1] 0}
+same "replaceByIndex int64"   {dl_replaceByIndex $W2 [dl_ilist 0 5] 7} {dl_replaceByIndex $I2 [dl_ilist 0 5] 7}
+set inc [dl_wlist 5000000000]; dl_incr $inc 0
+check "incr int64"            [dl_tcllist $inc] 5000000001
+same "firstPos/lastPos"       {dl_firstPos $WL2} {dl_firstPos $IL2}
+same "indices double"         {dl_indices [dl_dlist 0 0.5 0 2]} {dl_indices [dl_flist 0 0.5 0 2]}
+same "zeroCrossings double"   {dl_zeroCrossings [dl_dlist -1 1 0 -1]} {dl_zeroCrossings [dl_flist -1 1 0 -1]}
+check "recip double"          [dl_tcllist [dl_recip [dl_dlist 4 0.5]]] {0.25 2.0}
+check "recip int64 -> double" [dl_datatype [dl_recip $W2]] double
+same "idiff int64"            {dl_idiff [dl_wlist 1 2] [dl_wlist 5 7]} {dl_idiff [dl_ilist 1 2] [dl_ilist 5 7]}
+same "subshift int64"         {dl_subshift $WL2 1} {dl_subshift $IL2 1}
+same "subshift double -1"     {dl_subshift $DL2 -1} {dl_subshift $FL2 -1}
+same "shift int64"            {dl_shift $W2 2} {dl_shift $I2 2}
+same "bshift double"          {dl_bshift $DL2 1} {dl_bshift $FL2 1}
+same "cut int64/int breaks"   {dl_cut $W2 [dl_ilist 0 3 6 10]} {dl_cut $I2 [dl_ilist 0 3 6 10]}
+same "cut double/double"      {dl_cut $D2 [dl_dlist 0 3 6 10]} {dl_cut $F2 [dl_flist 0 3 6 10]}
+same "pack int64"             {dl_pack $W2} {dl_pack $I2}
+same "deepPack double"        {dl_deepPack $DL2} {dl_deepPack $FL2}
+same "deepUnpack int64"       {dl_deepUnpack [dl_llist $WL2 $WL2]} {dl_deepUnpack [dl_llist $IL2 $IL2]}
+same "reshape double"         {dl_reshape $D2 2 3} {dl_reshape $F2 2 3}
+same "spliceBefore int64"     {dl_spliceBefore [dl_wlist 0] $WL2} {dl_spliceBefore [dl_ilist 0] $IL2}
+same "spliceAfter double"     {dl_spliceAfter [dl_dlist 0.5] $DL2} {dl_spliceAfter [dl_flist 0.5] $FL2}
+same "transposeAt int64"      {dl_transposeAt [dl_llist $WL2] 1} {dl_transposeAt [dl_llist $IL2] 1}
+errors "transposeAt on a flat list errors, not crashes" { dl_transposeAt $W2 1 }
+same "sortByList int64"       {dl_sortByList $W2 [dl_ilist 1 0 1 0 1 0]} {dl_sortByList $I2 [dl_ilist 1 0 1 0 1 0]}
+same "sortBySelected double"  {dl_sortBySelected $D2 [dl_ilist 1 0 1 0 1 0] [dl_ilist 1 1]} {dl_sortBySelected $F2 [dl_ilist 1 0 1 0 1 0] [dl_ilist 1 1]}
+same "uniqueCross int64 cats" {dl_uniqueCross [dl_wlist 1 2 1] [dl_ilist 0 0 1]} {dl_uniqueCross [dl_ilist 1 2 1] [dl_ilist 0 0 1]}
+same "bmins/bmaxs int64"      {dl_bmins $WL2} {dl_bmins $IL2}
+check "bmaxs int64 type"      [dl_datatype [dl_bmaxs $WL2]:0] int64
+same "bsums int64"            {dl_bsums $WL2} {dl_bsums $IL2}
+check "bmeans double type"    [dl_datatype [dl_bmeans $DL2]:0] double
+check "bmeans double value"   [dl_tcllist [dl_bmeans [dl_llist [dl_dlist 0.1 0.2]]]] [expr {(0.1+0.2)/2.0}]
+check "bstds int64"           [expr {abs([lindex [dl_tcllist [dl_bstds [dl_llist [dl_wlist 1 2 3 4]]]] 0] - sqrt(5.0/3)) < 1e-12}] 1
+check "hmeans double"         [dl_tcllist [dl_hmeans $DL2]] {3.0 5.0}
+check "hstds/hvars double type" [list [dl_datatype [dl_hstds $DL2]] [dl_datatype [dl_hvars $DL2]]] {double double}
+check "meanList int64"        [dl_tcllist [dl_meanList $WL2]] {7.0 1.5 3.5}
+check "sumList int64 exact"   [dl_tcllist [dl_sumList [dl_llist [dl_wlist 5000000000] [dl_wlist 5000000000]]]] 10000000000
+check "sumList int64 type"    [dl_datatype [dl_sumList $WL2]] int64
+check "sumList double"        [dl_tcllist [dl_sumList $DL2]] {14.0 3.0 7.0}
 
 # --- still guarded: no verified implementation yet ----------------------
 foreach {label script} {
-    "dl_findIndices int64"     { dl_findIndices $W $W }
-    "dl_countOccurences int64" { dl_countOccurences $W $W }
-    "dl_hist double"           { dl_hist $D 0 1 2 }
-    "dl_bmeans int64"          { dl_bmeans [dl_llist $W] }
+    "dl_fill double"           { dl_fill $D2 [dl_ilist 0 1] [dl_ilist 0 2] }
+    "dl_sdf double"            { dl_sdf $D2 0 10 1 }
 } {
     errors $label $script
 }
-
-# The guard must see through every way of naming a list.
-set nested [dl_llist [dl_ilist 1 2 3] $w]
-set gg [dg_create]
-dl_set $gg:rows [dl_llist [dl_dlist 0.5] [dl_ilist 4]]
-errors "guard: nested list"        { dl_hist $nested 0 1 2 }
-errors "guard: list:index"         { dl_findIndices $nested:1 $nested:1 }
-errors "guard: group:list"         { dl_bmeans $gg:rows }
-errors "guard: group:list:index"   { dl_countOccurences $gg:rows:0 $gg:rows:0 }
-check  "guard leaves int sublist usable" [dl_sum $nested:0] 6
-check  "guard leaves int row usable"     [dl_sum $gg:rows:1] 4
-check  "medians over wide rows"          [dl_tcllist [dl_medians [dl_llist [dl_ilist 1 2 3] [dl_wlist 5 1 3]]]] {2.0 3.0}
-
-# Comprehensions infer int64 for values that do not fit in 32 bits.
-check "dl_map over int64" [dl_tcllist [dl_map x $w {expr {$x * 2}}]] \
-    [lmap x [dl_tcllist $w] {expr {$x * 2}}]
-check "dl_map result type" [dl_datatype [dl_map x $w {expr {$x * 2}}]] int64
-check "dl_map small ints stay int" [dl_datatype [dl_map x [dl_ilist 1 2] {expr {$x * 2}}]] long
 
 if {$::fail} {
     puts "=== $::fail FAILURE(S) ==="

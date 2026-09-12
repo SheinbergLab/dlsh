@@ -301,12 +301,18 @@ double or an int64, so `dl_eq $doubles 0.1` is true where a float32 `0.1`
 never could be. Without a wide list present, literals stay float and long
 exactly as before.
 
-**What still errors** rather than answering: the commands not yet verified
-on wide lists (`dl_hist`, `dl_findIndices`, `dl_countOccurences`, the
-`dl_b*`/`dl_h*` reducers, `dl_idiff`, `dl_recodeWithTies`, and a long
-tail) refuse a wide list with
+Also covered: histograms and counting (`dl_hist`, `dl_count`, ...), the
+find family (`dl_findIndices` hashes int64 keys exactly), positions and
+shape (`dl_subshift`, `dl_cut`, `dl_pack`, `dl_reshape`, splice, ...),
+`dl_replace`, the category sorts, and the `dl_b*`/`dl_h*` reducers, which
+answer in double for wide leaves.
 
-    dl_hist: int64/double lists are not supported by this command yet
+**What still errors** rather than answering: the commands that take no
+wide list by design (string and path ops, generators, `dl_srand`), the
+float32 spike-density kernels (`dl_sdf`, `dl_parzen`), and `dl_fill`
+refuse a wide list with
+
+    dl_fill: int64/double lists are not supported by this command yet
     (convert with dl_int or dl_float)
 
 That refusal is deliberate: those commands dispatch on element type with no
