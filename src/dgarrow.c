@@ -19,8 +19,20 @@
 #define DEBUG_PRINT(...) do {} while(0)
 #endif
 
-// Always print errors to stderr
-#define ERROR_PRINT(...) fprintf(stderr, __VA_ARGS__)
+// Errors go to stderr AND into a buffer the caller can read back with
+// dg_arrow_last_error(), so a Tcl-level failure can say what went wrong
+// ("column em has 96 elements, expected 256") instead of "error writing".
+static char dg_arrow_errmsg[512];
+#define ERROR_PRINT(...) do { \
+    snprintf(dg_arrow_errmsg, sizeof(dg_arrow_errmsg), __VA_ARGS__); \
+    fprintf(stderr, "%s", dg_arrow_errmsg); \
+} while (0)
+
+const char *dg_arrow_last_error(void) {
+    size_t n = strlen(dg_arrow_errmsg);
+    while (n && (dg_arrow_errmsg[n-1] == '\n' || dg_arrow_errmsg[n-1] == ' ')) dg_arrow_errmsg[--n] = 0;
+    return dg_arrow_errmsg;
+}
 
 /*************************************************************************************/
 /********************************* SERIALIZATION *************************************/
@@ -457,7 +469,7 @@ static int dynlist_to_nanoarrow_array(DYN_LIST* dl, struct ArrowArray* array,
 // Validation function to check DYN_GROUP structure before conversion
 static int validate_dyn_group_for_arrow(DYN_GROUP* dg) {
     if (!dg || DYN_GROUP_NLISTS(dg) == 0) {
-        DEBUG_PRINT("DEBUG: Invalid DYN_GROUP: null or empty\n");
+        ERROR_PRINT("group is empty\n");
         return -1;
     }
     
@@ -475,8 +487,10 @@ static int validate_dyn_group_for_arrow(DYN_GROUP* dg) {
         if (expected_length == -1) {
             expected_length = DYN_LIST_N(dl);
         } else if (DYN_LIST_N(dl) != expected_length) {
-            DEBUG_PRINT("DEBUG: Non-rectangular data: column %d has %d elements, expected %d\n",
-                        i, DYN_LIST_N(dl), expected_length);
+            ERROR_PRINT("group is not rectangular: list \"%s\" has %d elements but \"%s\" has %d "
+                        "(Arrow is a table; every column needs the same length)\n",
+                        DYN_LIST_NAME(dl), DYN_LIST_N(dl),
+                        DYN_LIST_NAME(DYN_GROUP_LIST(dg, 0)), expected_length);
             return -1;
         }
         
@@ -510,7 +524,11 @@ static int validate_dyn_group_for_arrow(DYN_GROUP* dg) {
     return 0;
 }
 
-int dg_to_arrow_buffer(DYN_GROUP* dg, uint8_t** data, size_t* size) {
+// file_format: 0 = IPC stream (what dg_toArrow / dg_fromArrow exchange in
+// memory), 1 = IPC file: "ARROW1" magic, the same stream, then a footer and
+// the magic again.  The file form is what pandas.read_feather, R's
+// arrow::read_feather, DuckDB and pyarrow.ipc.open_file expect on disk.
+static int dg_to_arrow_ipc(DYN_GROUP* dg, uint8_t** data, size_t* size, int file_format) {
     if (!dg || !data || !size) {
         return -1;
     }
@@ -629,6 +647,17 @@ int dg_to_arrow_buffer(DYN_GROUP* dg, uint8_t** data, size_t* size) {
         ArrowBufferReset(&buffer);
         return -1;
     }
+
+    if (file_format && ArrowIpcWriterStartFile(&writer, &error) != NANOARROW_OK) {
+        ERROR_PRINT("Error starting Arrow file: %s\n", error.message);
+        ArrowIpcWriterReset(&writer);
+        free(validity);
+        free((void*)array.buffers);
+        ArrowArrayRelease(&array);
+        ArrowSchemaRelease(&schema);
+        ArrowBufferReset(&buffer);
+        return -1;
+    }
     
     // Write schema
     DEBUG_PRINT("DEBUG: Writing schema...\n");
@@ -686,6 +715,18 @@ int dg_to_arrow_buffer(DYN_GROUP* dg, uint8_t** data, size_t* size) {
         return -1;
     }
     DEBUG_PRINT("DEBUG: Record batch written successfully\n");
+
+    if (file_format && ArrowIpcWriterFinalizeFile(&writer, &error) != NANOARROW_OK) {
+        ERROR_PRINT("Error finalizing Arrow file: %s\n", error.message);
+        ArrowArrayViewReset(&array_view);
+        ArrowIpcWriterReset(&writer);
+        free(validity);
+        free((void*)array.buffers);
+        ArrowArrayRelease(&array);
+        ArrowSchemaRelease(&schema);
+        ArrowBufferReset(&buffer);
+        return -1;
+    }
     
     // Transfer buffer ownership to caller
     *size = buffer.size_bytes;
@@ -717,17 +758,22 @@ int dg_to_arrow_buffer(DYN_GROUP* dg, uint8_t** data, size_t* size) {
     return 0;
 }
 
-// Convenience function to write to file
+int dg_to_arrow_buffer(DYN_GROUP* dg, uint8_t** data, size_t* size) {
+    return dg_to_arrow_ipc(dg, data, size, 0);
+}
+
+// Write an Arrow IPC *file* (see dg_to_arrow_ipc)
 int dg_to_arrow_file(DYN_GROUP* dg, const char* filename) {
     uint8_t* buffer = NULL;
     size_t buffer_size = 0;
     
-    if (dg_to_arrow_buffer(dg, &buffer, &buffer_size) != 0) {
+    if (dg_to_arrow_ipc(dg, &buffer, &buffer_size, 1) != 0) {
         return -1;
     }
     
     FILE* fp = fopen(filename, "wb");
     if (!fp) {
+        ERROR_PRINT("cannot open %s for writing\n", filename);
         free(buffer);
         return -1;
     }
@@ -1001,6 +1047,14 @@ DYN_GROUP* arrow_buffer_to_dg(const uint8_t* data, size_t size, const char* grou
     if (!data || size == 0) return NULL;
     
     struct ArrowError error;
+
+    // An IPC file is "ARROW1\0\0" + the stream + footer + "ARROW1".  The
+    // stream reader stops at the end-of-stream marker that precedes the
+    // footer, so skipping the leading magic is all it takes to read one.
+    if (size >= 8 && memcmp(data, "ARROW1\0\0", 8) == 0) {
+        data += 8;
+        size -= 8;
+    }
     
     // Create input stream from buffer
     struct ArrowBuffer input_buffer;

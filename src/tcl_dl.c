@@ -2187,7 +2187,7 @@ static int tclDynGroupToArrow(ClientData data, Tcl_Interp * interp, int objc,
     char *filename = Tcl_GetStringFromObj(objv[2], NULL);
     
     if (dg_to_arrow_file(dg, filename) != 0) {
-      Tcl_AppendResult(interp, "dg_toArrowFile: error writing Arrow file", NULL);
+      Tcl_AppendResult(interp, "dg_toArrowFile: ", dg_arrow_last_error(), NULL);
       return TCL_ERROR;
     }
     
@@ -2209,7 +2209,7 @@ static int tclDynGroupToArrow(ClientData data, Tcl_Interp * interp, int objc,
     size_t arrow_size;
     
     if (dg_to_arrow_buffer(dg, &arrow_data, &arrow_size) != 0) {
-      Tcl_AppendResult(interp, "dg_toArrowData: error serializing to Arrow format", NULL);
+      Tcl_AppendResult(interp, "dg_toArrow: ", dg_arrow_last_error(), NULL);
       return TCL_ERROR;
     }
     
@@ -2250,7 +2250,7 @@ static int tclDynGroupFromArrow(ClientData data, Tcl_Interp * interp, int objc,
   
   dg = arrow_file_to_dg(filename, dgname);
   if (!dg) {
-    Tcl_AppendResult(interp, "dg_fromArrowFile: error reading Arrow file", NULL);
+    Tcl_AppendResult(interp, "dg_fromArrowFile: ", dg_arrow_last_error(), NULL);
     return TCL_ERROR;
   }
   
@@ -2284,7 +2284,7 @@ static int tclDynGroupFromArrowData(ClientData data, Tcl_Interp * interp, int ob
   dg = arrow_buffer_to_dg(arrow_data, (size_t)arrow_size, dgname);
   if (!dg) {
     Tcl_AppendResult(interp,
-		     "dg_fromArrowData: error deserializing Arrow data", NULL);
+		     "dg_fromArrow: ", dg_arrow_last_error(), NULL);
     return TCL_ERROR;
   }
   

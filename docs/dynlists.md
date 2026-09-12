@@ -363,6 +363,21 @@ payload; with no handler installed envelopes are skipped silently).
 `tests/test_dg_extension.tcl` builds files with envelopes at each level by
 hand and is the executable description of the layout.
 
+### Getting a group out to Arrow (and from there, anywhere)
+
+dgz is the archive; Arrow is how the data reaches tools that have never
+heard of it. `dg_toArrowFile $g out.arrow` writes an Arrow IPC *file*
+(magic and footer, so `pandas.read_feather`, R's `arrow::read_feather`,
+DuckDB and `pyarrow.ipc.open_file` open it directly), with every element
+type kept: long is int32, float is float32, int64 and double themselves,
+strings, and a list of lists becomes `list<...>`. `dg_toArrow $g var`
+gives the same content as an in-memory IPC stream, and `dg_fromArrowFile`
+reads either form back. A group has to be a table for this: every list the
+same length. One that is not fails with the offending names and lengths;
+pull out the lists of one length into a new group first. For Parquet,
+which nanoarrow cannot write, go through Python: `dgread.to_parquet`, or
+the `dg2parquet` command that ships with `pip install "dgread[arrow]"`.
+
 ---
 
 ## See also

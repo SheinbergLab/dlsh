@@ -648,7 +648,8 @@ OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
         test_leak_dl_foreach
         test_reduction_accuracy
         test_wide_types
-        test_dg_extension)
+        test_dg_extension
+        test_dg_arrow)
     # Labelled `dlsh` so CI can run exactly these with `ctest -L dlsh`: a bare
     # ctest would also pick up tests registered by FetchContent dependencies
     # (zlib's `example`, libpng's suite), and a hardcoded -R list in the
