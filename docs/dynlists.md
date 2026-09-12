@@ -336,6 +336,33 @@ columns `<dst>NAME` and `<blobt>NAME` also become `double`: still
 milliseconds from the same anchors, but with the microsecond fraction kept
 instead of truncated.
 
+### The extension envelope, and why the next addition will be painless
+
+Tags 11 and 12 needed every reader in the field updated before a single
+wide file could be written, because a dg tag is a bare opcode: a reader
+that meets one it does not know cannot find the next record, so it gives
+up on the whole file. That was the last addition that has to work that
+way. The format now has one more tag, `DG_EXT_TAG` (250), legal at every
+level of the file, whose record carries its own length:
+
+    byte  250
+    int   ext_id      which extension this is (0 is reserved)
+    int   length      payload bytes
+    ...   payload
+
+A reader that does not recognise `ext_id` skips `length` bytes and carries
+on, so anything carried in an envelope degrades to "ignored" on any reader
+from dlsh 0.19 / dgread 1.2.3 onward, instead of "file unreadable". Per-list
+metadata, units, provenance, a checksum: all of those can now be added
+without another fleet-wide reader update. Readers older than that still
+abort on an envelope, exactly as they do on tags 11 and 12, so nothing
+writes one yet; the C API is `dgRecordExtension(ext_id, length, payload)`
+on the writer side and `dgSetExtensionHandler(fn)` on the reader side (the
+handler receives the scope, the group or list being read, the id and the
+payload; with no handler installed envelopes are skipped silently).
+`tests/test_dg_extension.tcl` builds files with envelopes at each level by
+hand and is the executable description of the layout.
+
 ---
 
 ## See also

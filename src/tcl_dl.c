@@ -3003,14 +3003,18 @@ static DYN_GROUP *dgReadFromFile(const char *filename,
       dfuFreeDynGroup(dg);
       return NULL;
     }
-    if (!dguFileToStruct(fp, dg)) {
-      if (errbuf) snprintf(errbuf, errlen,
+    /* 0 = no magic number; DF_ABORT (3) = corrupt, or a tag this reader
+       doesn't know.  The old `!status` test let DF_ABORT through as a
+       half-read group (the .dgz path never did). */
+    int fstat = dguFileToStruct(fp, dg);
+    fclose(fp);
+    if (fstat != DF_OK) {
+      if (errbuf) snprintf(errbuf, errlen, fstat ?
+			   "file %s is not a valid dg file (corrupt, or written by a newer dlsh)" :
 			   "file %s not recognized as dg format", filename);
-      fclose(fp);
       dfuFreeDynGroup(dg);
       return NULL;
     }
-    fclose(fp);
     return dg;
   }
 
