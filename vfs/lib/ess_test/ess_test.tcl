@@ -762,9 +762,19 @@ proc ess_test::stub_stim2 {} {
     # -- inert: structural no-ops -----------------------------------------
     # polyverts/polytype/polylinewidth are how an OUTLINE is built (a circle
     # stroked as a line_loop, a polygon from explicit vertices); without them
-    # any stim that draws one -- joystick/forage's arena wall,
-    # hapticvis/transfer's open circles, match_to_sample/fractal -- dies on
-    # `invalid command name "polyverts"` before nexttrial finishes.
+    # any stim that draws one -- hapticvis/transfer's open circles,
+    # match_to_sample/fractal -- dies on `invalid command name "polyverts"`
+    # before nexttrial finishes.
+    # polyannulus/polysector/polyaa are the rest of polycirc's family: the
+    # round shapes polygon.c masks ANALYTICALLY in the fragment shader (ring,
+    # pac-man, arc band) rather than approximating with vertices, plus the
+    # edge-softness uniform they share. Stubbing polycirc alone was enough
+    # while joystick/forage's arena wall was a 72-segment line_loop; it was
+    # converted to a real annulus (a core profile clamps glLineWidth to 1, so
+    # the stroked version could not be thickened) and forage's stim tier has
+    # been failing on `invalid command name "polyannulus"` ever since. The
+    # whole family is listed now so the next shape to move off vertices does
+    # not re-open the same hole.
     # shaderObjSetSampler/SetUniform are how a shader-based stim parameterises
     # its object (a rasterised outline bound as a texture, a grating's
     # cycles/sigma); shaderDeleteAll is the per-trial reset. These live inside
@@ -772,7 +782,8 @@ proc ess_test::stub_stim2 {} {
     # SOURCES fine without them and only dies once a test drives a trial --
     # match_to_sample/shapematch, remap/shapes, hapticvis/identify +
     # transfer, prf/drifting-gratings, video/play-or-skip all use the idiom.
-    foreach c {glistInit resetObjList shaderImageReset shaderSetPath polycirc \
+    foreach c {glistInit resetObjList shaderImageReset shaderSetPath \
+               polycirc polyannulus polysector polyaa \
                shaderObjSetSampler shaderObjSetUniform shaderDeleteAll \
                polyverts polytype polylinewidth \
                scaleObj metagroupAdd glistAddObject glistSetDynamic priorityObj \
