@@ -117,6 +117,40 @@ set r10 [b2world::simulate $s10 -record {bob}]
 lassign [dict get $r10 final bob] bx by
 approx "simulated oscillation returns to its start (velocity-driven)" $bx 5.0 0.15
 
+puts "\ncross rules: a tracked body crossing a line, in a direction:"
+set r11 [b2world::simulate $s -launch {ball 3.0 6.0} \
+             -stop {{cross projectile y -3.0 down landed}} -record ball]
+check  "downward crossing stops"      {[dict get $r11 outcome] eq "landed"}
+lassign [dict get $r11 final ball] bx by
+check  "...just below the line"        {$by <= -3.0 && $by > -3.5}
+set r12 [b2world::simulate $s -launch {ball 0.0 8.0} \
+             -stop {{cross projectile y 1.0 up rising} {cross projectile y -3.0 down landed}} -record ball]
+check  "upward crossing (first rule to fire)" {[dict get $r12 outcome] eq "rising"}
+check  "...early"                      {[dict get $r12 t_end] < 0.3}
+set r13 [b2world::simulate $s -launch {ball 6.0 0.0} \
+             -stop {{cross projectile x 2.0 up passed}} -record ball]
+check  "x crossings work too"          {[dict get $r13 outcome] eq "passed"}
+
+puts "\nforce zones: a sensor box with a force acts while a body is inside:"
+set s14 [floor_world]
+dict set s14 bounds {-40 40 -20 40}
+# a wide, tall zone straddling the whole flight, pushing +x
+b2world::add_body s14 [b2world::body wind box static 0.0 0.0 w 40 h 40 sensor 1 \
+                           force {8.0 0.0} roles {zone}]
+set r14 [b2world::simulate $s14 -launch {ball 0.0 6.0} \
+             -stop {{contact projectile ground miss}} -record ball]
+set r15 [b2world::simulate $s   -launch {ball 0.0 6.0} \
+             -stop {{contact projectile ground miss}} -record ball]
+lassign [dict get $r14 final ball] wx wy
+lassign [dict get $r15 final ball] nx ny
+check  "the wind pushed the ball sideways"      {$wx > $nx + 1.0}
+check  "a sensor zone is not a contact"          {[lsearch -index 1 [b2world::contacts_of $r14 ball] wind] < 0}
+# a zone the ball never enters does nothing
+set s16 [floor_world]
+b2world::add_body s16 [b2world::body wind box static 30.0 0.0 w 2 h 2 sensor 1 force {50.0 0.0} roles {zone}]
+set r16 [b2world::simulate $s16 -launch {ball 0.0 6.0} -stop {{contact projectile ground miss}} -record ball]
+check  "a zone elsewhere leaves the flight alone" {[dict get $r16 paths] eq [dict get $r15 paths]}
+
 puts "\ndeterminism:"
 set ra [b2world::simulate $s -launch {ball 3.0 6.0} -stop {{contact projectile ground miss}} -record ball]
 set rb [b2world::simulate $s -launch {ball 3.0 6.0} -stop {{contact projectile ground miss}} -record ball]

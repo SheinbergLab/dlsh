@@ -26,7 +26,9 @@
 #               shape     box | circle
 #               type      static | kinematic | dynamic
 #               x y       centre; w h (box) or r (circle); angle (deg, box)
-#               restitution (default 0.3)   sensor 0|1 (default 0)
+#               restitution (unset = Box2D's default, 0; Box2D mixes by
+#                            max, so set it on the bouncier body)
+#               sensor 0|1 (default 0)
 #               roles     list of tags, e.g. {obstacle} {target hit}
 #               path      kinematic only: how it moves (see below)
 #
@@ -34,10 +36,19 @@
 #   {kind linear vx vy}                       constant velocity
 #   {kind oscillate ax ay period phase_deg}   x(t) = x0 + ax*sin(w t + ph)
 #
+# Force zones: a SENSOR box with a `force {fx fy}` key applies that force,
+# every step, to each tracked dynamic body whose centre is inside it
+# (axis-aligned; the zone's angle is ignored). Wind, updrafts, magnets.
+#
 # Stop rules (-stop, a list; first match wins, evaluated in order):
 #   {contact ROLE_A ROLE_B OUTCOME}   a begin-contact between a body carrying
 #                                     ROLE_A and one carrying ROLE_B
+#   {cross ROLE AXIS VALUE DIR OUTCOME}
+#                                     a tracked body carrying ROLE crossed
+#                                     AXIS (x|y) = VALUE going DIR (down =
+#                                     decreasing, up = increasing) this step
 #   plus, always: a tracked body leaving `bounds` -> out; max_t -> timeout.
+#   Contacts are tested first, then bounds, then crossings, then -stop_proc.
 #   -stop_proc NAME  an optional Tcl proc called every step as
 #                    NAME world t positions (positions: name -> {x y angle}
 #                    for tracked bodies); a non-empty return is the outcome.
@@ -67,8 +78,12 @@ proc b2world::default_spec {} {
 
 # Body dict helpers: b2world::body name shape type x y ?key val ...?
 proc b2world::body { name shape type x y args } {
+    # restitution is left UNSET unless given: Box2D's fixture default (0)
+    # then applies, and since Box2D mixes restitution by taking the max of
+    # the two bodies, a non-zero default here would quietly make every
+    # contact bouncier than a plain box2d world (it did, once).
     set b [dict create name $name shape $shape type $type x $x y $y \
-               angle 0.0 restitution 0.3 sensor 0 roles {} path {}]
+               angle 0.0 restitution {} sensor 0 roles {} path {}]
     foreach { k v } $args { dict set b $k $v }
     if { $shape eq "box" && !([dict exists $b w] && [dict exists $b h]) } {
         error "b2world::body $name: a box needs w and h"
@@ -125,7 +140,9 @@ proc b2world::build { spec } {
                 set h [box2d::createCircle $w $name $tc [dict get $b x] [dict get $b y] \
                            [dict get $b r] $sens]
             }
-            box2d::setRestitution $w $h [dict get $b restitution]
+            if { [dict get $b restitution] ne "" } {
+                box2d::setRestitution $w $h [dict get $b restitution]
+            }
             dict set handles $name $h
         }
     }
@@ -211,10 +228,13 @@ proc b2world::simulate { spec args } {
 
     lassign [build $spec] w handles
 
-    # roles by name, kinematic paths, gravity correction per dynamic body
+    # roles by name, kinematic paths, gravity correction per dynamic body,
+    # force zones, and which tracked bodies are dynamic (zones act on those)
     set roles [dict create]
     set kin   {}
     set corr  {}
+    set zones {}
+    set dyn   [dict create]
     set dg [expr {[dict get $spec gravity] - $g_world}]
     foreach b [dict get $spec bodies] {
         set name [dict get $b name]
@@ -222,9 +242,21 @@ proc b2world::simulate { spec args } {
         if { [dict get $b type] eq "kinematic" && [dict get $b path] ne "" } {
             lappend kin [list $name [dict get $handles $name] [dict get $b path]]
         }
-        if { [dict get $b type] eq "dynamic" && $dg != 0.0 } {
-            lappend corr [list [dict get $handles $name] [expr {[mass $b]*$dg}]]
+        if { [dict get $b type] eq "dynamic" } {
+            dict set dyn $name 1
+            if { $dg != 0.0 } {
+                lappend corr [list [dict get $handles $name] [expr {[mass $b]*$dg}]]
+            }
         }
+        if { [dict exists $b force] && [dict get $b shape] eq "box" } {
+            lassign [dict get $b force] fx fy
+            lappend zones [list [dict get $b x] [dict get $b y] \
+                               [expr {[dict get $b w]/2.0}] [expr {[dict get $b h]/2.0}] $fx $fy]
+        }
+    }
+    set cross_rules {}
+    foreach rule $rules {
+        if { [lindex $rule 0] eq "cross" } { lappend cross_rules $rule }
     }
 
     if { [llength $launch] } {
@@ -252,11 +284,25 @@ proc b2world::simulate { spec args } {
 
     while { $n < $nmax } {
         foreach c $corr { lassign $c h fy; box2d::applyForce $w $h 0.0 $fy }
+        # force zones act on the PRE-step position of each tracked dynamic body
+        if { [llength $zones] } {
+            foreach name $track {
+                if { ![dict exists $dyn $name] } continue
+                lassign [dict get $positions $name] px py
+                foreach z $zones {
+                    lassign $z zx zy hw hh fx fy
+                    if { abs($px - $zx) <= $hw && abs($py - $zy) <= $hh } {
+                        box2d::applyForce $w [dict get $handles $name] $fx $fy
+                    }
+                }
+            }
+        }
         foreach k $kin {
             lassign $k name h path
             lassign [path_velocity $path $t] vx vy
             box2d::setLinearVelocity $w $h $vx $vy
         }
+        set prev $positions
         box2d::step $w $dt
         incr n
         set t [expr {$n*$dt}]
@@ -286,6 +332,25 @@ proc b2world::simulate { spec args } {
             if { $px < $x_lo || $px > $x_hi || $py < $y_lo || $py > $y_hi } { set out 1 }
         }
         if { $out } { set outcome out; break }
+        if { [llength $cross_rules] } {
+            foreach rule $cross_rules {
+                lassign $rule kind role axis value dir oc
+                foreach name $track {
+                    if { $role ni [dict get $roles $name] } continue
+                    lassign [dict get $prev $name] px0 py0
+                    lassign [dict get $positions $name] px1 py1
+                    if { $axis eq "x" } { set a0 $px0; set a1 $px1 } else { set a0 $py0; set a1 $py1 }
+                    if { $dir eq "down" } {
+                        if { $a0 > $value && $a1 <= $value } { set outcome $oc }
+                    } else {
+                        if { $a0 < $value && $a1 >= $value } { set outcome $oc }
+                    }
+                    if { $outcome ne "timeout" } break
+                }
+                if { $outcome ne "timeout" } break
+            }
+            if { $outcome ne "timeout" } break
+        }
         if { $stop_proc ne "" } {
             set r [$stop_proc $w $t $positions]
             if { $r ne "" } { set outcome $r; break }

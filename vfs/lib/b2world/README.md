@@ -31,18 +31,23 @@ b2world::contacts_of $r ball   ;# {t other} ...
 | `bounds` | `{x_lo x_hi y_lo y_hi}`; a tracked body outside → `out` |
 | `bodies` | list of body dicts from `b2world::body name shape type x y ?key val…?` |
 
-Body keys: `w h` (box) or `r` (circle), `angle` (deg), `restitution`,
-`sensor`, `roles`, and for kinematic bodies `path`:
+Body keys: `w h` (box) or `r` (circle), `angle` (deg), `restitution` (unset
+means Box2D's default of 0; Box2D mixes restitution by taking the max of the
+two bodies in a contact), `sensor`, `roles`, `force {fx fy}` on a sensor box
+(a force zone acting on tracked dynamic bodies inside it), and for kinematic
+bodies `path`:
 `{kind linear vx vy}` or `{kind oscillate ax ay period phase_deg}`. Paths are
 velocity-driven, so contacts see the body's motion; `path_position` gives the
 same motion analytically for a renderer.
 
 ## simulate options
 
-`-launch {name vx vy}`, `-stop rules` (`{contact ROLE_A ROLE_B OUTCOME}`,
-first match wins), `-stop_proc name` (called `name world t positions`, a
-non-empty return is the outcome), `-record names`, `-track names` (bounds
-tests; default = record), `-dt`, `-max_t`, `-stride n`.
+`-launch {name vx vy}`, `-stop rules` (`{contact ROLE_A ROLE_B OUTCOME}` or
+`{cross ROLE x|y VALUE up|down OUTCOME}`, first match wins; contacts are
+tested before bounds, then crossings), `-stop_proc name` (called
+`name world t positions`, a non-empty return is the outcome), `-record names`,
+`-track names` (bounds, crossings and force zones; default = record), `-dt`,
+`-max_t`, `-stride n`.
 
 `b2world::sweep spec cases launch_proc ?options?` runs one simulate per case.
 
