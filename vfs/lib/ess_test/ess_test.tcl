@@ -968,7 +968,7 @@ variable ess_test::dserv_commands {
     dservRemoveAllMatches dservClear dservSetData dservSetData64
     dservLoggerClient dservLoggerAddMatch dservLoggerRemoveMatch
     dservLoggerOpen dservLoggerClose
-    dpointSetScript dpointRemoveScript dpointRemoveAllScripts
+    dpointSetScript dpointAddScript dpointRemoveScript dpointRemoveAllScripts
     timerSetScript timerTick timerExpired
     evtNameSet evtPut evtPack evtUnpack
     rmtSend rmtClose
