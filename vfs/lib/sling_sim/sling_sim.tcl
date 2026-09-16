@@ -46,6 +46,7 @@ namespace eval sling_sim {
     variable name_floor   target_b
     variable name_wall_l  target_l
     variable name_wall_r  target_r
+    variable name_base    target_base
     variable name_obs     obs        ;# obs_0, obs_1, ...
 }
 
@@ -58,7 +59,7 @@ proc sling_sim::default_spec {} {
         ground_y       -8.0 \
         field_hx       16.0  field_hy      9.0 \
         target_x        7.0  target_y     -6.0 \
-        target_w        2.4  target_h      1.6  wall_t 0.15 \
+        target_w        2.4  target_h      1.6  wall_t 0.15  base_h 0.4 \
         ball_restitution   0.30 \
         ground_restitution 0.20 \
         target_restitution 0.10 \
@@ -99,20 +100,46 @@ proc sling_sim::pull_from_polar { spec frac angle_deg } {
     return [list [expr {$r*cos($a)}] [expr {$r*sin($a)}]]
 }
 
-# Geometry of the target bucket: floor + two walls, as {x y w h} triples.
-# Shared by the physics build and any renderer so they cannot drift.
+# Geometry of the target bucket, as {x y w h} boxes in this order:
+#   floor   the HIT body (target_b), INSET between the walls
+#   wall_l  outer shell, from the bottom of the base up to the rim
+#   wall_r
+#   base    a plinth under the floor, full width (target_base)
+#
+# The floor is enclosed on every side but its top: its ends are behind the
+# walls and its underside is on the base, so the only way to touch it is
+# from above, between the walls -- i.e. with the ball's centre inside the
+# bucket. A graze along the outside of the bucket (its underside, an end)
+# lands on the base or a wall, which are contacts but not a hit. That
+# closes the false hit a full-width floor with walls sitting on top of it
+# produced when the ball clipped the floor's outer corner.
+#
+# Shared by the physics build and every renderer so they cannot drift.
 proc sling_sim::target_geometry { spec } {
     set cx [dict get $spec target_x]
     set cy [dict get $spec target_y]
     set w  [dict get $spec target_w]
     set h  [dict get $spec target_h]
     set t  [dict get $spec wall_t]
+    set b  [dict get $spec base_h]
     set half [expr {$w/2.0}]
-    set wall_cy [expr {$cy - $t/2.0 + $h/2.0}]
+    set floor_top [expr {$cy + $t/2.0}]
+    set base_bot  [expr {$cy - $t/2.0 - $b}]
+    set wall_h    [expr {$h + $t + $b}]
+    set wall_cy   [expr {$base_bot + $wall_h/2.0}]
     return [list \
-        [list $cx $cy $w $t] \
-        [list [expr {$cx - $half + $t/2.0}] $wall_cy $t $h] \
-        [list [expr {$cx + $half - $t/2.0}] $wall_cy $t $h]]
+        [list $cx $cy [expr {$w - 2.0*$t}] $t] \
+        [list [expr {$cx - $half + $t/2.0}] $wall_cy $t $wall_h] \
+        [list [expr {$cx + $half - $t/2.0}] $wall_cy $t $wall_h] \
+        [list $cx [expr {$cy - $t/2.0 - $b/2.0}] $w $b]]
+}
+
+# The bucket's interior opening: {x_lo x_hi} between the inner wall faces.
+proc sling_sim::target_mouth { spec } {
+    set cx [dict get $spec target_x]
+    set w  [dict get $spec target_w]
+    set t  [dict get $spec wall_t]
+    return [list [expr {$cx - $w/2.0 + $t}] [expr {$cx + $w/2.0 - $t}]]
 }
 
 # Build the world. Returns {world ball}. Static bodies first so they exist
@@ -122,6 +149,7 @@ proc sling_sim::build_world { spec } {
     variable pi
     variable name_ball; variable name_ground
     variable name_floor; variable name_wall_l; variable name_wall_r
+    variable name_base
     variable name_obs
 
     set w [box2d::createWorld]
@@ -139,8 +167,9 @@ proc sling_sim::build_world { spec } {
                     [expr {2.0*$hx + 4.0}] 1.0 0]
     box2d::setRestitution $w $ground [dict get $spec ground_restitution]
 
-    lassign [target_geometry $spec] fl wl wr
-    foreach { name geom } [list $name_floor $fl $name_wall_l $wl $name_wall_r $wr] {
+    lassign [target_geometry $spec] fl wl wr bs
+    foreach { name geom } [list $name_floor $fl $name_wall_l $wl $name_wall_r $wr \
+                               $name_base $bs] {
         lassign $geom x y bw bh
         set b [box2d::createBox $w $name 0 $x $y $bw $bh 0]
         box2d::setRestitution $w $b [dict get $spec target_restitution]
@@ -325,7 +354,7 @@ proc sling_sim::sweep { spec args } {
 
 proc sling_sim::scalar_keys {} {
     return {anchor_x anchor_y ball_r gravity reach v_max min_frac ground_y
-            field_hx field_hy target_x target_y target_w target_h wall_t
+            field_hx field_hy target_x target_y target_w target_h wall_t base_h
             ball_restitution ground_restitution target_restitution dt max_t}
 }
 

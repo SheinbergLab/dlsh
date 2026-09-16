@@ -27,7 +27,7 @@ set sw  [sling_sim::sweep $spec -n_frac 8 -n_angle 36]   ;# hit set over the pul
 | `reach`, `v_max`, `min_frac` | pull at full draw (dva), speed at full draw (dva/s), release below this fraction is an abort |
 | `ball_r`, `gravity` | ball radius; gravity (dva/s², negative down) |
 | `ground_y`, `field_hx/hy` | the floor; the field extent (leaving it = `out`) |
-| `target_x/y/w/h`, `wall_t` | bucket floor centre, inner width, wall height, wall/floor thickness |
+| `target_x/y/w/h`, `wall_t`, `base_h` | bucket floor centre, outer width, interior height, wall/floor thickness, plinth under the floor |
 | `*_restitution` | ball / ground / target |
 | `obstacles` | list of `{x y w h angle_deg restitution}` static boxes |
 | `dt`, `max_t` | step (s) and cap (s) |
@@ -35,6 +35,16 @@ set sw  [sling_sim::sweep $spec -n_frac 8 -n_angle 36]   ;# hit set over the pul
 `spec_from_stimdg g row` / `specs_to_stimdg g specs` round-trip a spec through
 stimdg: scalar keys one float column each, obstacles as six nested columns
 `obs_x obs_y obs_w obs_h obs_angle obs_restitution`.
+
+## The bucket
+
+`target_geometry` returns four boxes: the **floor** (the hit body, `target_b`),
+inset between the walls; the two **walls**, an outer shell reaching from the
+bottom of the base up to the rim; and a **base** under the floor. The floor is
+enclosed on every side but its top, so the only way to contact it is from
+above between the walls, with the ball's centre inside the bucket. A graze
+along the outside lands on the base or a wall, which is a contact but not a
+hit. `target_mouth` gives the interior x-range.
 
 ## Notes
 

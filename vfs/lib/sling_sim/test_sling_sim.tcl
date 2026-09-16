@@ -76,15 +76,48 @@ check "the best pull replays as a hit" {[dict get $rb outcome] eq "hit"}
 check "the hit contact is the bucket floor" {[dict get $rb first_hit] eq "target_b" || [lsearch -index 1 [dict get $rb contacts] target_b] >= 0}
 puts "   [dict get $sw n_hits]/[dict get $sw n_total] pulls hit; best frac [dict get $sw best_frac] angle [dict get $sw best_angle]"
 
+puts "\nthe bucket cannot be 'hit' from the outside:"
+# geometry: floor inset between the walls, base under the floor
+lassign [sling_sim::target_geometry $spec] fl wl wr bs
+lassign $fl fx fy fw fh; lassign $wl lx ly lw lh; lassign $bs bx by bw bh
+set t [dict get $spec wall_t]
+approx "floor is inset by one wall thickness each side" $fw [expr {[dict get $spec target_w] - 2*$t}] 1e-9
+check  "walls reach below the floor to the bottom of the base" \
+    {abs(($ly - $lh/2.0) - ($by - $bh/2.0)) < 1e-9}
+check  "base spans the full width under the floor" {$bw == [dict get $spec target_w] && $by < $fy}
+# a ball rising into the underside of the bucket touches the base, not the floor
+set cx [dict get $spec target_x]; set cy [dict get $spec target_y]
+set under [dict merge $spec [list anchor_x $cx anchor_y [expr {$cy - $t/2.0 - [dict get $spec base_h] - [dict get $spec ball_r] - 0.05}] gravity -0.0001 max_t 1.0]]
+set ru [sling_sim::simulate $under 0.0 3.0]
+check  "from below: first contact is the base"  {[dict get $ru first_hit] eq "target_base"}
+check  "from below: not a hit"                  {[dict get $ru outcome] ne "hit"}
+# a ball sliding in from the side at floor height touches a wall, not the floor
+set side [dict merge $spec [list anchor_x [expr {$cx + [dict get $spec target_w]/2.0 + [dict get $spec ball_r] + 0.5}] anchor_y $cy gravity -0.0001 max_t 1.0]]
+set rs [sling_sim::simulate $side -3.0 0.0]
+# the base's end and the wall's outer face are flush, so either may be
+# reported first; what matters is that the floor is not
+check  "from the side: first contact is the shell (wall or base)" \
+    {[dict get $rs first_hit] in {target_r target_base}}
+check  "from the side: the floor is never touched" \
+    {[lsearch -index 1 [dict get $rs contacts] target_b] < 0}
+check  "from the side: not a hit"               {[dict get $rs outcome] ne "hit"}
+# ...and a ball dropped into the mouth is a hit
+set drop [dict merge $spec [list anchor_x $cx anchor_y [expr {$cy + 3.0}] max_t 3.0]]
+set rd [sling_sim::simulate $drop 0.0 0.0]
+check  "dropped into the mouth: hit"            {[dict get $rd outcome] eq "hit"}
+lassign [sling_sim::target_mouth $spec] mlo mhi
+check  "...with its centre inside the mouth"    {[dict get $rd land_x] > $mlo && [dict get $rd land_x] < $mhi}
+
 puts "\ndeterminism: the same release twice gives the same path:"
 set ra [sling_sim::preview $spec $dx $dy]
 check "identical x" {[dict get $ra x] eq [dict get $rb x]}
 check "identical y" {[dict get $ra y] eq [dict get $rb y]}
 
 puts "\nan obstacle in the path changes the outcome:"
-# a wall between anchor and target, tall enough to block the best flight
+# a wall between anchor and target, from the ground to the top of the field
+# so no lob clears it
 set sx [expr {([dict get $spec anchor_x] + [dict get $spec target_x])/2.0}]
-set so [dict merge $spec [list obstacles [list [list $sx -3.0 0.3 12.0 0.0 0.3]]]]
+set so [dict merge $spec [list obstacles [list [list $sx 0.0 0.3 [expr {2.0*[dict get $spec field_hy]}] 0.0 0.3]]]]
 set ro [sling_sim::preview $so $dx $dy]
 check "blocked flight is no longer a hit" {[dict get $ro outcome] ne "hit"}
 check "the obstacle was contacted" {[lsearch -index 1 [dict get $ro contacts] obs_0] >= 0}
