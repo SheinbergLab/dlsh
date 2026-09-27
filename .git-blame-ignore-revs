@@ -1,0 +1,9 @@
+# Commits that only reformat; `git blame` skips them.
+# GitHub reads this file automatically; locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (git blame -w passes through line-ending commits completely)
+
+# Normalize the Tcl library to LF
+e9836cf97184350cd45fc345b9a47b6a9a00b4ec
+# Normalize the remaining CRLF sources to LF
+a92736fd2ba2d115e60b0f1371695c2d772c7145
