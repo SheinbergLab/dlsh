@@ -143,8 +143,10 @@ foreach(pkg ${TCL_ONLY_PACKAGES})
     endif()
 endforeach()
 
-# Packages from pkgs/ that are pure Tcl
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/pkgs/hex DESTINATION lib COMPONENT vfs)
+# Packages from pkgs/ that are pure Tcl: none left. hex now lives solely in
+# vfs/lib/hex (installed by the base-layer copy above); its pkgs/hex copy was
+# removed because installing it AFTER the base layer silently replaced the
+# current vfs/lib/hex with a stale dl_return-era version.
 # qpcs now lives solely in vfs/lib/qpcs (installed by the base-layer copy above);
 # its former pkgs/qpcs copy was removed to end the vfs/pkgs version drift.
 
