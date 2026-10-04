@@ -9,7 +9,11 @@ jobs:
 
   release-installers:
 
-    runs-on: macos-14
+    runs-on: macos-15
+    # Built on macos-15, but keep everything compiled here (CMake targets and
+    # the configure/make dependencies alike) runnable on macOS 14.
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
 
     permissions:
       contents: write
