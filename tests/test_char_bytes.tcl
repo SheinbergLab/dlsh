@@ -87,6 +87,42 @@ check "char + int64"              [dl_tcllist [dl_add [dl_clist 200 1] [dl_wlist
 check "char * double"             [dl_tcllist [dl_mult [dl_clist 200 1] [dl_dlist 0.5]]] {100.0 0.5}
 check "char > double"             [dl_tcllist [dl_gt [dl_clist 200 1] [dl_dlist 100]]] {1 0}
 
+# --- mixed with long, short and integer literals: promote to the wider
+#     type (these used to fail with "unable to compare/combine") ---------
+set px [dl_clist 200 10 255]
+set ln [dl_ilist 100 100 300]
+set sh [dl_short [dl_ilist 100 100 300]]
+# the result is as wide as the wider operand, so char * short wraps in a
+# short (255 * 300 = 76500 -> 10964), as short * short does
+foreach {what other wtype prod} [list long $ln long {20000 1000 76500} \
+                                     short $sh short {20000 1000 10964}] {
+    check "char > $what"          [dl_tcllist [dl_gt $px $other]] {1 0 0}
+    check "char < $what"          [dl_tcllist [dl_lt $px $other]] {0 1 1}
+    check "$what < char"          [dl_tcllist [dl_lt $other $px]] {1 0 0}
+    check "char == $what"         [dl_tcllist [dl_eq $px [dl_add $other [dl_ilist 100 -90 -45]]]] {1 1 1}
+    check "char + $what"          [dl_tcllist [dl_add $px $other]] {300 110 555}
+    check "char + $what type"     [dl_datatype [dl_add $px $other]] $wtype
+    check "char - $what"          [dl_tcllist [dl_sub $px $other]] {100 -90 -45}
+    check "$what - char"          [dl_tcllist [dl_sub $other $px]] {-100 90 45}
+    check "char * $what"          [dl_tcllist [dl_mult $px $other]] $prod
+    check "char / $what"          [dl_tcllist [dl_div $px $other]] {2 0 0}
+    check "$what / char"          [dl_tcllist [dl_div $other $px]] {0 10 1}
+}
+check "char > literal"            [dl_tcllist [dl_gt $px 100]] {1 0 1}
+check "char < literal"            [dl_tcllist [dl_lt $px 128]] {0 1 0}
+check "char == literal"           [dl_tcllist [dl_eq $px 255]] {0 0 1}
+check "literal > char"            [dl_tcllist [dl_gt 128 $px]] {0 1 0}
+check "char + literal"            [dl_tcllist [dl_add $px 100]] {300 110 355}
+check "char + literal type"       [dl_datatype [dl_add $px 100]] long
+check "char - literal"            [dl_tcllist [dl_sub $px 128]] {72 -118 127}
+check "char * literal"            [dl_tcllist [dl_mult $px 2]] {400 20 510}
+check "char / literal"            [dl_tcllist [dl_div $px 5]] {40 2 51}
+check "literal / char"            [dl_tcllist [dl_div 1000 $px]] {5 100 3}
+check "char mod literal"          [dl_tcllist [dl_mod $px 7]] {4 3 3}
+check "char gt indices"           [dl_tcllist [dl_indices [dl_gt $px 100]]] {0 2}
+check "short + long is long"      [dl_tcllist [dl_add [dl_short [dl_ilist 1 2]] [dl_ilist 70000 1]]] {70001 3}
+check "empty char + long is long" [dl_datatype [dl_add [dl_create char] [dl_create long]]] long
+
 # --- byte arithmetic stays a byte and wraps modulo 256 -------------------
 check "char + char wraps"         [dl_tcllist [dl_add [dl_clist 200] [dl_clist 100]]] {44}
 check "char / char unsigned"      [dl_tcllist [dl_div [dl_clist 200] [dl_clist 2]]] {100}
