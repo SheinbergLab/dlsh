@@ -6975,7 +6975,7 @@ static int tclFindSublist (ClientData data, Tcl_Interp *interp,
 	if (Tcl_GetInt(interp, argv[2], &n) != TCL_OK) goto usage;
 	free_dl2 = 1;
 	dl2 = dfuCreateDynList(DF_SHORT, 1);
-	dfuAddDynListLong(dl2, (short) n);
+	dfuAddDynListShort(dl2, (short) n);
 	break;
       case DF_CHAR:
 	if (Tcl_GetInt(interp, argv[2], &n) != TCL_OK) goto usage;
@@ -6987,7 +6987,7 @@ static int tclFindSublist (ClientData data, Tcl_Interp *interp,
 	if (Tcl_GetDouble(interp, argv[2], &k) != TCL_OK) goto usage;
 	free_dl2 = 1;
 	dl2 = dfuCreateDynList(DF_FLOAT, 1);
-	dfuAddDynListLong(dl2, k);
+	dfuAddDynListFloat(dl2, (float) k);
 	break;
       case DF_STRING:
 	free_dl2 = 1;
