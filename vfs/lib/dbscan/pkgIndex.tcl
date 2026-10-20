@@ -14,5 +14,8 @@ package ifneeded dbscan 1.0 [list apply {{lib args} {
  dlsh.zip -- no $::tcl_platform(os)/$::tcl_platform(machine) build of\
  [file tail $lib] was packaged"
     }
+    # lib links @rpath/libdlsh.dylib, which only resolves to an already
+    # loaded libdlsh (zip loads go via a temp file; no rpath can reach it)
+    package require dlsh
     uplevel #0 [list load $lib {*}$args]
 }} [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libdbscan[info sharedlibextension]]]
