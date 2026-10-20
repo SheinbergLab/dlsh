@@ -28,6 +28,9 @@ foreach f [lsort [glob -nocomplain -directory $root */*/*_loaders.tcl]] {
     if {[string match */overlays/* $f]} continue
     set proto [file tail [file dirname $f]]
     set sys   [file tail [file dirname [file dirname $f]]]
+    # only <proto>/<proto>_loaders.tcl is a protocol; a system's tests/
+    # folder can hold e.g. tier1_loaders.tcl (extio_test)
+    if {[file tail $f] ne "${proto}_loaders.tcl"} continue
     lappend pairs [list $sys $proto]
 }
 
