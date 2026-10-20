@@ -683,6 +683,44 @@ endif()
 ###############################
 add_subdirectory(pkgs)
 
+# The interpreter loads dlsh from a zip, not by linking libdlsh, so the tests
+# above would otherwise run against the INSTALLED dlsh.zip. A fixture stages
+# a zip from this build (cmake/stage_test_zip.cmake: vfs/lib + the fresh
+# libdlsh + every package library built here whose target is named after its
+# vfs/lib folder), and every dlsh test gets DLSH_ZIP pointing at it. Here,
+# after add_subdirectory(pkgs), so the package targets exist.
+if(DLSH_BUILD_INTERP)
+    set(_zip_libs "dlsh=$<TARGET_FILE:dlsh>")
+    file(GLOB _vfs_pkgs RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/vfs/lib
+         ${CMAKE_CURRENT_SOURCE_DIR}/vfs/lib/*)
+    foreach(_p ${_vfs_pkgs})
+        if(NOT _p STREQUAL "dlsh" AND TARGET ${_p})
+            get_target_property(_ty ${_p} TYPE)
+            if(_ty STREQUAL "SHARED_LIBRARY" OR _ty STREQUAL "MODULE_LIBRARY")
+                string(APPEND _zip_libs "|${_p}=$<TARGET_FILE:${_p}>")
+            endif()
+        endif()
+    endforeach()
+    set(DLSH_TEST_ZIP ${CMAKE_BINARY_DIR}/test-dlsh.zip)
+    add_test(NAME stage_test_zip
+             COMMAND ${CMAKE_COMMAND}
+                     -DOUT=${DLSH_TEST_ZIP}
+                     -DSTAGE=${CMAKE_BINARY_DIR}/test-zipstage
+                     -DVFS=${CMAKE_CURRENT_SOURCE_DIR}/vfs/lib
+                     -DPLAT=${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}
+                     "-DLIBS=${_zip_libs}"
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/stage_test_zip.cmake)
+    set_tests_properties(stage_test_zip PROPERTIES
+        LABELS dlsh FIXTURES_SETUP dlsh_test_zip TIMEOUT 120)
+    foreach(_name ${DLSH_INTERP_TESTS})
+        if(TEST ${_name})
+            set_tests_properties(${_name} PROPERTIES
+                FIXTURES_REQUIRED dlsh_test_zip
+                ENVIRONMENT "DLSH_ZIP=${DLSH_TEST_ZIP}")
+        endif()
+    endforeach()
+endif()
+
 set(CPACK_PACKAGE_NAME dlsh)
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Dynamic Lists and other TCL utilities.")
 set(CPACK_PACKAGE_CONTACT SheinbergLab)
