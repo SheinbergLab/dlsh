@@ -751,8 +751,10 @@ proc ess_test::stub_stim2 {} {
     ess_test::reset_stim
 
     # -- factory: unique handles ------------------------------------------
+    # shaderBuildInline is shaderBuild with the GLSL in the stim file
+    # (runner/door's spotlight occluder); it returns the program name.
     foreach c {polygon metagroup shaderImageCreate shaderImageID \
-               shaderBuild shaderObj \
+               shaderBuild shaderBuildInline shaderObj \
                img_create img_drawPolygon img_drawPolygonFast img_imgtolist} {
         proc ::$c {args} { return [incr ::ess_test::handle_seq] }
     }
@@ -782,9 +784,13 @@ proc ess_test::stub_stim2 {} {
     # SOURCES fine without them and only dies once a test drives a trial --
     # match_to_sample/shapematch, remap/shapes, hapticvis/identify +
     # transfer, prf/drifting-gratings, video/play-or-skip all use the idiom.
+    # shaderUniformNames is how a stim checks that a program it built
+    # earlier still exists (another stim's shaderDeleteAll removes it);
+    # setBackground is a nexttrial staple (runner/door) that was missing.
     foreach c {glistInit resetObjList shaderImageReset shaderSetPath \
                polycirc polyannulus polysector polyaa \
                shaderObjSetSampler shaderObjSetUniform shaderDeleteAll \
+               shaderUniformNames setBackground \
                polyverts polytype polylinewidth \
                scaleObj metagroupAdd glistAddObject glistSetDynamic priorityObj \
                glistSetCurGroup glistSetVisible redraw load_Impro img_delete \
