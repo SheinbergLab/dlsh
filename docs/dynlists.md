@@ -287,7 +287,11 @@ x86 Linux but unsigned on ARM Linux, so the same bytes read `-1` on a Mac
 and `255` on a rig; files on disk are unchanged, only that reading is.
 Byte arithmetic that stays in `char` wraps modulo 256 (`dl_sub` of two
 char lists, `dl_diff`, `dl_negate`); convert with `dl_int` first if you
-need negative results. `dl_uchar`, `dl_uint` and the other `dl_u*`
+need negative results. A char list mixed with a short or long list, or
+with an integer literal, promotes to the wider type (see Promotion below):
+`dl_gt $pixels 100` compares the byte values and `dl_sub $pixels 128`
+gives a long list, -128..127 (until October 2026 any mix of two different
+narrow integer types failed with "unable to compare/combine"). `dl_uchar`, `dl_uint` and the other `dl_u*`
 commands are now the same conversions as `dl_char`, `dl_int`, ...; the
 names remain for existing scripts.
 

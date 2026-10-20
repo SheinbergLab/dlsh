@@ -78,6 +78,11 @@ int dlwPromote(int a, int b)
   return rank(a) >= rank(b) ? a : b;
 }
 
+int dlwMixedInteger(int a, int b)
+{
+  return a != b && dlwIsInteger(a) && dlwIsInteger(b);
+}
+
 /*********************************************************************/
 /*                          Readers                                  */
 /*********************************************************************/
@@ -136,6 +141,19 @@ void dlwAppendInt64(DYN_LIST *dl, int64_t v)
 
 /* Division by zero yields 0, as the int and float arms always have. */
 
+/* An int64 result buffer stored as the integer type rtype (narrowing
+   keeps the low bits, as same-type char/short arithmetic wraps). */
+static DYN_LIST *int64Result(int rtype, int length, int64_t *out)
+{
+  int i;
+  DYN_LIST *dl;
+  if (rtype == DF_INT64) return dfuCreateDynListWithVals(DF_INT64, length, out);
+  dl = dfuCreateDynList(rtype, length);
+  if (dl) for (i = 0; i < length; i++) dlwAppendInt64(dl, out[i]);
+  free(out);
+  return dl;
+}
+
 DYN_LIST *dlwArith(DYN_LIST *l1, DYN_LIST *l2, int func, int copymode, int length)
 {
   int i, rtype = dlwPromote(DYN_LIST_DATATYPE(l1), DYN_LIST_DATATYPE(l2));
@@ -147,8 +165,8 @@ DYN_LIST *dlwArith(DYN_LIST *l1, DYN_LIST *l2, int func, int copymode, int lengt
   if (!length) return dfuCreateDynList(rtype, 1);
 
   if (dlwIsInteger(rtype)) {
-    /* Both operands integer, at least one int64 (a narrower pair never
-       gets here): compute in int64, store as int64. */
+    /* Both operands integer (an int64 operand, or a mixed char/short/
+       long pair): compute in int64, store as the wider operand's type. */
     dlw_geti_fn g1 = dlwInt64Reader(DYN_LIST_DATATYPE(l1));
     dlw_geti_fn g2 = dlwInt64Reader(DYN_LIST_DATATYPE(l2));
     int64_t *out = (int64_t *) calloc(length, sizeof(int64_t));
@@ -168,7 +186,7 @@ DYN_LIST *dlwArith(DYN_LIST *l1, DYN_LIST *l2, int func, int copymode, int lengt
     default: free(out); return NULL;
     }
 #undef LOOP
-    return dfuCreateDynListWithVals(DF_INT64, length, out);
+    return int64Result(rtype, length, out);
   }
   else {
     dlw_getd_fn g1 = dlwDoubleReader(DYN_LIST_DATATYPE(l1));
@@ -204,7 +222,8 @@ DYN_LIST *dlwArith(DYN_LIST *l1, DYN_LIST *l2, int func, int copymode, int lengt
  * Comparisons answer 0/1 in a DF_LONG list (or the matching indices), as
  * the old arms do.  Integer pairs compare exactly in int64; anything with a
  * floating operand compares in double.  DL_RELATION_MOD is the odd one out:
- * it is arithmetic, and returns int64 for integer pairs and double (fmod)
+ * it is arithmetic, and returns the wider integer type for integer pairs
+ * and double (fmod)
  * otherwise -- the old arms truncated both operands to int first, which
  * is exactly what a wide operand cannot afford.
  */
@@ -230,7 +249,7 @@ DYN_LIST *dlwRelation(DYN_LIST *l1, DYN_LIST *l2, int op,
 	int64_t a = g1(v1, i*s1), b = g2(v2, i*s2);
 	m[i] = b ? a % b : 0;
       }
-      return dfuCreateDynListWithVals(DF_INT64, length, m);
+      return int64Result(dlwPromote(t1, t2), length, m);
     }
     else {
       dlw_getd_fn g1 = dlwDoubleReader(t1), g2 = dlwDoubleReader(t2);

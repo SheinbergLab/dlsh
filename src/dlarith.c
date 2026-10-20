@@ -42,7 +42,8 @@ DYN_LIST *dynListArithListList(DYN_LIST *l1, DYN_LIST *l2, int func)
 
   if (!l1 || !l2) return(NULL);
 
-  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2))) {
+  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)) ||
+      dlwMixedInteger(DYN_LIST_DATATYPE(l1), DYN_LIST_DATATYPE(l2))) {
     if ((DYN_LIST_DATATYPE(l1) != DF_LIST && DYN_LIST_N(l1) == 0) ||
 	(DYN_LIST_DATATYPE(l2) != DF_LIST && DYN_LIST_N(l2) == 0)) {
       int t = dlwPromote(DYN_LIST_DATATYPE(l1), DYN_LIST_DATATYPE(l2));
@@ -202,8 +203,10 @@ DYN_LIST *dynListArithListList(DYN_LIST *l1, DYN_LIST *l2, int func)
     }
   }
 
-  /* An 8-byte operand: the generic kernel handles every pairing. */
-  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)))
+  /* An 8-byte operand, or two different integer types (char/short/long):
+     the generic kernel promotes to the wider type. */
+  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)) ||
+      dlwMixedInteger(DYN_LIST_DATATYPE(l1), DYN_LIST_DATATYPE(l2)))
     return dlwArith(l1, l2, func, copymode, length);
 
   if (DYN_LIST_DATATYPE(l1) != DYN_LIST_DATATYPE(l2)) {
@@ -1834,8 +1837,10 @@ DYN_LIST *dynListRelationListList(DYN_LIST *l1, DYN_LIST *l2, int op)
   }
 
 
-  /* An 8-byte operand: the generic kernel handles every pairing. */
-  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)))
+  /* An 8-byte operand, or two different integer types (char/short/long):
+     the generic kernel compares them exactly in int64. */
+  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)) ||
+      dlwMixedInteger(DYN_LIST_DATATYPE(l1), DYN_LIST_DATATYPE(l2)))
     return dlwRelation(l1, l2, op, copymode, length, 0);
 
   if (DYN_LIST_DATATYPE(l1) != DYN_LIST_DATATYPE(l2)) {
@@ -3182,8 +3187,10 @@ DYN_LIST *dynListRelationListListIndices(DYN_LIST *l1, DYN_LIST *l2, int op)
   }
 
 
-  /* An 8-byte operand: the generic kernel handles every pairing. */
-  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)))
+  /* An 8-byte operand, or two different integer types (char/short/long):
+     the generic kernel compares them exactly in int64. */
+  if (dlwIsWide(DYN_LIST_DATATYPE(l1)) || dlwIsWide(DYN_LIST_DATATYPE(l2)) ||
+      dlwMixedInteger(DYN_LIST_DATATYPE(l1), DYN_LIST_DATATYPE(l2)))
     return dlwRelation(l1, l2, op, copymode, length, 1);
 
   if (DYN_LIST_DATATYPE(l1) != DYN_LIST_DATATYPE(l2)) {

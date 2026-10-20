@@ -14,8 +14,10 @@
  * For now the old per-type code still handles the pre-2026 types (so its
  * behaviour is provably unchanged: the command-surface differential is
  * empty); the callers route to these kernels only when an operand is
- * wide.  Once the kernels have been exercised, the old arms can be
- * retired onto them.
+ * wide, or when the operands are two different narrow integer types
+ * (char/short/long), which the old arms never combined (dlwMixedInteger).
+ * Once the kernels have been exercised, the old arms can be retired onto
+ * them.
  *
  * Promotion.  dlwPromote(a, b) gives the result type of a binary operation:
  * rank char < short < long < int64 < float < double, except that int64
@@ -46,6 +48,7 @@ int dlwIsInteger(int datatype);	/* char, short, long, int64 */
 int dlwIsWide(int datatype);	/* int64 or double */
 int dlwHasWideLeaf(DYN_LIST *dl);	/* the list, or any sublist, is wide */
 int dlwPromote(int a, int b);	/* common result type, or -1 */
+int dlwMixedInteger(int a, int b);	/* two different integer types */
 
 /* Element readers: convert element i of a typed value array */
 typedef double  (*dlw_getd_fn)(const void *vals, int i);
