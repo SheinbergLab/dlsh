@@ -127,6 +127,25 @@ check "dl_datatype after read"    [dl_datatype $g2:px] char
 check "dl_toJSON"                 [string map {" " ""} [dl_toJSON [dl_clist 0 255]]] {[0,255]}
 foreach x [lsort -unique [list $g $g2]] { dg_delete $x }
 
+# --- an image from impro: its pixel buffers were always unsigned, so a
+#     bright PNG decoded to a char list must read as bright here too -----
+if {[catch {package require impro} msg]} {
+    puts "SKIP impro PNG round trip (impro not loadable: [string range $msg 0 60])"
+} else {
+    set pngfile [file join [expr {[info exists ::env(TMPDIR)] ? $::env(TMPDIR) : "/tmp"}] \
+                     test_char_bytes_[pid].png]
+    # 4x2 RGB, every pixel (255, 200, 128)
+    img_writePNG [dl_replicate [dl_clist 255 200 128] 8] 4 2 $pngfile
+    set fh [open $pngfile rb]; set png [read $fh]; close $fh
+    file delete $pngfile
+    set img [img_listfromPNG $png]
+    check "PNG dims"              [dl_tcllist $img:0] {4 2}
+    check "PNG pixels are chars"  [dl_datatype $img:1] char
+    check "PNG first pixel"       [dl_tcllist [dl_choose $img:1 [dl_ilist 0 1 2]]] {255 200 128}
+    check "PNG dl_max"            [dl_max $img:1] 255
+    check "PNG dl_sum"            [dl_sum $img:1] [expr {8 * (255 + 200 + 128)}]
+}
+
 if {$::fail} {
     puts "=== $::fail FAILURE(S) ==="
     exit 1
