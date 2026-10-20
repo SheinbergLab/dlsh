@@ -5,6 +5,9 @@
 # This index loads the C extension first, then sources the Tcl half.
 #
 package ifneeded em 1.0 [list apply {dir {
+    # libem links @rpath/libdlsh.dylib, which only resolves to an already
+    # loaded libdlsh (zip loads go via a temp file; no rpath can reach it)
+    package require dlsh
     load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) \
               libem[info sharedlibextension]] Em
     source [file join $dir em.tcl]
