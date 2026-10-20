@@ -111,7 +111,9 @@ dlw_geti_fn dlwInt64Reader(int t)
 void dlwAppendDouble(DYN_LIST *dl, double v)
 {
   switch (DYN_LIST_DATATYPE(dl)) {
-#define X(DF, CT, SUF) case DF: dfuAddDynList##SUF(dl, (CT) v); break;
+  /* a byte keeps the low 8 bits of the truncated value; a direct
+     double -> unsigned char conversion is undefined outside 0..255 */
+#define X(DF, CT, SUF) case DF: dfuAddDynList##SUF(dl, DF == DF_CHAR ? (CT) (int64_t) v : (CT) v); break;
     DLW_NUMERIC_TYPES(X)
 #undef X
   default: break;

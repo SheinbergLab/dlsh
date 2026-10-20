@@ -278,6 +278,19 @@ two 8-byte types as well:
 `long` is still 32 bits and `float` still 32; nothing about existing lists
 changed.
 
+**`char` is an unsigned byte, 0..255, on every platform.** `dl_clist 255
+128 0` reads back as `255 128 0`, and `dl_mean`, `dl_gt`, `dl_sort` and the
+rest see those values. Storing keeps the low 8 bits, so `dl_clist -1` and
+`dl_char [dl_ilist 256 -1]` give `255` and `0 255`. Before October 2026
+the C code read chars through plain `char`, which is signed on macOS and
+x86 Linux but unsigned on ARM Linux, so the same bytes read `-1` on a Mac
+and `255` on a rig; files on disk are unchanged, only that reading is.
+Byte arithmetic that stays in `char` wraps modulo 256 (`dl_sub` of two
+char lists, `dl_diff`, `dl_negate`); convert with `dl_int` first if you
+need negative results. `dl_uchar`, `dl_uint` and the other `dl_u*`
+commands are now the same conversions as `dl_char`, `dl_int`, ...; the
+names remain for existing scripts.
+
 **What works on wide lists:** the storage layer (create, append, get/put,
 `dl_tcllist`, `dl_foreach`, copy, select, permute, concat, conversions,
 `dg_write`/`dg_read`, JSON, msgpack, Arrow), and the analysis core:

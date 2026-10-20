@@ -473,7 +473,7 @@ static TCL_COMMANDS DLcommands[] = {
   { "dl_int",              tclConvertDynList,     (void *) DL_INT,
       "convert list to ints" },
   { "dl_char",             tclConvertDynList,     (void *) DL_CHAR,
-      "convert list to bytes" },
+      "convert list to bytes (unsigned, 0..255; low 8 bits kept)" },
   { "dl_short",            tclConvertDynList,     (void *) DL_SHORT,
       "convert list to bytes" },
   { "dl_int64",            tclConvertDynList,     (void *) DL_INT64,
@@ -481,17 +481,17 @@ static TCL_COMMANDS DLcommands[] = {
   { "dl_double",           tclConvertDynList,     (void *) DL_DOUBLE,
       "convert list to doubles" },
   { "dl_ufloat",           tclUnsignedConvertDynList,     (void *) DL_FLOAT,
-      "convert list to floats" },
+      "same as dl_float (chars are always unsigned bytes)" },
   { "dl_uint",             tclUnsignedConvertDynList,     (void *) DL_INT,
-      "convert list to ints" },
+      "same as dl_int (chars are always unsigned bytes)" },
   { "dl_uchar",            tclUnsignedConvertDynList,     (void *) DL_CHAR,
-      "convert list to bytes" },
+      "same as dl_char (chars are always unsigned bytes)" },
   { "dl_ushort",           tclUnsignedConvertDynList,     (void *) DL_SHORT,
-      "convert list to bytes" },
+      "same as dl_short (chars are always unsigned bytes)" },
   { "dl_uint64",           tclUnsignedConvertDynList,     (void *) DL_INT64,
-      "convert list to 64-bit ints, chars as unsigned" },
+      "same as dl_int64 (chars are always unsigned bytes)" },
   { "dl_udouble",          tclUnsignedConvertDynList,     (void *) DL_DOUBLE,
-      "convert list to doubles, chars as unsigned" },
+      "same as dl_double (chars are always unsigned bytes)" },
   { "dl_not",              tclDynListNot,         NULL,
       "elementwise not operation" },
   { "dl_and",              tclCompareDynList,     (void *) DL_AND,
@@ -5368,13 +5368,13 @@ static int tclGetPutDynList (ClientData data, Tcl_Interp *interp,
     }
   case DF_CHAR:
      {
-       char *vals = (char *) DYN_LIST_VALS(dl);
+       unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
        if (mode == DL_PUT) {
 	int element;
 	if (Tcl_GetInt(interp, argv[3], &element) != TCL_OK) {
 	  return TCL_ERROR;
 	}
-	vals[i] = (char) element;
+	vals[i] = (unsigned char) element;	/* low byte: -1 is stored as 255 */
 	Tcl_AppendResult(interp, argv[1], NULL);	
       }
       else Tcl_SetObjResult(interp, Tcl_NewIntObj(vals[i]));
@@ -6017,7 +6017,7 @@ Tcl_Obj *tclDynListToTclObj(Tcl_Interp *interp, DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       for (i = 0; i < DYN_LIST_N(dl); i++) {
 	Tcl_ListObjAppendElement(interp, listPtr, Tcl_NewIntObj(vals[i]));
       }
@@ -6445,7 +6445,7 @@ static int tclDumpDynList (ClientData data, Tcl_Interp *interp,
     break;
     case DF_CHAR:
       {
-	char *vals = (char *) DYN_LIST_VALS(dl);
+	unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
 	switch (outtype) {
 	case DL_DUMP_USHORT: 
 	  {
@@ -6607,7 +6607,10 @@ static int tclConvertDynList (ClientData data, Tcl_Interp *interp,
  *    dl_float
  *
  * DESCRIPTION
- *    Convert from one type of dynlist to another, treat chars as unsigned
+ *    Convert from one type of dynlist to another.  Chars are unsigned
+ *    bytes (0..255) on every platform, so each dl_uXXX is now the same
+ *    conversion as its dl_XXX twin; the names are kept so existing
+ *    scripts keep working.
  *
  *****************************************************************************/
 
@@ -6978,7 +6981,7 @@ static int tclFindSublist (ClientData data, Tcl_Interp *interp,
 	if (Tcl_GetInt(interp, argv[2], &n) != TCL_OK) goto usage;
 	free_dl2 = 1;
 	dl2 = dfuCreateDynList(DF_CHAR, 1);
-	dfuAddDynListLong(dl2, (char) n);
+	dfuAddDynListChar(dl2, (unsigned char) n);
 	break;
       case DF_FLOAT:
 	if (Tcl_GetDouble(interp, argv[2], &k) != TCL_OK) goto usage;
@@ -11198,7 +11201,7 @@ int dynListPrintValChan(Tcl_Interp * interp, DYN_LIST *dl, int i,
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       sprintf(buf, DLFormatTable[FMT_CHAR], vals[i]);
       write_or_result(interp, chan, buf, -1);
     }

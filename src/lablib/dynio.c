@@ -828,7 +828,7 @@ void read_float(char type, FILE *InFP, FILE *OutFP)
 static 
 void read_char(char type, FILE *InFP, FILE *OutFP)
 {
-  char val;
+  unsigned char val;
   if (fread(&val, sizeof(char), 1, InFP) != 1) {
      fprintf(stderr,"Error reading char val\n");
      return;
@@ -1227,7 +1227,7 @@ int vread_float(char type, float *fval, FILE *OutFP)
 static 
 int vread_char(char type, char *cval, FILE *OutFP)
 {
-  char val;
+  unsigned char val;
   memcpy(&val, cval, sizeof(char));
 
   fprintf(OutFP, "%-20s\t%d\n", dgGetTagName(type), val);

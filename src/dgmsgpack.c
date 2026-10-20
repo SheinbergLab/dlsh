@@ -58,7 +58,7 @@ int dl_to_msgpack(DYN_LIST *dl, msgpack_packer *pk)
         break;      
     case DF_CHAR:
         {
-            char *vals = (char *) DYN_LIST_VALS(dl);
+            unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
             for (i = 0; i < DYN_LIST_N(dl); i++) {
                 if (msgpack_pack_int8(pk, vals[i]) != 0) return -1;
             }
@@ -235,7 +235,7 @@ int dg_to_hybrid_msgpack_buffer(DYN_GROUP *dg, char **buffer, size_t *buffer_siz
                 break;
             case DF_CHAR:
                 {
-                    char *vals = (char *) DYN_LIST_VALS(dl);
+                    unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
                     if (msgpack_pack_int8(&pk, vals[i]) != 0) goto error;
                 }
                 break;

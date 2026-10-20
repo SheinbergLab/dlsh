@@ -245,7 +245,7 @@ static int append_dynlist_data(DYN_LIST* dl, struct ArrowArray* array) {
                 break;
             }
             case DF_CHAR: {
-                char* vals = (char*)DYN_LIST_VALS(dl);
+                unsigned char* vals = (unsigned char*)DYN_LIST_VALS(dl);
                 for (int i = 0; i < n; i++) {
                     if (ArrowArrayAppendUInt(array, (uint64_t)(unsigned char)vals[i]) != NANOARROW_OK) return -1;
                 }
@@ -367,7 +367,7 @@ static int dynlist_to_nanoarrow_array(DYN_LIST* dl, struct ArrowArray* array,
                 break;
             }
             case DF_CHAR: {
-                char* vals = (char*)DYN_LIST_VALS(dl);
+                unsigned char* vals = (unsigned char*)DYN_LIST_VALS(dl);
                 for (int i = 0; i < n; i++) {
                     if (ArrowArrayAppendUInt(array, (uint64_t)(unsigned char)vals[i]) != NANOARROW_OK) {
                         ArrowArrayRelease(array);
@@ -949,7 +949,7 @@ static DYN_LIST* nanoarrow_array_to_dynlist(const struct ArrowArrayView* array_v
                 return NULL;
             }
             for (int64_t i = 0; i < n; i++) {
-                char val = ArrowArrayViewIsNull(array_view, i) ? 0 : (char)src[offset + i];
+                uint8_t val = ArrowArrayViewIsNull(array_view, i) ? 0 : src[offset + i];
                 dfuAddDynListChar(dl, val);
             }
             break;

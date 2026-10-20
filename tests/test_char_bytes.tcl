@@ -1,0 +1,134 @@
+#!/usr/bin/env dlsh
+#
+# test_char_bytes.tcl
+#   A char dynlist (DF_CHAR) holds unsigned bytes, 0..255, on every
+#   platform.  The C code used to read chars through plain `char`, which is
+#   signed on macOS and x86 Linux but unsigned on ARM Linux, so the same
+#   bytes read -1 on a Mac and 255 on a rig, and dl_mean/dl_gt/dl_sort of
+#   byte data disagreed between the two.  Every expectation here is the
+#   unsigned answer, so the test means the same thing on every platform.
+#
+#   Usage:  dlsh test_char_bytes.tcl        (exits non-zero on any failure)
+
+if {[catch {package require dlsh}]} {
+    foreach path {/usr/local/dlsh/dlsh.zip /usr/local/lib/dlsh.zip} {
+        if {[file exists $path]} {
+            catch {zipfs mount $path /dlsh}
+            set base [file join [zipfs root] dlsh]
+            set ::auto_path [linsert $::auto_path 0 ${base}/lib]
+            break
+        }
+    }
+    package require dlsh
+}
+
+set ::fail 0
+proc check {label got want} {
+    if {$got eq $want} {
+        puts "OK   $label"
+    } else {
+        puts "FAIL $label -> got {$got} want {$want}"
+        incr ::fail
+    }
+}
+
+# --- creation and element access ----------------------------------------
+check "dl_clist reads unsigned"   [dl_tcllist [dl_clist 255 128 0]] {255 128 0}
+check "dl_clist keeps low byte"   [dl_tcllist [dl_clist -1 256 -128 300]] {255 0 128 44}
+set c [dl_clist 10 200 30]
+check "dl_get"                    [dl_get $c 1] 200
+dl_put $c 0 -1
+dl_put $c 2 300
+check "dl_put keeps low byte"     [dl_tcllist $c] {255 200 44}
+dl_append $c 250; dl_prepend $c -2; dl_insert $c 1 129
+check "append/prepend/insert"     [dl_tcllist $c] {254 129 255 200 44 250}
+set fe {}
+dl_foreach v [dl_clist 0 255] { lappend fe $v }
+check "dl_foreach"                $fe {0 255}
+
+# --- raw bytes in and out ------------------------------------------------
+set all {}
+for {set i 0} {$i < 256} {incr i} { lappend all $i }
+set bytes [binary format c* $all]
+set b [dl_create char]
+dl_fromString $bytes $b
+check "dl_fromString length"      [dl_length $b] 256
+check "dl_fromString 0..255"      [dl_tcllist $b] $all
+dl_toString $b out
+check "dl_toString round trip"    [string equal $out $bytes] 1
+check "dl_fromString + dl_uint"   [dl_tcllist [dl_uint $b]] $all
+
+# --- reductions and comparisons see the unsigned values -----------------
+set px [dl_clist 255 1]
+check "dl_mean"                   [dl_mean $px] 128.0
+check "dl_sum"                    [dl_sum $px] 256
+check "dl_min / dl_max"           [list [dl_min $px] [dl_max $px]] {1 255}
+check "dl_minIndex / dl_maxIndex" [list [dl_minIndex $px] [dl_maxIndex $px]] {1 0}
+check "dl_gt char/char"           [dl_tcllist [dl_gt [dl_clist 200 10] [dl_clist 100]]] {1 0}
+check "dl_lt char/char"           [dl_tcllist [dl_lt [dl_clist 200 10] [dl_clist 100]]] {0 1}
+check "dl_gt char/float"          [dl_tcllist [dl_gt [dl_clist 200 10] 100.0]] {1 0}
+check "dl_eq char/char"           [dl_tcllist [dl_eq [dl_clist 255 0] [dl_clist -1]]] {1 0}
+check "dl_sort"                   [dl_tcllist [dl_sort [dl_clist 200 5 130 0]]] {0 5 130 200}
+check "dl_sortIndices"            [dl_tcllist [dl_sortIndices [dl_clist 200 5 130 0]]] {3 1 2 0}
+check "dl_unique"                 [dl_tcllist [dl_unique [dl_clist 200 5 200 0]]] {0 5 200}
+check "dl_find"                   [dl_find [dl_clist 5 200 7] [dl_clist 200]] 1
+check "dl_find -1 is 255"         [dl_find [dl_clist 5 255 7] [dl_clist -1]] 1
+check "dl_meanList"               [dl_tcllist [dl_meanList [dl_llist [dl_clist 200 10] [dl_clist 100 20]]]] {150.0 15.0}
+check "dl_sumList"                [dl_tcllist [dl_sumList [dl_llist [dl_clist 200 10] [dl_clist 100 20]]]] {300 30}
+check "dl_select char 0/1 mask"   [dl_tcllist [dl_select [dl_ilist 1 2 3] [dl_clist 0 1 1]]] {2 3}
+# any value > 1 makes a char selection list a list of indices, and an
+# index above 127 used to read as negative (an out-of-range read)
+check "dl_select char indices"    [dl_tcllist [dl_select [dl_series 0 199] [dl_clist 150 2]]] {150 2}
+check "dl_abs is identity"        [dl_tcllist [dl_abs [dl_clist 200 3]]] {200 3}
+
+# --- mixed with float and the wide types --------------------------------
+check "char + float"              [dl_tcllist [dl_add [dl_clist 200 1] 100.0]] {300.0 101.0}
+check "char + int64"              [dl_tcllist [dl_add [dl_clist 200 1] [dl_wlist 1 1]]] {201 2}
+check "char * double"             [dl_tcllist [dl_mult [dl_clist 200 1] [dl_dlist 0.5]]] {100.0 0.5}
+check "char > double"             [dl_tcllist [dl_gt [dl_clist 200 1] [dl_dlist 100]]] {1 0}
+
+# --- byte arithmetic stays a byte and wraps modulo 256 -------------------
+check "char + char wraps"         [dl_tcllist [dl_add [dl_clist 200] [dl_clist 100]]] {44}
+check "char / char unsigned"      [dl_tcllist [dl_div [dl_clist 200] [dl_clist 2]]] {100}
+check "dl_diff wraps"             [dl_tcllist [dl_diff [dl_clist 10 5 7]]] {251 2}
+check "dl_negate wraps"           [dl_tcllist [dl_negate [dl_clist 1 0 200]]] {255 0 56}
+check "dl_int first for signed"   [dl_tcllist [dl_diff [dl_int [dl_clist 10 5]]]] {-5}
+
+# --- conversions out of char --------------------------------------------
+set hi [dl_clist 0 128 255]
+foreach cmd {dl_int dl_short dl_int64 dl_uint dl_ushort dl_uint64} {
+    check "$cmd of chars"         [dl_tcllist [$cmd $hi]] {0 128 255}
+}
+foreach cmd {dl_float dl_double dl_ufloat dl_udouble} {
+    check "$cmd of chars"         [dl_tcllist [$cmd $hi]] {0.0 128.0 255.0}
+}
+
+# --- conversions into char: dl_char and dl_uchar are the same -----------
+foreach cmd {dl_char dl_uchar} {
+    check "$cmd of ints"          [dl_tcllist [$cmd [dl_ilist 0 255 256 -1 300]]] {0 255 0 255 44}
+    check "$cmd of shorts"        [dl_tcllist [$cmd [dl_slist 255 -1]]] {255 255}
+    check "$cmd of floats"        [dl_tcllist [$cmd [dl_flist 3.7 255.0 -1.0 256.0]]] {3 255 255 0}
+    check "$cmd of doubles"       [dl_tcllist [$cmd [dl_dlist 200.9 -1 300]]] {200 255 44}
+    check "$cmd of int64"         [dl_tcllist [$cmd [dl_wlist 255 256 -1]]] {255 0 255}
+    check "$cmd of strings"       [dl_tcllist [$cmd [dl_create string 200 -1]]] {200 255}
+    check "$cmd of chars"         [dl_tcllist [$cmd $hi]] {0 128 255}
+}
+
+# --- serialization: same bytes, read as unsigned ------------------------
+set g [dg_create]
+dl_set $g:px [dl_clist 0 127 128 255]
+set f [file join [expr {[info exists ::env(TMPDIR)] ? $::env(TMPDIR) : "/tmp"}] \
+           test_char_bytes_[pid].dg]
+dg_write $g $f
+set g2 [dg_read $f]
+file delete $f
+check "dg_write/dg_read"          [dl_tcllist $g2:px] {0 127 128 255}
+check "dl_datatype after read"    [dl_datatype $g2:px] char
+check "dl_toJSON"                 [string map {" " ""} [dl_toJSON [dl_clist 0 255]]] {[0,255]}
+foreach x [lsort -unique [list $g $g2]] { dg_delete $x }
+
+if {$::fail} {
+    puts "=== $::fail FAILURE(S) ==="
+    exit 1
+}
+puts "=== ALL PASS ==="

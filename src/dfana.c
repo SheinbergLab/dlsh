@@ -125,7 +125,7 @@ typedef struct _floati {
 
 typedef struct _chari {
   int  i;
-  char val;
+  unsigned char val;
 } CHAR_I;
 
 typedef struct _stringi {
@@ -426,7 +426,7 @@ int dynListIncrementCounter(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       if (DYN_LIST_N(dl)) dfuAddDynListChar(dl, vals[DYN_LIST_N(dl)-1]+1);
       else dfuAddDynListChar(dl, 0);
     }
@@ -523,7 +523,7 @@ DYN_LIST *dynListPackList(DYN_LIST *dl)
   break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       d = dfuCreateDynList(DF_CHAR, 1);
       for (i = 0; i < DYN_LIST_N(dl); i++) {
 	dfuResetDynList(d);
@@ -975,7 +975,7 @@ DYN_LIST *dynListSpliceLists(DYN_LIST *dl1, DYN_LIST *dl2, int pos)
       }
     case DF_CHAR:
       {
-	char *inval = (char *) DYN_LIST_VALS(dl1);
+	unsigned char *inval = (unsigned char *) DYN_LIST_VALS(dl1);
 	for (i = 0; i < DYN_LIST_N(dl2); i++) {
 	  if (DYN_LIST_DATATYPE(vals[i]) == DF_LIST) {
 	    dynListSpliceLists(dl1, vals[i], pos);
@@ -2898,15 +2898,19 @@ DYN_LIST *dynListConvertNumeric(DYN_LIST *dl, int type, int unsigned_chars)
 
   if (!(newvals = calloc(n, elsize))) return NULL;
 
-  /* One arm per source type; DST is the C type of the destination and
-     STRCONV how a string element is parsed into it. */
-#define CONVERT_FROM(DST, STRCONV)					\
+  /* One arm per source type; DST is the C type of the destination, VIA
+     the type each value passes through on the way (so a floating value
+     headed for a byte is truncated to an integer first, and the byte
+     keeps its low 8 bits instead of hitting an undefined conversion),
+     and STRCONV how a string element is parsed into it.  DF_CHAR is an
+     unsigned byte on every platform, so unsigned_chars no longer changes
+     anything; it stays in the signature for existing callers. */
+  (void) unsigned_chars;
+#define CONVERT_FROM(DST, VIA, STRCONV)					\
   switch (DYN_LIST_DATATYPE(dl)) {					\
   case DF_CHAR: {							\
-    char *s = (char *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
-    if (unsigned_chars) for (i = 0; i < n; i++) d[i] = (DST) (unsigned char) s[i]; \
-    else                for (i = 0; i < n; i++) d[i] = (DST) s[i];	\
-    break; }								\
+    unsigned char *s = (unsigned char *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals; \
+    for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
   case DF_SHORT: {							\
     short *s = (short *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
     for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
@@ -2915,13 +2919,13 @@ DYN_LIST *dynListConvertNumeric(DYN_LIST *dl, int type, int unsigned_chars)
     for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
   case DF_FLOAT: {							\
     float *s = (float *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
-    for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
+    for (i = 0; i < n; i++) d[i] = (DST) (VIA) s[i]; break; }		\
   case DF_INT64: {							\
     int64_t *s = (int64_t *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals; \
     for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
   case DF_DOUBLE: {							\
     double *s = (double *) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
-    for (i = 0; i < n; i++) d[i] = (DST) s[i]; break; }		\
+    for (i = 0; i < n; i++) d[i] = (DST) (VIA) s[i]; break; }		\
   case DF_STRING: {							\
     char **s = (char **) DYN_LIST_VALS(dl); DST *d = (DST *) newvals;	\
     for (i = 0; i < n; i++) d[i] = (DST) (STRCONV); break; }		\
@@ -2930,12 +2934,12 @@ DYN_LIST *dynListConvertNumeric(DYN_LIST *dl, int type, int unsigned_chars)
   }
 
   switch (type) {
-  case DF_CHAR:   CONVERT_FROM(char,    strtoll(s[i], NULL, 10)); break;
-  case DF_SHORT:  CONVERT_FROM(short,   strtoll(s[i], NULL, 10)); break;
-  case DF_LONG:   CONVERT_FROM(int,     strtoll(s[i], NULL, 10)); break;
-  case DF_INT64:  CONVERT_FROM(int64_t, strtoll(s[i], NULL, 10)); break;
-  case DF_FLOAT:  CONVERT_FROM(float,   strtod(s[i], NULL));      break;
-  case DF_DOUBLE: CONVERT_FROM(double,  strtod(s[i], NULL));      break;
+  case DF_CHAR:   CONVERT_FROM(unsigned char, int64_t, strtoll(s[i], NULL, 10)); break;
+  case DF_SHORT:  CONVERT_FROM(short,   short,   strtoll(s[i], NULL, 10)); break;
+  case DF_LONG:   CONVERT_FROM(int,     int,     strtoll(s[i], NULL, 10)); break;
+  case DF_INT64:  CONVERT_FROM(int64_t, int64_t, strtoll(s[i], NULL, 10)); break;
+  case DF_FLOAT:  CONVERT_FROM(float,   float,   strtod(s[i], NULL));      break;
+  case DF_DOUBLE: CONVERT_FROM(double,  double,  strtod(s[i], NULL));      break;
   default:
     free(newvals);
     return NULL;
@@ -3020,7 +3024,7 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
       break;
     case DF_CHAR:
       {
-	char *vals = (char *) DYN_LIST_VALS(dl);
+	unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
 	float *newvals = (float *) calloc(DYN_LIST_N(dl), sizeof(float));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
 	  newvals[i] = vals[i];
@@ -3075,7 +3079,7 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
       break;
     case DF_CHAR:
       {
-	char *vals = (char *) DYN_LIST_VALS(dl);
+	unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
 	int *newvals = (int *) calloc(DYN_LIST_N(dl), sizeof(int));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
 	  newvals[i] = vals[i];
@@ -3103,9 +3107,9 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
     case DF_FLOAT:
       {
 	float *vals = (float *) DYN_LIST_VALS(dl);
-	char *newvals = (char *) calloc(DYN_LIST_N(dl), sizeof(char));
+	unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
-	  newvals[i] = vals[i];
+	  newvals[i] = (int) vals[i];	/* via int: keep the low byte */
 	}
 	newlist = dfuCreateDynListWithVals(DF_CHAR, DYN_LIST_N(dl), newvals);
       }
@@ -3113,7 +3117,7 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
     case DF_LONG:
       {
 	int *vals = (int *) DYN_LIST_VALS(dl);
-	char *newvals = (char *) calloc(DYN_LIST_N(dl), sizeof(char));
+	unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
 	  newvals[i] = vals[i];
 	}
@@ -3123,7 +3127,7 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
     case DF_SHORT:
       {
 	short *vals = (short *) DYN_LIST_VALS(dl);
-	char *newvals = (char *) calloc(DYN_LIST_N(dl), sizeof(char));
+	unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
 	  newvals[i] = vals[i];
 	}
@@ -3132,8 +3136,8 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
       break;
     case DF_CHAR:
       {
-	char *vals = (char *) DYN_LIST_VALS(dl);
-	char *newvals = (char *) calloc(DYN_LIST_N(dl), sizeof(char));
+	unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
+	unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	memcpy(newvals, vals, DYN_LIST_N(dl)*sizeof(char));
 	newlist = dfuCreateDynListWithVals(DF_CHAR, DYN_LIST_N(dl), newvals);
       }
@@ -3141,7 +3145,7 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
     case DF_STRING:
       {
 	char **vals = (char **) DYN_LIST_VALS(dl);
-	char *newvals = (char *) calloc(DYN_LIST_N(dl), sizeof(char));
+	unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
 	  newvals[i] = atoi(vals[i]);
 	}
@@ -3177,7 +3181,7 @@ DYN_LIST *dynListConvertList(DYN_LIST *dl, int type)
       break;
     case DF_CHAR:
       {
-	char *vals = (char *) DYN_LIST_VALS(dl);
+	unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
 	short *newvals = (short *) calloc(DYN_LIST_N(dl), sizeof(short));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
 	  newvals[i] = vals[i];
@@ -3372,7 +3376,7 @@ DYN_LIST *dynListUnsignedConvertList(DYN_LIST *dl, int type)
 	float *vals = (float *) DYN_LIST_VALS(dl);
 	unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
-	  newvals[i] = vals[i];
+	  newvals[i] = (int) vals[i];	/* via int: keep the low byte */
 	}
 	newlist = dfuCreateDynListWithVals(DF_CHAR, DYN_LIST_N(dl), newvals);
       }
@@ -3399,8 +3403,8 @@ DYN_LIST *dynListUnsignedConvertList(DYN_LIST *dl, int type)
       break;
     case DF_CHAR:
       {
-	char *vals = (char *) DYN_LIST_VALS(dl);
-	char *newvals = (char *) calloc(DYN_LIST_N(dl), sizeof(char));
+	unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
+	unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	memcpy(newvals, vals, DYN_LIST_N(dl)*sizeof(char));
 	newlist = dfuCreateDynListWithVals(DF_CHAR, DYN_LIST_N(dl), newvals);
       }
@@ -3408,7 +3412,7 @@ DYN_LIST *dynListUnsignedConvertList(DYN_LIST *dl, int type)
     case DF_STRING:
       {
 	char **vals = (char **) DYN_LIST_VALS(dl);
-	char *newvals = (char *) calloc(DYN_LIST_N(dl), sizeof(char));
+	unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
 	  newvals[i] = atoi(vals[i]);
 	}
@@ -3940,7 +3944,7 @@ DYN_LIST *dynListMathOneArg(DYN_LIST *dl, int func_id)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       if (DLCheckMatherr) {
 	switch (func_id) {
 	case DL_SQRT:
@@ -3974,7 +3978,7 @@ DYN_LIST *dynListMathOneArg(DYN_LIST *dl, int func_id)
 	}
       case DL_ABS:
 	{
-	  char *newvals = (char *) calloc(DYN_LIST_N(dl), sizeof(char));
+	  unsigned char *newvals = (unsigned char *) calloc(DYN_LIST_N(dl), sizeof(char));
 	  memcpy(newvals, vals, DYN_LIST_N(dl));
 	  list = dfuCreateDynListWithVals(DF_CHAR, DYN_LIST_N(dl), newvals);
 	  break;
@@ -4051,7 +4055,7 @@ float dynListMaxList(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       max = vals[0];
       for (i = 1; i < DYN_LIST_N(dl); i++) 
 	if(max < vals[i])  max = vals[i];
@@ -4120,7 +4124,7 @@ int dynListMaxListIndex(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       max = vals[0];
       for (i = 1; i < DYN_LIST_N(dl); i++) 
 	if(max < vals[i])  { max = vals[i]; maxi = i; }
@@ -4180,7 +4184,7 @@ int dynListMinListIndex(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       min = vals[0];
       for (i = 1; i < DYN_LIST_N(dl); i++) 
 	if(min > vals[i])  { min = vals[i]; mini = i; }
@@ -4323,8 +4327,8 @@ DYN_LIST *dynListBMinMaxList(DYN_LIST *dl, int op)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
-      char retval = vals[0];
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
+      unsigned char retval = vals[0];
       if (op == DL_MINIMUM) {
 	for (i = 1; i < DYN_LIST_N(dl); i++) 
 	  if(retval > vals[i])  retval = vals[i];
@@ -4441,7 +4445,7 @@ float dynListMinList(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       min = vals[0];
       for (i = 1; i < DYN_LIST_N(dl); i++) 
 	if(min > vals[i])  min = vals[i];
@@ -4532,8 +4536,8 @@ DYN_LIST *dynListMinMaxList(DYN_LIST *dl, int op)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
-      char retval = vals[0];
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
+      unsigned char retval = vals[0];
       retlist = dfuCreateDynList(DF_LONG, 1);
       if (op == DL_MINIMUM) {
 	for (i = 1; i < DYN_LIST_N(dl); i++) 
@@ -4922,7 +4926,7 @@ void build_int_hash_table(DYN_LIST *table, HashEntryInt **hash_table)
     break;
   case DF_CHAR:
     {
-      char *table_vals = (char *) DYN_LIST_VALS(table);
+      unsigned char *table_vals = (unsigned char *) DYN_LIST_VALS(table);
       for (int i = 0; i < table_size; i++) {
 	HashEntryInt *entry = malloc(sizeof(HashEntryInt));
 	entry->key = table_vals[i];
@@ -5646,7 +5650,7 @@ double dynListMeanList(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       for (i = 0; i < DYN_LIST_N(dl); i++) sum+=vals[i];
     }
     break;
@@ -5736,10 +5740,10 @@ DYN_LIST* dynListAverageList(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals;
+      unsigned char *vals;
       for (i = 0; i < length; i++) {
 	for (sum = 0, j = 0; j < DYN_LIST_N(dl); j++) {
-	  vals = (char *) DYN_LIST_VALS(sublists[j]);
+	  vals = (unsigned char *) DYN_LIST_VALS(sublists[j]);
 	  sum+=vals[i];
 	}
 	dfuAddDynListFloat(newlist, sum/j);
@@ -5830,12 +5834,12 @@ DYN_LIST* dynListSumColsList(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals;
+      unsigned char *vals;
       long long sum = 0;
       newlist = dfuCreateDynList(DF_LONG, length);
       for (i = 0; i < length; i++) {
 	for (sum = 0, j = 0; j < DYN_LIST_N(dl); j++) {
-	  vals = (char *) DYN_LIST_VALS(sublists[j]);
+	  vals = (unsigned char *) DYN_LIST_VALS(sublists[j]);
 	  sum+=vals[i];
 	}
 	dfuAddDynListLong(newlist, sum);
@@ -6049,7 +6053,7 @@ double dynListVarList(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       double mean = dynListMeanList(dl);
       int n = DYN_LIST_N(dl);
       double sdiff  = 0.0;
@@ -6318,7 +6322,7 @@ DYN_LIST *dynListListCount(DYN_LIST *dl, DYN_LIST *range)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       switch (DYN_LIST_DATATYPE(range)) {
       case DF_LONG:
 	{
@@ -6482,7 +6486,7 @@ long dynListCountList(DYN_LIST *dl, DYN_LIST *range)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       switch (DYN_LIST_DATATYPE(range)) {
       case DF_LONG:
 	{
@@ -6625,7 +6629,7 @@ DYN_LIST *dynListHistList(DYN_LIST *dl, DYN_LIST *range, int nbins)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       int *counts = (int *) calloc(nbins, sizeof(int));
       
       for (i = 0; i < DYN_LIST_N(dl); i++)
@@ -6955,7 +6959,7 @@ DYN_LIST *dynListSdfList(DYN_LIST *dl, float start, float stop, float ksd,
   case DF_CHAR:
     {
       int duration = stop-start+1;
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       float *data = (float *) calloc(DYN_LIST_N(dl),sizeof(float));
       float *counts;      
 
@@ -7198,7 +7202,7 @@ DYN_LIST *dynListSdfListR(DYN_LIST *dl, float start, float stop, float ksd,
   case DF_CHAR:
     {
       int duration = stop-start+1;
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       float *data = (float *) calloc(DYN_LIST_N(dl),sizeof(float));
       float *counts;      
 
@@ -7433,7 +7437,7 @@ DYN_LIST *dynListParzenList(DYN_LIST *dl, float start, float stop, float ksd,
   case DF_CHAR:
     {
       int duration = stop-start+1;
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       float *data = (float *) calloc(DYN_LIST_N(dl),sizeof(float));
       float *counts;      
       sdf = dfuCreateDynList(DF_FLOAT, length);
@@ -7555,9 +7559,9 @@ DYN_LIST *dynListDiffList(DYN_LIST *dl, int lag)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
-      char *ds = (char *) calloc(length, sizeof(char));
-      char *d = ds;
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
+      unsigned char *ds = (unsigned char *) calloc(length, sizeof(char));
+      unsigned char *d = ds;
       diffs = dfuCreateDynList(DYN_LIST_DATATYPE(dl), length);
       for (i = lag, j = 0; i < DYN_LIST_N(dl); i++, j++) {
 	*ds++ = vals[i]-vals[j];
@@ -7822,9 +7826,9 @@ DYN_LIST *dynListGradientList(DYN_LIST *dl)
     
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
-      char *gs = (char *) calloc(length, sizeof(char));
-      char *g = gs;
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
+      unsigned char *gs = (unsigned char *) calloc(length, sizeof(char));
+      unsigned char *g = gs;
       
       if (length == 1) {
         *gs = 0;
@@ -8127,7 +8131,7 @@ DYN_LIST *dynListSelect(DYN_LIST *dl, DYN_LIST *selections)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(selections);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(selections);
       
       /* check out the selections list and make sure it's all nonneg */
       for (i = 0; i < DYN_LIST_N(selections); i++) {
@@ -8254,7 +8258,7 @@ DYN_LIST *dynListChoose(DYN_LIST *dl, DYN_LIST *selections)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(selections);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(selections);
       
       /* check out the selections list and make sure it's all nonneg */
       for (i = 0; i < DYN_LIST_N(selections); i++) {
@@ -8417,7 +8421,7 @@ DYN_LIST *dynListReplace(DYN_LIST *dl, DYN_LIST *selections, DYN_LIST *r)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(selections);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(selections);
 
       /* check out the selections list and make sure it's all nonneg */
       for (i = 0; i < DYN_LIST_N(selections); i++) {
@@ -8710,7 +8714,7 @@ static int dynListAnyFlat(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       for (i = 0; i < DYN_LIST_N(dl); i++) {
         if (vals[i]) return 1;
       }
@@ -8763,7 +8767,7 @@ static int dynListAllFlat(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       for (i = 0; i < DYN_LIST_N(dl); i++) {
         if (!vals[i]) return 0;
       }
@@ -9133,7 +9137,7 @@ DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false)
         dfuMoveDynListList(newlist, copy);
       }
     } else { /* DF_CHAR */
-      char *mvals = (char *) DYN_LIST_VALS(mask);
+      unsigned char *mvals = (unsigned char *) DYN_LIST_VALS(mask);
       for (i = 0; i < length; i++) {
         DYN_LIST *src = mvals[i] ?
             tvals[copymode_true ? 0 : i] :
@@ -9223,7 +9227,7 @@ DYN_LIST *dynListWhere(DYN_LIST *mask, DYN_LIST *if_true, DYN_LIST *if_false)
     }
   }
   else if (DYN_LIST_DATATYPE(mask) == DF_CHAR) {
-    char *mvals = (char *) DYN_LIST_VALS(mask);
+    unsigned char *mvals = (unsigned char *) DYN_LIST_VALS(mask);
 
     if (result_type == DYN_LIST_DATATYPE(if_true) &&
         result_type == DYN_LIST_DATATYPE(if_false)) {
@@ -9422,7 +9426,7 @@ DYN_LIST *dynListIndices(DYN_LIST *dl)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       newlist = dfuCreateDynList(DF_LONG, DYN_LIST_N(dl));
       if (!newlist) return(NULL);
       for (i = 0; i < DYN_LIST_N(dl); i++) {
@@ -9597,7 +9601,7 @@ int dynListSetValLong(DYN_LIST *dl, int i, int val)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       vals[i] = val;
     }
     break;
@@ -9723,7 +9727,7 @@ int dynListPrintVal(DYN_LIST *dl, int i, FILE *stream)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       fprintf(stream, DLFormatTable[FMT_CHAR], vals[i]);
     }
     break;
@@ -9768,8 +9772,8 @@ static int dynListLessThanFloat(const void *a, const void *b)
 
 static int dynListLessThanChar(const void *a, const void *b)
 { 
-  const char *x = a;
-  const char *y = b;
+  const unsigned char *x = a;
+  const unsigned char *y = b;
   return(*x - *y);
 }
 
@@ -9891,7 +9895,7 @@ DYN_LIST *dynListSortList(DYN_LIST *d1)
   break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       qsort(vals, DYN_LIST_N(dl), sizeof(char), dynListLessThanChar);
     }
   break;
@@ -9990,7 +9994,7 @@ DYN_LIST *dynListSortListIndices(DYN_LIST *dl)
   case DF_CHAR:
     {
       int i;
-      char *vals = (char *) DYN_LIST_VALS(dl);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
       CHAR_I *li = (CHAR_I *) calloc(DYN_LIST_N(dl), sizeof(CHAR_I));
       for (i = 0; i < DYN_LIST_N(dl); i++) { 
 	li[i].i = i; 
@@ -10228,8 +10232,8 @@ int dynListCompareElements(DYN_LIST *l1, int i1, DYN_LIST *l2, int i2)
     break;
   case DF_CHAR:
     {
-      char *v1 = (char *) DYN_LIST_VALS(l1);
-      char *v2 = (char *) DYN_LIST_VALS(l2);
+      unsigned char *v1 = (unsigned char *) DYN_LIST_VALS(l1);
+      unsigned char *v2 = (unsigned char *) DYN_LIST_VALS(l2);
       return(dynListLessThanChar(&v1[i1], &v2[i2]));
     }
     break;
@@ -10349,7 +10353,7 @@ static DYN_LIST *dynListDoUniqueNoSortList(DYN_LIST *sortlist)
     break;
   case DF_CHAR:
     {
-      char *vals = (char *) DYN_LIST_VALS(sortlist);
+      unsigned char *vals = (unsigned char *) DYN_LIST_VALS(sortlist);
       dfuAddDynListChar(uniques, vals[0]);
       for (i = 1; i < DYN_LIST_N(sortlist); i++) {
 	if (vals[i] != vals[i-1]) dfuAddDynListChar(uniques, vals[i]);
@@ -11311,7 +11315,7 @@ int dynListCopyElement(DYN_LIST *source, int i, DYN_LIST *dest)
     break;
   case DF_CHAR:
     {
-      char *v1 = (char *) DYN_LIST_VALS(source);
+      unsigned char *v1 = (unsigned char *) DYN_LIST_VALS(source);
       dfuAddDynListChar(dest, v1[i]);
     }
     break;
