@@ -34,7 +34,7 @@ extern "C" {
 
 /* X(DFTYPE, CTYPE, SUFFIX) for every numeric element type, narrowest first */
 #define DLW_NUMERIC_TYPES(X)			\
-  X(DF_CHAR,   char,    Char)			\
+  X(DF_CHAR,   unsigned char, Char)		\
   X(DF_SHORT,  short,   Short)			\
   X(DF_LONG,   int,     Long)			\
   X(DF_INT64,  int64_t, Int64)			\

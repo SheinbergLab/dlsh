@@ -89,7 +89,7 @@ std::shared_ptr<arrow::Array> dynlist_to_arrow_array(DYN_LIST* dl) {
         
         case DF_CHAR: {
             arrow::UInt8Builder builder;
-            char* vals = (char*)DYN_LIST_VALS(dl);
+            unsigned char* vals = (unsigned char*)DYN_LIST_VALS(dl);
             for (int i = 0; i < DYN_LIST_N(dl); i++) {
                 auto status = builder.Append((uint8_t)vals[i]);
                 if (!status.ok()) return nullptr;

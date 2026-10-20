@@ -59,7 +59,7 @@ json_t *dl_to_json(DYN_LIST *dl)
       break;      
     case DF_CHAR:
       {
-	char *vals = (char *) DYN_LIST_VALS(dl);
+	unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
 	for (i = 0; i < DYN_LIST_N(dl); i++) {
 	  json_array_append_new(array, json_integer(vals[i]));
 	}
@@ -135,7 +135,7 @@ json_t *dl_element_to_json(DYN_LIST *dl, int element_id)
       break;      
     case DF_CHAR:
       {
-	char *vals = (char *) DYN_LIST_VALS(dl);
+	unsigned char *vals = (unsigned char *) DYN_LIST_VALS(dl);
 	return json_integer(vals[element_id]);
       }
       break;      

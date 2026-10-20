@@ -804,7 +804,7 @@ DYN_LIST *dynMatrixReshape(DYN_LIST *l, int nrows, int ncols)
     break;
   case DF_CHAR:
     {
-      char *oldrow = (char *) DYN_LIST_VALS(l);
+      unsigned char *oldrow = (unsigned char *) DYN_LIST_VALS(l);
       
       for (i = 0, k = 0; i < oldnrows; i++) {
 	for (j = 0; j < oldncols; j++, k++) {
