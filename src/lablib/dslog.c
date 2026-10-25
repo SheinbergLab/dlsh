@@ -575,18 +575,33 @@ static DYN_LIST *add_dpoint_to_list(DYN_LIST *dl, ds_datapoint_t *dpoint)
  *
  *   Upon success, if outdg != NULL, it will be set to the new dynamic group
  */
+/* The flat readers' <timestamp> column: seconds (dslog_to_dg) or ms
+   (dslog_to_essdg) from the FIRST RECORD, not from the file header.  The
+   header is stamped by the logger's own clock, which on macOS is time
+   since boot while every record carries epoch microseconds, so a
+   header-relative value was an offset of ~1.8e9 s that float32 could only
+   hold to 128 s.  Under wideTypes the column is DF_DOUBLE and keeps the
+   microsecond fraction; off, it is the historical float32. */
+static void add_timestamp(DYN_LIST *l, double v)
+{
+  if (DYN_LIST_DATATYPE(l) == DF_DOUBLE) dfuAddDynListDouble(l, v);
+  else dfuAddDynListFloat(l, (float) v);
+}
+
 int dslog_to_dg(char *filename, DYN_GROUP **outdg)
-{  
+{
   int j;
   DYN_LIST *varnames, *timestamps, *values, *vallist;
-  
+
   ds_datapoint_t *d;
-  
+
   FILE *fp;
   int result;
   int version;
-  double start_sec, time_sec;
+  double time_sec;
   uint64_t timestamp;
+  uint64_t t0 = 0;
+  int have_t0 = 0;
 
   int datatype;
   char *name, evt_namebuf[32];
@@ -609,29 +624,30 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
     }
   }
   
-  start_sec = timestamp/1000000.;
-  
+  (void) timestamp;   /* header clock; see add_timestamp */
+
   dg = dfuCreateNamedDynGroup(filename, 3);
-  
+
   j = dfuAddDynGroupNewList(dg, "varname", DF_STRING, 200);
   varnames = DYN_GROUP_LIST(dg, j);
-  
-  j = dfuAddDynGroupNewList(dg, "timestamp", DF_FLOAT, 200);
+
+  j = dfuAddDynGroupNewList(dg, "timestamp",
+			    dslog_wide_types ? DF_DOUBLE : DF_FLOAT, 200);
   timestamps = DYN_GROUP_LIST(dg, j);
-  
+
   j = dfuAddDynGroupNewList(dg, "vals", DF_LIST, 200);
   values = DYN_GROUP_LIST(dg, j);
-  
-  time_sec = start_sec;
-  
-  /* Insert initial event which includes open timestamp and version */
+
+  /* Insert initial event which includes the version; it sits at the
+     anchor, so its time is 0 like the first record's */
   dfuAddDynListString(varnames, "logger:open");
-  dfuAddDynListFloat(timestamps, time_sec-start_sec);
+  add_timestamp(timestamps, 0.0);
   vallist = create_val_list(DSERV_INT, sizeof(int), (unsigned char *) &version);
   dfuMoveDynListList(values, vallist);
-  
+
   while (dpoint_read(fp, &d) > 0) {
-    time_sec =  d->timestamp/1000000.;
+    if (!have_t0) { t0 = d->timestamp; have_t0 = 1; }
+    time_sec = (double) ((int64_t) (d->timestamp - t0)) / 1000000.;
 
     if (d->data.e.dtype == DSERV_EVT) {
       sprintf(evt_namebuf, "evt:%d:%d", d->data.e.type, d->data.e.subtype);
@@ -644,7 +660,7 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
     }
 
     dfuAddDynListString(varnames, name);
-    dfuAddDynListFloat(timestamps, time_sec-start_sec);
+    add_timestamp(timestamps, time_sec);
     vallist = create_val_list(datatype, d->data.len, d->data.buf);
     if (!vallist) {
       fprintf(stderr, "invalid list %s, type %d\n", d->varname, datatype);
@@ -1450,8 +1466,10 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
   
   int result;
   int version;
-  double start_msec, time_msec;
+  double time_msec;
   uint64_t timestamp;
+  uint64_t t0 = 0;
+  int have_t0 = 0;
   int datatype, etype, esubtype;
   int endindx = -1;
   FILE *fp;
@@ -1477,7 +1495,7 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
     }
   }
 
-  start_msec = timestamp/1000.;
+  (void) timestamp;   /* header clock; see add_timestamp */
 
   get_dgname(filename, dgname, sizeof(dgname));
 
@@ -1490,9 +1508,10 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
     j = dfuAddDynGroupNewList(dg, "varname", DF_STRING, 200);
     varnames = DYN_GROUP_LIST(dg, j);
     
-    j = dfuAddDynGroupNewList(dg, "timestamp", DF_FLOAT, 200);
+    j = dfuAddDynGroupNewList(dg, "timestamp",
+			      dslog_wide_types ? DF_DOUBLE : DF_FLOAT, 200);
     timestamps = DYN_GROUP_LIST(dg, j);
-    
+
     j = dfuAddDynGroupNewList(dg, "type", DF_LONG, 200);
     types = DYN_GROUP_LIST(dg, j);
     
@@ -1502,22 +1521,22 @@ int dslog_to_essdg(char *filename, DYN_GROUP **outdg)
     j = dfuAddDynGroupNewList(dg, "vals", DF_LIST, 200);
     values = DYN_GROUP_LIST(dg, j);
     
-    time_msec = start_msec;
-    
-    /* Insert initial event which includes open timestamp and version */
+    /* Insert initial event which includes the version; it sits at the
+       anchor, so its time is 0 like the first record's */
     dfuAddDynListString(varnames, "logger:open");
-    dfuAddDynListFloat(timestamps, time_msec-start_msec);
-    
+    add_timestamp(timestamps, 0.0);
+
     dfuAddDynListLong(types, version);
     dfuAddDynListLong(subtypes, 0);
-    
+
     vallist = create_val_list(DSERV_NONE, 0, NULL);
     dfuMoveDynListList(values, vallist);
-    
+
     while (dpoint_read(fp, &d) > 0) {
-      time_msec =  d->timestamp/1000.;
+      if (!have_t0) { t0 = d->timestamp; have_t0 = 1; }
+      time_msec = (double) ((int64_t) (d->timestamp - t0)) / 1000.;
       dfuAddDynListString(varnames, d->varname);
-      dfuAddDynListFloat(timestamps, time_msec-start_msec);
+      add_timestamp(timestamps, time_msec);
       
       if (d->data.e.dtype == DSERV_EVT)
 	datatype = d->data.e.puttype;
