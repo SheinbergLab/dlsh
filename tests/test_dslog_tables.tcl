@@ -176,7 +176,7 @@ dslog::wideTypes 0
 # ---------------------------------------------------------------------
 set fields {frame swapcount flip_us ticks_us missed cmds_applied ds_dispatched}
 set fr [dslog::unpack $fix stim/frame $fields]
-check "unpack: group name" $fr stim/frame
+check "unpack: group name is a fresh handle" [string match "group*" $fr] 1
 check "unpack: columns" [dg_tclListnames $fr] [concat timestamp seconds $fields]
 set types {}
 foreach c [dg_tclListnames $fr] { lappend types [dl_datatype $fr:$c] }
@@ -236,7 +236,7 @@ errors "unpack: arity" { dslog::unpack $fix stim/frame } "*wrong # args*"
 # 5. jsonTable
 # ---------------------------------------------------------------------
 set c [dslog::jsonTable $fix stim/cmd]
-check "jsonTable: group name" $c stim/cmd
+check "jsonTable: group name is a fresh handle" [string match "group*" $c] 1
 check "jsonTable: columns in first-seen order" [dg_tclListnames $c] \
     {timestamp seconds seq cmd t_send t_ret dq done swap flip status hash len}
 set types {}
@@ -293,10 +293,37 @@ errors "jsonTable: unknown datapoint" \
 errors "jsonTable: missing file" { dslog::jsonTable /no/such/file.ess x } "*not found*"
 errors "jsonTable: arity" { dslog::jsonTable $fix } "*wrong # args*"
 
-# a second read with the same name needs the first group gone, like dslog::read
-set c [dslog::jsonTable $fix stim/cmd]
-errors "jsonTable: name already taken" { dslog::jsonTable $fix stim/cmd } "*already exists*"
-dg_delete $c
+# ---------------------------------------------------------------------
+# 5b. Group naming: every reader hands back a FRESH group<N> by default, so
+#     reading the same file or datapoint again just works; -name pins a
+#     name and replaces an existing group of that name.
+# ---------------------------------------------------------------------
+set c1 [dslog::jsonTable $fix stim/cmd]
+set c2 [dslog::jsonTable $fix stim/cmd]
+check "jsonTable: second read gets its own group" [expr {$c1 ne $c2 && [dg_exists $c1] && [dg_exists $c2]}] 1
+check "jsonTable: fresh names follow dg_create" [string match "group*" $c2] 1
+check "jsonTable: same content" [dl_tcllist $c2:seq] [dl_tcllist $c1:seq]
+dg_delete $c1; dg_delete $c2
+set r1 [dslog::read $fix]
+set r2 [dslog::read $fix -match stim/frame]
+check "read: second read of one file gets its own group" [expr {$r1 ne $r2 && [dg_exists $r1] && [dg_exists $r2]}] 1
+check "read: fresh name, not the path" [string match "group*" $r1] 1
+dg_delete $r1; dg_delete $r2
+set u1 [dslog::unpack $fix stim/frame $fields]
+set u2 [dslog::unpack $fix stim/frame $fields]
+check "unpack: second read gets its own group" [expr {$u1 ne $u2}] 1
+dg_delete $u1; dg_delete $u2
+set n1 [dslog::jsonTable $fix stim/cmd -name cmds]
+check "jsonTable -name: pinned" $n1 cmds
+set n2 [dslog::jsonTable $fix stim/cmd -name cmds]
+check "jsonTable -name again: replaces, same handle" $n2 cmds
+check "jsonTable -name: old group gone, new one present" [expr {[dg_exists cmds] && [llength [dg_tclListnames cmds]] > 2}] 1
+check "read -name: pinned" [dslog::read $fix -absolute -name flat] flat
+check "unpack -name: pinned" [dslog::unpack $fix stim/frame $fields -name frames] frames
+check "unpack -name: replaces" [dslog::unpack $fix stim/frame $fields -name frames] frames
+dg_delete cmds; dg_delete flat; dg_delete frames
+errors "read: -name without a value" { dslog::read $fix -name } "*requires a group name*"
+errors "unpack: bad trailing option" { dslog::unpack $fix stim/frame $fields -bogus x } "*wrong # args*"
 
 check "wideTypes left at its default" [dslog::wideTypes] 0
 file delete $fix

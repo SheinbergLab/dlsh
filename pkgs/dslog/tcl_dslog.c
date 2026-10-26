@@ -225,11 +225,42 @@ static int read_match_filter(void *ctx, const char *name)
   return 0;
 }
 
+/* Hand a reader's group to the interpreter under a FRESH name (group<N>,
+   the dg_create convention) unless the caller gave -name, in which case
+   that name is used and any existing group of that name is deleted first
+   (through dg_delete, so its cleanup runs). The readers used to name the
+   group after the file path or the datapoint, which made a second read
+   of the same file in one interpreter fail with "already exists". */
+static int dslog_put_named(Tcl_Interp *interp, DYN_GROUP *dg, const char *name)
+{
+  if (!dg) return TCL_ERROR;
+  if (name && name[0]) {
+    DYN_GROUP *old = NULL;
+    if (tclFindDynGroup(interp, (char *) name, &old) == TCL_OK && old) {
+      Tcl_Obj *cmd[2];
+      cmd[0] = Tcl_NewStringObj("dg_delete", -1);
+      cmd[1] = Tcl_NewStringObj(name, -1);
+      Tcl_IncrRefCount(cmd[0]); Tcl_IncrRefCount(cmd[1]);
+      int rc = Tcl_EvalObjv(interp, 2, cmd, TCL_EVAL_GLOBAL);
+      Tcl_DecrRefCount(cmd[0]); Tcl_DecrRefCount(cmd[1]);
+      if (rc != TCL_OK) { dfuFreeDynGroup(dg); return TCL_ERROR; }
+    }
+    Tcl_ResetResult(interp);
+    strncpy(DYN_GROUP_NAME(dg), name, DYN_GROUP_NAME_SIZE - 1);
+    DYN_GROUP_NAME(dg)[DYN_GROUP_NAME_SIZE - 1] = '\0';
+  }
+  else {
+    DYN_GROUP_NAME(dg)[0] = '\0';   /* tclPutGroup picks the next free group<N> */
+  }
+  return tclPutGroup(interp, dg);
+}
+
 static int dslogReadCmd (ClientData data, Tcl_Interp *interp,
 			 int objc, Tcl_Obj *objv[])
 {
   int rc;
   int type = (Tcl_Size) data;
+  const char *gname = NULL;
 
   DYN_GROUP *dg;
 
@@ -240,25 +271,25 @@ static int dslogReadCmd (ClientData data, Tcl_Interp *interp,
 
   switch (type) {
   case DSLOG_READ:
-    if (objc == 2) {
-      rc = dslog_to_dg(Tcl_GetString(objv[1]), &dg);
-    }
-    else {
-      /* dslog::read path ?-match pattern ...? ?-absolute? */
+    {
+      /* dslog::read path ?-match pattern ...? ?-absolute? ?-name group? */
       read_match_t m;
       int i, absolute = 0;
       m.n = 0;
       m.patterns = (const char **) ckalloc(objc * sizeof(char *));
       for (i = 2; i < objc; i++) {
 	const char *opt = Tcl_GetString(objv[i]);
-	if (!strcmp(opt, "-match")) {
+	if (!strcmp(opt, "-match") || !strcmp(opt, "-name")) {
 	  if (i + 1 >= objc) {
 	    ckfree((char *) m.patterns);
-	    Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
-			     ": -match requires a pattern", (char *) NULL);
+	    Tcl_AppendResult(interp, Tcl_GetString(objv[0]), ": ", opt,
+			     opt[1] == 'm' ? " requires a pattern"
+					   : " requires a group name",
+			     (char *) NULL);
 	    return TCL_ERROR;
 	  }
-	  m.patterns[m.n++] = Tcl_GetString(objv[++i]);
+	  if (opt[1] == 'm') m.patterns[m.n++] = Tcl_GetString(objv[++i]);
+	  else gname = Tcl_GetString(objv[++i]);
 	}
 	else if (!strcmp(opt, "-absolute")) {
 	  absolute = 1;
@@ -266,12 +297,16 @@ static int dslogReadCmd (ClientData data, Tcl_Interp *interp,
 	else {
 	  ckfree((char *) m.patterns);
 	  Tcl_AppendResult(interp, Tcl_GetString(objv[0]), ": bad option \"", opt,
-			   "\": must be -match pattern or -absolute", (char *) NULL);
+			   "\": must be -match pattern, -absolute or -name group",
+			   (char *) NULL);
 	  return TCL_ERROR;
 	}
       }
-      rc = dslog_to_dg_ex(Tcl_GetString(objv[1]),
-			  m.n ? read_match_filter : NULL, &m, absolute, &dg);
+      if (m.n == 0 && !absolute)
+	rc = dslog_to_dg(Tcl_GetString(objv[1]), &dg);
+      else
+	rc = dslog_to_dg_ex(Tcl_GetString(objv[1]),
+			    m.n ? read_match_filter : NULL, &m, absolute, &dg);
       ckfree((char *) m.patterns);
     }
     break;
@@ -302,17 +337,22 @@ static int dslogReadCmd (ClientData data, Tcl_Interp *interp,
     break;
   }
 
+  /* readESS keeps its historical name (the file's basename); read gets a
+     fresh name, or the -name one */
+  if (type == DSLOG_READ) return dslog_put_named(interp, dg, gname);
   return (tclPutGroup(interp, dg));
 }
 
 /* Shared tail of the table readers: map a DSLOG_RC (and its errbuf) to a
-   Tcl error, or hand the group to the interpreter. */
+   Tcl error, or hand the group to the interpreter under a fresh name or
+   the -name one. */
 static int dslog_table_result(Tcl_Interp *interp, Tcl_Obj *cmd, int rc,
-			      const char *errbuf, DYN_GROUP *dg)
+			      const char *errbuf, DYN_GROUP *dg,
+			      const char *gname)
 {
   switch (rc) {
   case DSLOG_OK:
-    return tclPutGroup(interp, dg);
+    return dslog_put_named(interp, dg, gname);
   case DSLOG_FileNotFound:
     Tcl_AppendResult(interp, Tcl_GetString(cmd), ": not found", (char *) NULL);
     return TCL_ERROR;
@@ -349,8 +389,13 @@ static int dslogUnpackCmd(ClientData data, Tcl_Interp *interp,
   char errbuf[512];
   DYN_GROUP *dg = NULL;
 
-  if (objc != 4) {
-    Tcl_WrongNumArgs(interp, 1, objv, "path name fieldList");
+  const char *gname = NULL;
+
+  if (objc == 6 && !strcmp(Tcl_GetString(objv[4]), "-name")) {
+    gname = Tcl_GetString(objv[5]);
+  }
+  else if (objc != 4) {
+    Tcl_WrongNumArgs(interp, 1, objv, "path name fieldList ?-name group?");
     return TCL_ERROR;
   }
   if (Tcl_ListObjGetElements(interp, objv[3], &nfields, &fieldobjs) != TCL_OK)
@@ -367,7 +412,7 @@ static int dslogUnpackCmd(ClientData data, Tcl_Interp *interp,
   rc = dslog_unpack(Tcl_GetString(objv[1]), Tcl_GetString(objv[2]),
 		    (int) nfields, fields, &dg, errbuf, sizeof(errbuf));
   ckfree((char *) fields);
-  return dslog_table_result(interp, objv[0], rc, errbuf, dg);
+  return dslog_table_result(interp, objv[0], rc, errbuf, dg, gname);
 }
 
 /*****************************************************************************
@@ -388,14 +433,19 @@ static int dslogJsonTableCmd(ClientData data, Tcl_Interp *interp,
   char errbuf[512];
   DYN_GROUP *dg = NULL;
 
-  if (objc != 3) {
-    Tcl_WrongNumArgs(interp, 1, objv, "path name");
+  const char *gname = NULL;
+
+  if (objc == 5 && !strcmp(Tcl_GetString(objv[3]), "-name")) {
+    gname = Tcl_GetString(objv[4]);
+  }
+  else if (objc != 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "path name ?-name group?");
     return TCL_ERROR;
   }
   errbuf[0] = '\0';
   rc = dslog_json_table(Tcl_GetString(objv[1]), Tcl_GetString(objv[2]),
 			&dg, errbuf, sizeof(errbuf));
-  return dslog_table_result(interp, objv[0], rc, errbuf, dg);
+  return dslog_table_result(interp, objv[0], rc, errbuf, dg, gname);
 }
 
 /*****************************************************************************
@@ -780,7 +830,7 @@ int Dslog_Init(Tcl_Interp *interp)
     return TCL_ERROR;
   }
 
-  if (Tcl_PkgProvide(interp, "dslog", "1.1") != TCL_OK) {
+  if (Tcl_PkgProvide(interp, "dslog", "1.2") != TCL_OK) {
     return TCL_ERROR;
   }
   

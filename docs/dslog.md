@@ -14,7 +14,7 @@ the record-at-a-time layer underneath them, for the cases these do not fit.
 
 ## The two whole-file readers
 
-`dslog::read path` gives a flat group named after the path, one row per
+`dslog::read path` gives a flat group, one row per
 record, with `varname`, `timestamp` (seconds since the file's first
 record; `float`, or `double` under `dslog::wideTypes 1`) and `vals` (a
 list column, one sublist per record). Event records are named
@@ -30,9 +30,14 @@ group. Both narrow doubles to float and drop int64 payloads unless
 |---|---|
 | `-match pattern` (repeatable) | keep only records whose name matches one of the patterns (Tcl `string match` rules, `evt:*` names and the `logger:open` row included). The file is still scanned end to end, and `timestamp` stays relative to the file's first record whatever it is called; only the decoding of the other records is skipped. |
 | `-absolute` | `timestamp` becomes an `int64` column of epoch microseconds, the record timestamps exactly as logged. This column does not depend on `wideTypes`. The `logger:open` row takes the first record's timestamp. |
+| `-name group` | use this group name instead of a fresh one, replacing a group of that name if one exists. |
 
-With no option the output is exactly what it was before the options
-existed.
+With no option the columns are exactly what they were before the options
+existed. The group's name is not: every reader now returns a fresh
+`group<N>` handle (the `dg_create` convention), so reading the same file
+twice in one interpreter is fine; the readers used to name the group after
+the path and fail the second time with "already exists". Use `-name` where
+a script wants a fixed handle, as `dg_create` scripts do.
 
 ```tcl
 set g [dslog::read $path -match stim/frame -match stim/cmd -absolute]
@@ -61,9 +66,15 @@ Both groups start with the same two columns:
 | `timestamp` | int64 | the record's timestamp, epoch microseconds, as logged |
 | `seconds` | double | the same, as seconds since the file's first record (any datapoint), the anchor `dslog::read` uses |
 
-The group is named after the datapoint (`stim/frame`, `stim/cmd`), so,
-like `dslog::read`, reading it again while the first group still exists
-fails with "already exists": `dg_delete` or `dg_rename` the old one first.
+Both return a fresh `group<N>` handle like `dslog::read`, and both take a
+trailing `-name group` to pin the name instead (replacing a group of that
+name if one exists):
+
+```tcl
+set fr [dslog::unpack $path stim/frame {frame swapcount flip_us ticks_us missed cmds_applied ds_dispatched} -name frames]
+set cm [dslog::jsonTable $path stim/cmd -name cmds]
+```
+
 A file with no record of that name is an error, not an empty table,
 because the field columns could not be typed.
 
