@@ -152,6 +152,88 @@ set s [dslog::jsonTable $path stim/script]
 set i [dl_find $c:hash [dl_get $s:hash 0]]
 ```
 
+## Worked example: a frame and command report for one session
+
+Everything below is whole-column `dl_*` math on the two tables; no loop
+touches a record.
+
+```tcl
+package require dslog
+set f /path/to/session.ess
+set MISSING -9223372036854775808
+
+set fr  [dslog::unpack $f stim/frame \
+             {frame swapcount flip_us ticks_us missed cmds_applied ds_dispatched}]
+set cmd [dslog::jsonTable $f stim/cmd]
+
+# indices where a 0/1 mask is set (dl_findIndices returns one index, not all)
+proc where {mask} { dl_select [dl_fromto 0 [dl_length $mask]] $mask }
+
+# --- swap timing ---------------------------------------------------------
+set ivl [dl_div [dl_double [dl_diff $fr:flip_us]] 1000.0]   ;# ms between hardware flips
+puts "frames: [dl_length $fr:frame] over [format %.1f \
+          [expr {[dl_last $fr:seconds] - [dl_first $fr:seconds]}]] s"
+puts "flip interval ms: median [dl_median $ivl]  max [dl_max $ivl]"
+puts "intervals > 20 ms: [dl_sum [dl_gt $ivl 20]]   stim2's missed count: [dl_sum $fr:missed]"
+dl_foreach i [where [dl_gt $ivl 20]] {
+    puts [format "  %7.2f s  %7.1f ms gap after frame %d" \
+              [dl_get $fr:seconds $i] [dl_get $ivl $i] [dl_get $fr:frame $i]]
+}
+# cmds_applied and ds_dispatched are running totals: per-swap counts are their diffs
+set per_swap [dl_diff $fr:cmds_applied]
+puts "commands applied per swap: max [dl_max $per_swap], swaps with any: [dl_sum [dl_gt $per_swap 0]]"
+
+# --- commands ------------------------------------------------------------
+set st [dl_unique $cmd:status]
+puts "commands: [dl_length $cmd:seq]  status [dl_tcllist $st] -> [dl_tcllist [dl_countOccurences $cmd:status $st]]"
+dl_foreach i [where [dl_noteq $cmd:status ok]] {
+    puts [format "  seq %-4d %-6s %s" [dl_get $cmd:seq $i] [dl_get $cmd:status $i] \
+              [string range [dl_get $cmd:cmd $i] 0 60]]
+}
+# dq and done are ms on stim2's own tick clock (the clock of ticks_us), so
+# only their difference means anything next to the wall-clock fields
+set acked [dg_select $cmd [dl_noteq $cmd:swap $MISSING]]   ;# rows whose reply carried an ACK header
+puts "queued -> done ms: median [dl_median [dl_sub $acked:done $acked:dq]]"
+
+# --- join: which frame did each command land on? ---------------------------
+# swapcount is contiguous in the frame log, so the row is plain arithmetic;
+# dl_choose wants long indices, hence the dl_int
+set row  [dl_sub $acked:swap [dl_first $fr:swapcount]]
+set ok   [dl_and [dl_gte $row 0] [dl_lt $row [dl_length $fr:frame]]]
+set j    [dg_select $acked $ok]
+set frow [dl_int [dl_select $row $ok]]
+set flip [dl_choose $fr:flip_us $frow]
+set lat  [dl_div [dl_double [dl_sub $flip $j:t_send]] 1000.0]   ;# send -> hardware flip, ms
+puts "send -> flip ms: median [dl_median $lat]  max [dl_max $lat]"
+set has_flip [dl_noteq $j:flip $MISSING]
+puts "ACK flip equals the frame log's flip_us: [dl_sum [dl_eq [dl_select $j:flip $has_flip] \
+          [dl_select $flip $has_flip]]] of [dl_sum $has_flip]"
+puts "slowest five:"
+dl_foreach i [dl_choose [dl_sortIndices [dl_negate $lat]] [dl_fromto 0 5]] {
+    puts [format "  %6.2f ms  seq %-4d swap %d  %s" [dl_get $lat $i] [dl_get $j:seq $i] \
+              [dl_get $j:swap $i] [string range [dl_get $j:cmd $i] 0 55]]
+}
+```
+
+On the 113 s human_runner_door session of 2026-10-25 this reports 11,426
+swaps at a median 8.333 ms flip interval (120 Hz) with stim2's `missed`
+at 0; 28 gaps over 20 ms, which come as a regular 308 ms + 825 ms pair
+once per trial (the display idling between trials, not stalls); 113
+commands, 110 `ok`, 2 `io`, 1 `error`; queued-to-done 5.1 ms median
+inside stim2; send-to-flip 6.0 ms median and 12.5 ms max, the slowest
+being `!preview_on`, `!scroll_on` and `!feedback`; and in all 59 commands
+whose ACK carried a flip time it equalled the frame log's `flip_us`
+exactly, so the two logs are on one clock.
+
+Three facts about the records that are easy to get wrong:
+
+- `cmds_applied` and `ds_dispatched` in `stim/frame` are running totals,
+  not per-swap counts; `dl_diff` them.
+- `dq` and `done` in `stim/cmd` are milliseconds on stim2's tick clock,
+  the same clock as `ticks_us`, not offsets from `t_send`.
+- `swap` in `stim/cmd` is the `swapcount` of the frame it landed on, and
+  `flip` (when not null) is that frame's `flip_us`.
+
 ## Timing
 
 On a 1.7 MB file with 15k records (11,426 `stim/frame`, 113 `stim/cmd`),
