@@ -15,11 +15,14 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdarg.h>
+#include <math.h>
 #include <fcntl.h>
 #include <time.h>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
+#include <jansson.h>
 #include <df.h>
 #include <dynio.h>
 #include "datapoint.h"
@@ -590,6 +593,14 @@ static void add_timestamp(DYN_LIST *l, double v)
 
 int dslog_to_dg(char *filename, DYN_GROUP **outdg)
 {
+  return dslog_to_dg_ex(filename, NULL, NULL, 0, outdg);
+}
+
+/* See dslog.h.  dslog_to_dg is this with no filter and relative times;
+   that path appends exactly what it always did, in the same order. */
+int dslog_to_dg_ex(char *filename, dslog_name_filter_t filter, void *ctx,
+                   int absolute, DYN_GROUP **outdg)
+{
   int j;
   DYN_LIST *varnames, *timestamps, *values, *vallist;
 
@@ -602,17 +613,18 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
   uint64_t timestamp;
   uint64_t t0 = 0;
   int have_t0 = 0;
+  int open_row = 0;
 
   int datatype;
   char *name, evt_namebuf[32];
-  
+
   DYN_GROUP *dg;
-  
+
   fp = fopen(filename, "rb");
   if (!fp) {
     return DSLOG_FileNotFound;
   }
-  
+
   if ((result = dslog_read_header(fp, &version, &timestamp)) != 1) {
     if (result == -1) {
       fclose(fp);
@@ -623,7 +635,7 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
       return DSLOG_InvalidFormat;
     }
   }
-  
+
   (void) timestamp;   /* header clock; see add_timestamp */
 
   dg = dfuCreateNamedDynGroup(filename, 3);
@@ -631,19 +643,27 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
   j = dfuAddDynGroupNewList(dg, "varname", DF_STRING, 200);
   varnames = DYN_GROUP_LIST(dg, j);
 
-  j = dfuAddDynGroupNewList(dg, "timestamp",
-			    dslog_wide_types ? DF_DOUBLE : DF_FLOAT, 200);
+  if (absolute)
+    j = dfuAddDynGroupNewList(dg, "timestamp", DF_INT64, 200);
+  else
+    j = dfuAddDynGroupNewList(dg, "timestamp",
+			      dslog_wide_types ? DF_DOUBLE : DF_FLOAT, 200);
   timestamps = DYN_GROUP_LIST(dg, j);
 
   j = dfuAddDynGroupNewList(dg, "vals", DF_LIST, 200);
   values = DYN_GROUP_LIST(dg, j);
 
   /* Insert initial event which includes the version; it sits at the
-     anchor, so its time is 0 like the first record's */
-  dfuAddDynListString(varnames, "logger:open");
-  add_timestamp(timestamps, 0.0);
-  vallist = create_val_list(DSERV_INT, sizeof(int), (unsigned char *) &version);
-  dfuMoveDynListList(values, vallist);
+     anchor, so its time is 0 like the first record's (in absolute mode it
+     is patched to the first record's timestamp once that is known) */
+  if (!filter || filter(ctx, "logger:open")) {
+    dfuAddDynListString(varnames, "logger:open");
+    if (absolute) dfuAddDynListInt64(timestamps, 0);
+    else add_timestamp(timestamps, 0.0);
+    vallist = create_val_list(DSERV_INT, sizeof(int), (unsigned char *) &version);
+    dfuMoveDynListList(values, vallist);
+    open_row = 1;
+  }
 
   while (dpoint_read(fp, &d) > 0) {
     if (!have_t0) { t0 = d->timestamp; have_t0 = 1; }
@@ -659,8 +679,16 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
       datatype = d->data.type;
     }
 
+    /* the scan still touches every record (t0 comes from the first one
+       whatever it is called); only the decode is skipped */
+    if (filter && !filter(ctx, name)) {
+      dpoint_free(d);
+      continue;
+    }
+
     dfuAddDynListString(varnames, name);
-    add_timestamp(timestamps, time_sec);
+    if (absolute) dfuAddDynListInt64(timestamps, (int64_t) d->timestamp);
+    else add_timestamp(timestamps, time_sec);
     vallist = create_val_list(datatype, d->data.len, d->data.buf);
     if (!vallist) {
       fprintf(stderr, "invalid list %s, type %d\n", d->varname, datatype);
@@ -673,10 +701,446 @@ int dslog_to_dg(char *filename, DYN_GROUP **outdg)
 
   fclose(fp);
 
+  if (absolute && open_row && have_t0)
+    ((int64_t *) DYN_LIST_VALS(timestamps))[0] = (int64_t) t0;
+
   /* return the newly created dg in outdg */
   if (outdg) *outdg = dg;
   else dfuFreeDynGroup(dg);
 
+  return DSLOG_OK;
+}
+
+
+/*****************************************************************************/
+/*                 per-datapoint table readers (unpack / jsonTable)          */
+/*****************************************************************************/
+
+/* Open a dslog and consume its header, or say why not. */
+static int dslog_open_file(const char *filename, FILE **fpp)
+{
+  FILE *fp = fopen(filename, "rb");
+  int result;
+
+  if (!fp) return DSLOG_FileNotFound;
+  if ((result = dslog_read_header(fp, NULL, NULL)) != 1) {
+    fclose(fp);
+    return result == -1 ? DSLOG_FileUnreadable : DSLOG_InvalidFormat;
+  }
+  *fpp = fp;
+  return DSLOG_OK;
+}
+
+/* Human name for a record's type byte, for error messages. */
+static const char *dstype_name(ds_datapoint_t *d)
+{
+  if (d->data.e.dtype == DSERV_EVT) return "event";
+  switch (d->data.type) {
+  case DSERV_BYTE:   return "byte";
+  case DSERV_STRING: return "string";
+  case DSERV_FLOAT:  return "float";
+  case DSERV_DOUBLE: return "double";
+  case DSERV_SHORT:  return "short";
+  case DSERV_INT:    return "int";
+  case DSERV_DG:     return "dg";
+  case DSERV_NONE:   return "none";
+  case DSERV_JSON:   return "json";
+  case DSERV_ARROW:  return "arrow";
+  case DSERV_MSGPACK: return "msgpack";
+  case DSERV_JPEG:   return "jpeg";
+  case DSERV_PPM:    return "ppm";
+  case DSERV_INT64:  return "int64";
+  default:           return "unknown";
+  }
+}
+
+static void set_err(char *errbuf, size_t errlen, const char *fmt, ...)
+{
+  va_list ap;
+  if (!errbuf || !errlen) return;
+  va_start(ap, fmt);
+  vsnprintf(errbuf, errlen, fmt, ap);
+  va_end(ap);
+}
+
+/* The two anchor columns every table starts with. */
+static void add_anchor_cols(DYN_LIST *ts, DYN_LIST *secs,
+			    ds_datapoint_t *d, uint64_t t0)
+{
+  dfuAddDynListInt64(ts, (int64_t) d->timestamp);
+  dfuAddDynListDouble(secs, (double) ((int64_t) (d->timestamp - t0)) / 1000000.);
+}
+
+/* Which array payloads dslog_unpack splits, and into what. */
+static int unpack_kind(int dstype, int *dftype, int *elemsize, const char **tname)
+{
+  switch (dstype) {
+  case DSERV_INT64:  *dftype = DF_INT64;  *elemsize = sizeof(int64_t); *tname = "int64";  return 1;
+  case DSERV_INT:    *dftype = DF_INT64;  *elemsize = sizeof(int);     *tname = "int";    return 1;
+  case DSERV_DOUBLE: *dftype = DF_DOUBLE; *elemsize = sizeof(double);  *tname = "double"; return 1;
+  case DSERV_FLOAT:  *dftype = DF_FLOAT;  *elemsize = sizeof(float);   *tname = "float";  return 1;
+  case DSERV_SHORT:  *dftype = DF_SHORT;  *elemsize = sizeof(short);   *tname = "short";  return 1;
+  default: return 0;
+  }
+}
+
+int dslog_unpack(char *filename, const char *name, int nfields,
+                 char **fields, DYN_GROUP **outdg,
+                 char *errbuf, size_t errlen)
+{
+  FILE *fp;
+  int rc, r, i, j;
+  ds_datapoint_t *d;
+  DYN_LIST *ts, *secs, **cols;
+  DYN_GROUP *dg;
+  int dstype = -1, dftype = 0, elemsize = 1;
+  const char *tname = "";
+  uint64_t t0 = 0;
+  int have_t0 = 0;
+  long filerec = 0, nrec = 0;
+
+  if (nfields < 1) {
+    set_err(errbuf, errlen, "no field names given");
+    return DSLOG_BadRecord;
+  }
+  if ((rc = dslog_open_file(filename, &fp)) != DSLOG_OK) return rc;
+
+  ts = dfuCreateDynList(DF_INT64, 256);
+  secs = dfuCreateDynList(DF_DOUBLE, 256);
+  cols = (DYN_LIST **) calloc(nfields, sizeof(DYN_LIST *));
+
+  rc = DSLOG_OK;
+  while ((r = dpoint_read(fp, &d)) > 0) {
+    if (!have_t0) { t0 = d->timestamp; have_t0 = 1; }
+
+    if (strcmp(d->varname, name) == 0) {
+      int count;
+      if (dstype < 0) {
+	if (d->data.e.dtype == DSERV_EVT ||
+	    !unpack_kind(d->data.type, &dftype, &elemsize, &tname)) {
+	  set_err(errbuf, errlen,
+		  "%s record 0 (file record %ld) is %s, not a fixed-width array",
+		  name, filerec, dstype_name(d));
+	  rc = DSLOG_BadRecord;
+	}
+	else {
+	  dstype = d->data.type;
+	  for (i = 0; i < nfields; i++) cols[i] = dfuCreateDynList(dftype, 256);
+	}
+      }
+      else if (d->data.type != dstype) {
+	set_err(errbuf, errlen,
+		"%s record %ld (file record %ld) is %s, expected %s",
+		name, nrec, filerec, dstype_name(d), tname);
+	rc = DSLOG_BadRecord;
+      }
+      if (rc != DSLOG_OK) { dpoint_free(d); break; }
+
+      count = d->data.len / elemsize;
+      if (d->data.len % elemsize) {
+	set_err(errbuf, errlen,
+		"%s record %ld (file record %ld) has %u bytes, not a whole number of %s values",
+		name, nrec, filerec, d->data.len, tname);
+	rc = DSLOG_BadRecord;
+	dpoint_free(d);
+	break;
+      }
+      if (count != nfields) {
+	set_err(errbuf, errlen,
+		"%s record %ld (file record %ld) has %d values, expected %d",
+		name, nrec, filerec, count, nfields);
+	rc = DSLOG_BadRecord;
+	dpoint_free(d);
+	break;
+      }
+
+      add_anchor_cols(ts, secs, d, t0);
+      switch (dstype) {
+      case DSERV_INT64:
+	for (j = 0; j < nfields; j++)
+	  dfuAddDynListInt64(cols[j], ((int64_t *) d->data.buf)[j]);
+	break;
+      case DSERV_INT:
+	for (j = 0; j < nfields; j++)
+	  dfuAddDynListInt64(cols[j], (int64_t) ((int *) d->data.buf)[j]);
+	break;
+      case DSERV_DOUBLE:
+	for (j = 0; j < nfields; j++)
+	  dfuAddDynListDouble(cols[j], ((double *) d->data.buf)[j]);
+	break;
+      case DSERV_FLOAT:
+	for (j = 0; j < nfields; j++)
+	  dfuAddDynListFloat(cols[j], ((float *) d->data.buf)[j]);
+	break;
+      case DSERV_SHORT:
+	for (j = 0; j < nfields; j++)
+	  dfuAddDynListShort(cols[j], ((short *) d->data.buf)[j]);
+	break;
+      }
+      nrec++;
+    }
+    dpoint_free(d);
+    filerec++;
+  }
+  fclose(fp);
+
+  if (rc == DSLOG_OK && r < 0) rc = DSLOG_FileUnreadable;
+  if (rc == DSLOG_OK && nrec == 0) {
+    set_err(errbuf, errlen, "no records named \"%s\"", name);
+    rc = DSLOG_BadRecord;
+  }
+  if (rc != DSLOG_OK) {
+    dfuFreeDynList(ts);
+    dfuFreeDynList(secs);
+    for (i = 0; i < nfields; i++) if (cols[i]) dfuFreeDynList(cols[i]);
+    free(cols);
+    return rc;
+  }
+
+  dg = dfuCreateNamedDynGroup((char *) name, nfields + 2);
+  dfuAddDynGroupExistingList(dg, "timestamp", ts);
+  dfuAddDynGroupExistingList(dg, "seconds", secs);
+  for (i = 0; i < nfields; i++)
+    dfuAddDynGroupExistingList(dg, fields[i], cols[i]);
+  free(cols);
+
+  if (outdg) *outdg = dg;
+  else dfuFreeDynGroup(dg);
+  return DSLOG_OK;
+}
+
+
+/*
+ * dslog_json_table
+ *
+ * Columns are discovered as the records are read, so a column cannot be
+ * created with its final type up front: a key seen only as null has no
+ * type yet, and an integer column can turn out to be real later.  Each key
+ * therefore gets a jt_col that tracks how many rows it has accounted for
+ * (n), materializing its list at the first typed value (back-filled with
+ * markers) and converting int64 -> double in place when a real arrives.
+ * After every record each column is topped up with markers to the row
+ * count, so the lists stay rectangular.
+ */
+typedef enum { JT_NONE, JT_INT64, JT_DOUBLE, JT_STRING } jt_type_t;
+
+typedef struct jt_col_s {
+  char *key;
+  jt_type_t type;
+  DYN_LIST *list;    /* NULL while type is JT_NONE */
+  long n;            /* rows accounted for (markers included) */
+} jt_col_t;
+
+static const char *jt_type_name(jt_type_t t)
+{
+  switch (t) {
+  case JT_INT64:  return "an integer";
+  case JT_DOUBLE: return "a real";
+  case JT_STRING: return "a string";
+  default:        return "null";
+  }
+}
+
+static void jt_add_missing(jt_col_t *c)
+{
+  switch (c->type) {
+  case JT_INT64:  dfuAddDynListInt64(c->list, INT64_MIN); break;
+  case JT_DOUBLE: dfuAddDynListDouble(c->list, NAN);      break;
+  case JT_STRING: dfuAddDynListString(c->list, "");       break;
+  default: break;
+  }
+  c->n++;
+}
+
+/* give a so-far-untyped column its list, with a marker per row so far */
+static void jt_materialize(jt_col_t *c, jt_type_t t)
+{
+  long i, n = c->n;
+  int dftype = (t == JT_INT64) ? DF_INT64 : (t == JT_DOUBLE) ? DF_DOUBLE : DF_STRING;
+  c->list = dfuCreateDynList(dftype, 64);
+  c->type = t;
+  c->n = 0;
+  for (i = 0; i < n; i++) jt_add_missing(c);
+}
+
+static void jt_promote_to_double(jt_col_t *c)
+{
+  long i;
+  int64_t *v = (int64_t *) DYN_LIST_VALS(c->list);
+  DYN_LIST *nl = dfuCreateDynList(DF_DOUBLE, DYN_LIST_N(c->list) + 64);
+  for (i = 0; i < DYN_LIST_N(c->list); i++)
+    dfuAddDynListDouble(nl, v[i] == INT64_MIN ? NAN : (double) v[i]);
+  dfuFreeDynList(c->list);
+  c->list = nl;
+  c->type = JT_DOUBLE;
+}
+
+static jt_col_t *jt_find_or_add(jt_col_t **cols, int *ncols, int *maxcols,
+				const char *key, long nrows)
+{
+  int i;
+  jt_col_t *c;
+  for (i = 0; i < *ncols; i++)
+    if (strcmp((*cols)[i].key, key) == 0) return &(*cols)[i];
+  if (*ncols == *maxcols) {
+    *maxcols = *maxcols ? *maxcols * 2 : 16;
+    *cols = (jt_col_t *) realloc(*cols, *maxcols * sizeof(jt_col_t));
+  }
+  c = &(*cols)[(*ncols)++];
+  c->key = strdup(key);
+  c->type = JT_NONE;
+  c->list = NULL;
+  c->n = nrows;          /* every earlier row lacked it */
+  return c;
+}
+
+int dslog_json_table(char *filename, const char *name, DYN_GROUP **outdg,
+                     char *errbuf, size_t errlen)
+{
+  FILE *fp;
+  int rc, r, i;
+  ds_datapoint_t *d;
+  DYN_LIST *ts, *secs;
+  DYN_GROUP *dg;
+  jt_col_t *cols = NULL;
+  int ncols = 0, maxcols = 0;
+  uint64_t t0 = 0;
+  int have_t0 = 0;
+  long filerec = 0, nrows = 0;
+
+  if ((rc = dslog_open_file(filename, &fp)) != DSLOG_OK) return rc;
+
+  ts = dfuCreateDynList(DF_INT64, 64);
+  secs = dfuCreateDynList(DF_DOUBLE, 64);
+
+  rc = DSLOG_OK;
+  while ((r = dpoint_read(fp, &d)) > 0) {
+    if (!have_t0) { t0 = d->timestamp; have_t0 = 1; }
+
+    if (strcmp(d->varname, name) == 0) {
+      json_t *root;
+      json_error_t jerr;
+      const char *key;
+      json_t *val;
+      uint32_t len = d->data.len;
+
+      if (d->data.e.dtype == DSERV_EVT ||
+	  (d->data.type != DSERV_JSON && d->data.type != DSERV_STRING)) {
+	set_err(errbuf, errlen, "%s record %ld (file record %ld) is %s, not json",
+		name, nrows, filerec, dstype_name(d));
+	rc = DSLOG_BadRecord;
+	dpoint_free(d);
+	break;
+      }
+
+      /* string datapoints may carry their terminating NUL */
+      while (len && d->data.buf[len-1] == '\0') len--;
+      root = json_loadb((const char *) d->data.buf, len, 0, &jerr);
+      if (!root) {
+	set_err(errbuf, errlen, "%s record %ld (file record %ld): %s (byte %d)",
+		name, nrows, filerec, jerr.text, jerr.position);
+	rc = DSLOG_BadRecord;
+	dpoint_free(d);
+	break;
+      }
+      if (!json_is_object(root)) {
+	set_err(errbuf, errlen, "%s record %ld (file record %ld) is not a JSON object",
+		name, nrows, filerec);
+	rc = DSLOG_BadRecord;
+	json_decref(root);
+	dpoint_free(d);
+	break;
+      }
+
+      json_object_foreach(root, key, val) {
+	jt_col_t *c;
+	if (json_is_object(val) || json_is_array(val)) continue;   /* not a column */
+	c = jt_find_or_add(&cols, &ncols, &maxcols, key, nrows);
+	if (c->n > nrows) continue;        /* already set in this record */
+	if (json_is_null(val)) continue;   /* topped up with a marker below */
+
+	if (json_is_integer(val) || json_is_boolean(val)) {
+	  int64_t v = json_is_integer(val) ? (int64_t) json_integer_value(val)
+	                                   : (json_is_true(val) ? 1 : 0);
+	  if (c->type == JT_NONE) jt_materialize(c, JT_INT64);
+	  if (c->type == JT_INT64) dfuAddDynListInt64(c->list, v);
+	  else if (c->type == JT_DOUBLE) dfuAddDynListDouble(c->list, (double) v);
+	  else {
+	    set_err(errbuf, errlen,
+		    "%s record %ld (file record %ld): key \"%s\" is a number here but %s before",
+		    name, nrows, filerec, key, jt_type_name(c->type));
+	    rc = DSLOG_BadRecord;
+	    break;
+	  }
+	}
+	else if (json_is_real(val)) {
+	  if (c->type == JT_NONE) jt_materialize(c, JT_DOUBLE);
+	  else if (c->type == JT_INT64) jt_promote_to_double(c);
+	  if (c->type == JT_DOUBLE) dfuAddDynListDouble(c->list, json_real_value(val));
+	  else {
+	    set_err(errbuf, errlen,
+		    "%s record %ld (file record %ld): key \"%s\" is a number here but %s before",
+		    name, nrows, filerec, key, jt_type_name(c->type));
+	    rc = DSLOG_BadRecord;
+	    break;
+	  }
+	}
+	else if (json_is_string(val)) {
+	  if (c->type == JT_NONE) jt_materialize(c, JT_STRING);
+	  if (c->type == JT_STRING) dfuAddDynListString(c->list, (char *) json_string_value(val));
+	  else {
+	    set_err(errbuf, errlen,
+		    "%s record %ld (file record %ld): key \"%s\" is a string here but %s before",
+		    name, nrows, filerec, key, jt_type_name(c->type));
+	    rc = DSLOG_BadRecord;
+	    break;
+	  }
+	}
+	else continue;
+	c->n++;
+      }
+      json_decref(root);
+      if (rc != DSLOG_OK) { dpoint_free(d); break; }
+
+      add_anchor_cols(ts, secs, d, t0);
+      nrows++;
+      for (i = 0; i < ncols; i++)
+	while (cols[i].n < nrows) jt_add_missing(&cols[i]);
+    }
+    dpoint_free(d);
+    filerec++;
+  }
+  fclose(fp);
+
+  if (rc == DSLOG_OK && r < 0) rc = DSLOG_FileUnreadable;
+  if (rc == DSLOG_OK && nrows == 0) {
+    set_err(errbuf, errlen, "no records named \"%s\"", name);
+    rc = DSLOG_BadRecord;
+  }
+  if (rc != DSLOG_OK) {
+    dfuFreeDynList(ts);
+    dfuFreeDynList(secs);
+    for (i = 0; i < ncols; i++) {
+      if (cols[i].list) dfuFreeDynList(cols[i].list);
+      free(cols[i].key);
+    }
+    free(cols);
+    return rc;
+  }
+
+  dg = dfuCreateNamedDynGroup((char *) name, ncols + 2);
+  dfuAddDynGroupExistingList(dg, "timestamp", ts);
+  dfuAddDynGroupExistingList(dg, "seconds", secs);
+  for (i = 0; i < ncols; i++) {
+    /* a key that was null in every record: an int64 column of markers */
+    if (cols[i].type == JT_NONE) jt_materialize(&cols[i], JT_INT64);
+    dfuAddDynGroupExistingList(dg, cols[i].key, cols[i].list);
+    free(cols[i].key);
+  }
+  free(cols);
+
+  if (outdg) *outdg = dg;
+  else dfuFreeDynGroup(dg);
   return DSLOG_OK;
 }
 
