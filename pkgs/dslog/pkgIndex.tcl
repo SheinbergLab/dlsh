@@ -8,4 +8,4 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded dslog 1.0 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libdslog[info sharedlibextension]] Dslog]
+package ifneeded dslog 1.1 [list load [file join $dir $::tcl_platform(os) $::tcl_platform(machine) libdslog[info sharedlibextension]] Dslog]

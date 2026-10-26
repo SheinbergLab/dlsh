@@ -1,7 +1,12 @@
 # dslog: reading dserv data files
 
 The `dslog` package (`package require dslog`) reads the `.ess` files that
-dserv's logger writes. A file is a 16-byte header followed by records, each
+dserv's logger writes. The per-datapoint tables and the `dslog::read`
+options described here arrived in dslog 1.1, so a script that needs them
+should say `package require dslog 1.1` and fail cleanly on an older
+`dlsh.zip` rather than at the first `dslog::unpack`.
+
+A file is a 16-byte header followed by records, each
 carrying a datapoint name, a timestamp in epoch microseconds, a dserv type
 code, and a payload. This page covers the whole-file readers and the three
 per-datapoint table readers; `dslog::open` / `next` / `put` / `close` are

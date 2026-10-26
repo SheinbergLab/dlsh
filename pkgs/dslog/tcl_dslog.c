@@ -780,7 +780,7 @@ int Dslog_Init(Tcl_Interp *interp)
     return TCL_ERROR;
   }
 
-  if (Tcl_PkgProvide(interp, "dslog", "1.0") != TCL_OK) {
+  if (Tcl_PkgProvide(interp, "dslog", "1.1") != TCL_OK) {
     return TCL_ERROR;
   }
   

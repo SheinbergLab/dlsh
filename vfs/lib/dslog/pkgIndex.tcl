@@ -8,7 +8,7 @@
 # script is sourced, the variable $dir must contain the
 # full path name of this file's directory.
 
-package ifneeded dslog 1.0 [list apply {{lib args} {
+package ifneeded dslog 1.1 [list apply {{lib args} {
     if {![file exists $lib]} {
         return -code error "dslog: compiled library not present in this\
  dlsh.zip -- no $::tcl_platform(os)/$::tcl_platform(machine) build of\

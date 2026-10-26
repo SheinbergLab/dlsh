@@ -23,7 +23,9 @@ if {[catch {package require dlsh}]} {
     }
     package require dlsh
 }
-package require dslog
+# 1.1 is the version with unpack/jsonTable; requiring it also makes the
+# test fail at once if it was pointed at an old installed dlsh.zip
+package require dslog 1.1
 
 source [file join [file dirname [info script]] dslog_fixture.tcl]
 
