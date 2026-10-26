@@ -210,14 +210,29 @@ static int dict_to_dpoint(Tcl_Interp *interp, Tcl_Obj *dict,
  *
  ****************************************************************************/
 
+/* -match patterns, applied with Tcl's string match rules */
+typedef struct read_match_s {
+  int n;
+  const char **patterns;
+} read_match_t;
+
+static int read_match_filter(void *ctx, const char *name)
+{
+  read_match_t *m = (read_match_t *) ctx;
+  int i;
+  for (i = 0; i < m->n; i++)
+    if (Tcl_StringMatch(name, m->patterns[i])) return 1;
+  return 0;
+}
+
 static int dslogReadCmd (ClientData data, Tcl_Interp *interp,
 			 int objc, Tcl_Obj *objv[])
 {
   int rc;
   int type = (Tcl_Size) data;
-  
+
   DYN_GROUP *dg;
-  
+
   if (objc < 2) {
     Tcl_WrongNumArgs(interp, 1, objv, "path");
     return TCL_ERROR;
@@ -225,7 +240,40 @@ static int dslogReadCmd (ClientData data, Tcl_Interp *interp,
 
   switch (type) {
   case DSLOG_READ:
-    rc = dslog_to_dg(Tcl_GetString(objv[1]), &dg);
+    if (objc == 2) {
+      rc = dslog_to_dg(Tcl_GetString(objv[1]), &dg);
+    }
+    else {
+      /* dslog::read path ?-match pattern ...? ?-absolute? */
+      read_match_t m;
+      int i, absolute = 0;
+      m.n = 0;
+      m.patterns = (const char **) ckalloc(objc * sizeof(char *));
+      for (i = 2; i < objc; i++) {
+	const char *opt = Tcl_GetString(objv[i]);
+	if (!strcmp(opt, "-match")) {
+	  if (i + 1 >= objc) {
+	    ckfree((char *) m.patterns);
+	    Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+			     ": -match requires a pattern", (char *) NULL);
+	    return TCL_ERROR;
+	  }
+	  m.patterns[m.n++] = Tcl_GetString(objv[++i]);
+	}
+	else if (!strcmp(opt, "-absolute")) {
+	  absolute = 1;
+	}
+	else {
+	  ckfree((char *) m.patterns);
+	  Tcl_AppendResult(interp, Tcl_GetString(objv[0]), ": bad option \"", opt,
+			   "\": must be -match pattern or -absolute", (char *) NULL);
+	  return TCL_ERROR;
+	}
+      }
+      rc = dslog_to_dg_ex(Tcl_GetString(objv[1]),
+			  m.n ? read_match_filter : NULL, &m, absolute, &dg);
+      ckfree((char *) m.patterns);
+    }
     break;
   case DSLOG_READ_ESS:
     rc = dslog_to_essdg(Tcl_GetString(objv[1]), &dg);
@@ -255,6 +303,99 @@ static int dslogReadCmd (ClientData data, Tcl_Interp *interp,
   }
 
   return (tclPutGroup(interp, dg));
+}
+
+/* Shared tail of the table readers: map a DSLOG_RC (and its errbuf) to a
+   Tcl error, or hand the group to the interpreter. */
+static int dslog_table_result(Tcl_Interp *interp, Tcl_Obj *cmd, int rc,
+			      const char *errbuf, DYN_GROUP *dg)
+{
+  switch (rc) {
+  case DSLOG_OK:
+    return tclPutGroup(interp, dg);
+  case DSLOG_FileNotFound:
+    Tcl_AppendResult(interp, Tcl_GetString(cmd), ": not found", (char *) NULL);
+    return TCL_ERROR;
+  case DSLOG_FileUnreadable:
+    Tcl_AppendResult(interp, Tcl_GetString(cmd), ": error reading file", (char *) NULL);
+    return TCL_ERROR;
+  case DSLOG_InvalidFormat:
+    Tcl_AppendResult(interp, Tcl_GetString(cmd), ": not recognized", (char *) NULL);
+    return TCL_ERROR;
+  default:
+    Tcl_AppendResult(interp, Tcl_GetString(cmd), ": ", errbuf, (char *) NULL);
+    return TCL_ERROR;
+  }
+}
+
+/*****************************************************************************
+ *
+ * TCL FUNCTION
+ *    dslog::unpack path name {field ...}
+ *
+ * DESCRIPTION
+ *    One row per record of a fixed-width array datapoint, one column per
+ *    element (see dslog_unpack in dslog.h).
+ *
+ ****************************************************************************/
+
+static int dslogUnpackCmd(ClientData data, Tcl_Interp *interp,
+			  int objc, Tcl_Obj *objv[])
+{
+  int rc;
+  Tcl_Size nfields, i;
+  Tcl_Obj **fieldobjs;
+  char **fields;
+  char errbuf[512];
+  DYN_GROUP *dg = NULL;
+
+  if (objc != 4) {
+    Tcl_WrongNumArgs(interp, 1, objv, "path name fieldList");
+    return TCL_ERROR;
+  }
+  if (Tcl_ListObjGetElements(interp, objv[3], &nfields, &fieldobjs) != TCL_OK)
+    return TCL_ERROR;
+  if (nfields < 1) {
+    Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+		     ": field list is empty", (char *) NULL);
+    return TCL_ERROR;
+  }
+  fields = (char **) ckalloc(nfields * sizeof(char *));
+  for (i = 0; i < nfields; i++) fields[i] = Tcl_GetString(fieldobjs[i]);
+
+  errbuf[0] = '\0';
+  rc = dslog_unpack(Tcl_GetString(objv[1]), Tcl_GetString(objv[2]),
+		    (int) nfields, fields, &dg, errbuf, sizeof(errbuf));
+  ckfree((char *) fields);
+  return dslog_table_result(interp, objv[0], rc, errbuf, dg);
+}
+
+/*****************************************************************************
+ *
+ * TCL FUNCTION
+ *    dslog::jsonTable path name
+ *
+ * DESCRIPTION
+ *    One row per record of a JSON datapoint, one column per top-level
+ *    scalar key (see dslog_json_table in dslog.h).
+ *
+ ****************************************************************************/
+
+static int dslogJsonTableCmd(ClientData data, Tcl_Interp *interp,
+			     int objc, Tcl_Obj *objv[])
+{
+  int rc;
+  char errbuf[512];
+  DYN_GROUP *dg = NULL;
+
+  if (objc != 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "path name");
+    return TCL_ERROR;
+  }
+  errbuf[0] = '\0';
+  rc = dslog_json_table(Tcl_GetString(objv[1]), Tcl_GetString(objv[2]),
+			&dg, errbuf, sizeof(errbuf));
+  return dslog_table_result(interp, objv[0], rc, errbuf, dg);
 }
 
 /*****************************************************************************
@@ -688,6 +829,17 @@ int Dslog_Init(Tcl_Interp *interp)
 
   Tcl_CreateObjCommand(interp, "dslog::wideTypes",
 		       (Tcl_ObjCmdProc *) dslogWideTypesCmd,
+		       (ClientData) NULL,
+		       (Tcl_CmdDeleteProc *) NULL);
+
+  /* per-datapoint table readers (always wide: DF_INT64 / DF_DOUBLE) */
+  Tcl_CreateObjCommand(interp, "dslog::unpack",
+		       (Tcl_ObjCmdProc *) dslogUnpackCmd,
+		       (ClientData) NULL,
+		       (Tcl_CmdDeleteProc *) NULL);
+
+  Tcl_CreateObjCommand(interp, "dslog::jsonTable",
+		       (Tcl_ObjCmdProc *) dslogJsonTableCmd,
 		       (ClientData) NULL,
 		       (Tcl_CmdDeleteProc *) NULL);
 

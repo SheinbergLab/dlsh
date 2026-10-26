@@ -400,6 +400,8 @@ the `dg2parquet` command that ships with `pip install "dgread[arrow]"`.
 ## See also
 
 - `dservctl docs show <command>` — per-command reference
+- `docs/dslog.md` — reading dserv `.ess` files: `dslog::read` options and
+  the per-datapoint `dslog::unpack` / `dslog::jsonTable` tables
 - `tests/tools/README.md` — differential and soak harnesses for lifetime work
 - `src/dlref.c` — the implementation, including why the handle lives inside
   the `DYN_LIST` rather than in a side table
