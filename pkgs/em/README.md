@@ -34,6 +34,12 @@ conversion):
     in_blink     nested char    blink flag from the realtime tracker (optional)
     pupil_r      nested float   pupil radius, used for blink-mask extension (optional)
 
+The position and time columns can also be double, which is what a file read
+under `dslog::wideTypes 1` gives, or integer. The detectors work in float
+whatever the input, so a wide group gives exactly the same outputs as a
+narrow one, which narrows doubles to float when it reads them. The blink
+column can be any numeric type. The outputs stay float.
+
 ## Outputs
 
 One call to `em::extract_events $g` adds these per-trial nested
