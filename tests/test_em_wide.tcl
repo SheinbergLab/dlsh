@@ -10,6 +10,12 @@
 #   must be identical, since the detectors work in float either way, as a
 #   narrow read narrows doubles to float before they ever see them.
 #
+#   Time-base insurance: the same trials with times on a session scale
+#   (+3000 s, where a float is good to ~240 us) as double input are
+#   rebased before narrowing, so they find the same saccades with the same
+#   durations and speeds, and their absolute output times come back offset
+#   by 3000 s.
+#
 #   Usage:  dlsh test_em_wide.tcl        (exits non-zero on any failure)
 
 if {[catch {package require dlsh}]} {
@@ -94,6 +100,40 @@ foreach col [lsort [dg_tclListnames $cls(float)]] {
         "[dl_datatype $cls(double):$col] [dl_tcllist $cls(double):$col]" \
         "[dl_datatype $cls(float):$col] [dl_tcllist $cls(float):$col]"
 }
+
+# time-base insurance: the double trials again with t + 3000 s
+proc near {label got want tol} {
+    set bad {}
+    foreach a $got b $want { if {abs($a - $b) > $tol} { lappend bad "$a vs $b" } }
+    if {[llength $got] != [llength $want]} { set bad "lengths [llength $got] vs [llength $want]" }
+    if {$bad eq ""} { puts "ok   $label" } else { puts "FAIL $label: [lrange $bad 0 3]"; incr ::fail }
+}
+set late [dg_create]
+dl_set $late:h $g(double):h
+dl_set $late:v $g(double):v
+dl_set $late:t [dl_add $g(double):t 3000.0]
+check "session-scale input is double" [dl_datatype $late:t:0] double
+set sacl [em::c::detect_saccades $late:h $late:v $late:t ""]
+foreach col {sac_starts sac_stops pso_starts pso_stops} {
+    check "session scale: $col the same samples" [dl_tcllist $sacl:$col] [dl_tcllist $sac(double):$col]
+}
+near "session scale: sac_durs as trial-relative" \
+    [dl_tcllist [dl_unpack $sacl:sac_durs]] [dl_tcllist [dl_unpack $sac(double):sac_durs]] 1e-6
+near "session scale: sac_peakvels as trial-relative (deg/s)" \
+    [dl_tcllist [dl_unpack $sacl:sac_peakvels]] [dl_tcllist [dl_unpack $sac(double):sac_peakvels]] 1e-3
+near "session scale: sac_t_start = trial-relative + 3000 s (to float at 3000 s)" \
+    [dl_tcllist [dl_unpack $sacl:sac_t_start]] \
+    [dl_tcllist [dl_add [dl_unpack $sac(double):sac_t_start] 3000.0]] 5e-4
+set clsl [em::c::classify $late:h $late:v $late:t "" \
+              $sacl:sac_starts $sacl:sac_stops $sacl:pso_starts $sacl:pso_stops]
+check "session scale: classify em_state the same" \
+    [dl_tcllist $clsl:em_state] [dl_tcllist $cls(double):em_state]
+near "session scale: fix_t_start = trial-relative + 3000 s" \
+    [dl_tcllist [dl_unpack $clsl:fix_t_start]] \
+    [dl_tcllist [dl_add [dl_unpack $cls(double):fix_t_start] 3000.0]] 5e-4
+near "session scale: velocity as trial-relative" \
+    [dl_tcllist [dl_unpack [em::c::velocity $late:h $late:v $late:t]]] \
+    [dl_tcllist [dl_unpack [em::c::velocity $g(double):h $g(double):v $g(double):t]]] 1e-2
 
 # a non-numeric sublist is still refused
 set bad [dg_create]

@@ -40,6 +40,16 @@ whatever the input, so a wide group gives exactly the same outputs as a
 narrow one, which narrows doubles to float when it reads them. The blink
 column can be any numeric type. The outputs stay float.
 
+Times are expected from trial start. A double or integer time column whose
+first sample is at 64 s or later, for example time from file start, is
+rebased before narrowing: the first time is subtracted in double, and added
+back in double to the absolute output times (`sac_t_start`, `fix_t_start`,
+...). Durations, minimum gaps between saccades and speeds then come out as
+they would from trial-relative time. Below 64 s, and for float input, which
+has already lost the precision, times are used as given. At 3000 s a float
+is good to ~240 µs: given that way, a 517°/s saccade read 529°/s and a 2°/s
+drift picked up 3% jitter.
+
 ## Outputs
 
 One call to `em::extract_events $g` adds these per-trial nested
