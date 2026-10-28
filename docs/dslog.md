@@ -68,8 +68,26 @@ record. That is the axis `<sessiont>` uses, so a record between two trials
 sorts against the periods and their events.
 
 Times are whole ms normally, or keep the microsecond fraction under
-`dslog::wideTypes 1`. A DG datapoint, such as `stimdg`, is decoded into
-`<name>column` columns.
+`dslog::wideTypes 1`.
+
+A DG datapoint, such as `stimdg`, is decoded into `<name>column` columns
+from its first occurrence only. Every occurrence, including a new table
+sent mid-session, is also kept as logged:
+
+| column | holds |
+|---|---|
+| `<dgbuf>name` | one sublist with each occurrence's serialized buffer, as a char list that `dg_fromString` reads |
+| `<dgbuft>name` | one sublist with their times, on the `<sessiont>` axis |
+
+Under wide types two int64 columns anchor the group on the dserv clock, so
+any time in it maps back exactly without anything else from the file:
+
+| column | holds |
+|---|---|
+| `file_t0_us` | the file's first record, epoch µs |
+| `obs_start_us` | each BEGINOBS in µs from that first record |
+
+A narrow group has neither, since narrow output carries no int64 columns.
 
 With wide types, the obs DG holds every record of the file with its time,
 which is enough to replay a session from it (`stim2`'s
