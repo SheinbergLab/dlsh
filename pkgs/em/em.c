@@ -176,6 +176,46 @@ static float *em_floats(DYN_LIST *dl, int *owned)
   return f;
 }
 
+/* A time sublist as floats, rebased when that matters.  Float resolution
+   at t seconds is ~t * 6e-8: 2 us at 30 s, 240 us at 3000 s, so speeds
+   from differences 2 ms apart are off by ~10% at session scale.  When the
+   input is double or integer and its first time is at least EM_REBASE_S,
+   the first time is subtracted in double before narrowing and returned in
+   *base, for absolute output times to be put back in double.  Below that,
+   or for float input (already narrowed: nothing to recover), *base is 0
+   and the values are em_floats' -- trial-relative time stays bit-identical
+   to a narrow read. */
+#define EM_REBASE_S 64.0
+static float *em_times(DYN_LIST *dl, int *owned, double *base)
+{
+  int k, n = DYN_LIST_N(dl);
+  double t0;
+  float *f;
+  *base = 0.0;
+  if (n == 0) return em_floats(dl, owned);
+  switch (DYN_LIST_DATATYPE(dl)) {
+  case DF_DOUBLE: t0 = ((double *) DYN_LIST_VALS(dl))[0]; break;
+  case DF_INT64:  t0 = (double) ((int64_t *) DYN_LIST_VALS(dl))[0]; break;
+  case DF_LONG:   t0 = (double) ((int *) DYN_LIST_VALS(dl))[0]; break;
+  default: return em_floats(dl, owned);
+  }
+  if (fabs(t0) < EM_REBASE_S) return em_floats(dl, owned);
+  f = (float *) malloc(n * sizeof(float));
+  switch (DYN_LIST_DATATYPE(dl)) {
+  case DF_DOUBLE: { double *s = (double *) DYN_LIST_VALS(dl);
+      for (k = 0; k < n; k++) f[k] = (float) (s[k] - t0); break; }
+  case DF_INT64:  { int64_t *s = (int64_t *) DYN_LIST_VALS(dl);
+      for (k = 0; k < n; k++) f[k] = (float) ((double) s[k] - t0); break; }
+  default:        { int *s = (int *) DYN_LIST_VALS(dl);
+      for (k = 0; k < n; k++) f[k] = (float) ((double) s[k] - t0); break; }
+  }
+  *owned = 1;
+  *base = t0;
+  return f;
+}
+/* an absolute output time from a (possibly rebased) one */
+#define EM_TABS(base, tr) ((float) ((base) + (double) (tr)))
+
 static void compute_speed(int n, const float *h, const float *v, const float *t,
                           float *speed)
 {
@@ -870,13 +910,14 @@ static int em_velocity_cmd(ClientData data, Tcl_Interp *interp,
     DYN_LIST *hl = hsub[i], *vl = vsub[i], *tl = tsub[i];
     int n, ho, vo, to;
     float *hf, *vf, *tf;
+    double tbase;
     n = DYN_LIST_N(hl);
     if (DYN_LIST_N(vl) != n || DYN_LIST_N(tl) != n) {
       dfuFreeDynList(result);
       Tcl_AppendResult(interp, argv[0], ": unequal sublist lengths", NULL);
       return TCL_ERROR;
     }
-    hf = em_floats(hl, &ho); vf = em_floats(vl, &vo); tf = em_floats(tl, &to);
+    hf = em_floats(hl, &ho); vf = em_floats(vl, &vo); tf = em_times(tl, &to, &tbase);
     if (!hf || !vf || !tf) {
       if (hf && ho) free(hf); if (vf && vo) free(vf); if (tf && to) free(tf);
       dfuFreeDynList(result);
@@ -993,6 +1034,7 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
     const unsigned char *bvals = NULL;
     int ho, vo, to;
     float *hf, *vf, *tf;
+    double tbase;
 
     n = DYN_LIST_N(hl);
     if (DYN_LIST_N(vl) != n || DYN_LIST_N(tl) != n) {
@@ -1000,7 +1042,7 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
                        ": unequal sublist lengths", NULL);
       return TCL_ERROR;
     }
-    hf = em_floats(hl, &ho); vf = em_floats(vl, &vo); tf = em_floats(tl, &to);
+    hf = em_floats(hl, &ho); vf = em_floats(vl, &vo); tf = em_times(tl, &to, &tbase);
     if (!hf || !vf || !tf) {
       if (hf && ho) free(hf); if (vf && vo) free(vf); if (tf && to) free(tf);
       Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
@@ -1090,8 +1132,8 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
       em_sac_t *e = &evs[k];
       dfuAddDynListLong(ss, e->start_idx);
       dfuAddDynListLong(sp, e->stop_idx);
-      dfuAddDynListFloat(sts, tvals[e->start_idx]);
-      dfuAddDynListFloat(stp, tvals[e->stop_idx]);
+      dfuAddDynListFloat(sts, EM_TABS(tbase, tvals[e->start_idx]));
+      dfuAddDynListFloat(stp, EM_TABS(tbase, tvals[e->stop_idx]));
       dfuAddDynListFloat(sa,  e->amp);
       dfuAddDynListFloat(sd,  e->dir);
       dfuAddDynListFloat(spv, e->peak_vel);
@@ -1109,8 +1151,8 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
         if (pstart > pend) pstart = pend;
         dfuAddDynListLong(ps, pstart);
         dfuAddDynListLong(pp, pend);
-        dfuAddDynListFloat(pts, tvals[pstart]);
-        dfuAddDynListFloat(ptp, tvals[pend]);
+        dfuAddDynListFloat(pts, EM_TABS(tbase, tvals[pstart]));
+        dfuAddDynListFloat(ptp, EM_TABS(tbase, tvals[pend]));
         dfuAddDynListFloat(ppv, e->pso_peak_vel);
         /* PSO "amplitude" = max excursion from pre-PSO position — simple proxy:
            distance from raw-landing to post-PSO-landing */
@@ -1263,11 +1305,12 @@ static int em_classify_cmd(ClientData data, Tcl_Interp *interp,
   for (i = 0; i < ntr; i++) {
     int n = DYN_LIST_N(hsub[i]);
     int ho, vo, to;
+    double tbase;
     /* read as floats whatever the column type: a double sublist (wide
        types) was taken for floats here, unchecked, and misread */
     float *h = em_floats(hsub[i], &ho);
     float *v = em_floats(vsub[i], &vo);
-    float *t = em_floats(tsub[i], &to);
+    float *t = em_times(tsub[i], &to, &tbase);
     if (!h || !v || !t || DYN_LIST_N(vsub[i]) != n || DYN_LIST_N(tsub[i]) != n) {
       if (h && ho) free(h); if (v && vo) free(v); if (t && to) free(t);
       Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
@@ -1361,8 +1404,8 @@ static int em_classify_cmd(ClientData data, Tcl_Interp *interp,
       em_pur_t *e = &pev[k];
       dfuAddDynListLong(ps1, e->start_idx);
       dfuAddDynListLong(ps2, e->stop_idx);
-      dfuAddDynListFloat(pt1, t[e->start_idx]);
-      dfuAddDynListFloat(pt2, t[e->stop_idx]);
+      dfuAddDynListFloat(pt1, EM_TABS(tbase, t[e->start_idx]));
+      dfuAddDynListFloat(pt2, EM_TABS(tbase, t[e->stop_idx]));
       dfuAddDynListFloat(pdu, t[e->stop_idx] - t[e->start_idx]);
       dfuAddDynListFloat(pmv, e->mean_vel);
       dfuAddDynListFloat(pmd, e->mean_dir);
@@ -1403,8 +1446,8 @@ static int em_classify_cmd(ClientData data, Tcl_Interp *interp,
         float mv = m ? (float)(sv / m) : 0.0f;
         dfuAddDynListLong(fs1, a);
         dfuAddDynListLong(fs2, b);
-        dfuAddDynListFloat(ft1, t[a]);
-        dfuAddDynListFloat(ft2, t[b]);
+        dfuAddDynListFloat(ft1, EM_TABS(tbase, t[a]));
+        dfuAddDynListFloat(ft2, EM_TABS(tbase, t[b]));
         dfuAddDynListFloat(fhv, mh);
         dfuAddDynListFloat(fvv, mv);
         dfuAddDynListFloat(fdu, t[b] - t[a]);
