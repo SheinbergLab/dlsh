@@ -43,6 +43,57 @@ a script wants a fixed handle, as `dg_create` scripts do.
 set g [dslog::read $path -match stim/frame -match stim/cmd -absolute]
 ```
 
+### readESS: what goes where
+
+One row per observation period (BEGINOBS to ENDOBS). Each datapoint
+contributes three columns:
+
+| column | holds |
+|---|---|
+| `<ds>name` | the decoded values, concatenated over that period's records |
+| `<dst>name` | per-record times, ms from that period's BEGINOBS |
+| `<dsn>name` | per-record value counts, which split `<ds>name` back into records |
+
+Records outside every period (before the first, between two, after the
+last) go into one sublist each, under the same three-way split:
+
+| column | holds |
+|---|---|
+| `<session>name` | the values |
+| `<sessiont>name` | per-record times, ms from the file's first record |
+| `<sessionn>name` | per-record value counts |
+
+`obs_start_ms` gives each period's BEGINOBS in ms from the file's first
+record. That is the axis `<sessiont>` uses, so a record between two trials
+sorts against the periods and their events.
+
+Times are whole ms normally, or keep the microsecond fraction under
+`dslog::wideTypes 1`.
+
+A DG datapoint, such as `stimdg`, is decoded into `<name>column` columns
+from its first occurrence only. Every occurrence, including a new table
+sent mid-session, is also kept as logged:
+
+| column | holds |
+|---|---|
+| `<dgbuf>name` | one sublist with each occurrence's serialized buffer, as a char list that `dg_fromString` reads |
+| `<dgbuft>name` | one sublist with their times, on the `<sessiont>` axis |
+
+Under wide types two int64 columns anchor the group on the dserv clock, so
+any time in it maps back exactly without anything else from the file:
+
+| column | holds |
+|---|---|
+| `file_t0_us` | the file's first record, epoch µs |
+| `obs_start_us` | each BEGINOBS in µs from that first record |
+
+A narrow group has neither, since narrow output carries no int64 columns.
+
+With wide types, the obs DG holds every record of the file with its time,
+which is enough to replay a session from it (`stim2`'s
+`tools/replay/replay.tcl` reads one). Without wide types, the int64
+records (`stim/frame`) are dropped.
+
 ## Per-datapoint tables: the wide-type assumption
 
 `dslog::unpack` and `dslog::jsonTable` turn every record of one datapoint

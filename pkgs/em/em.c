@@ -146,6 +146,36 @@ static int em_opts_from_dict(Tcl_Interp *interp, Tcl_Obj *dict, em_opts_t *o)
  * Compute per-sample speed (deg/s) via central differences on h,v,t.
  * Endpoints use one-sided differences.  Output speed[] has length n.
  */
+/* A numeric sublist's values as floats, which is what the detectors work in:
+   a DF_FLOAT list's own values, or for DF_DOUBLE / DF_INT64 (what
+   dslog::wideTypes delivers) and the integer types a converted copy, with
+   *owned set so the caller frees it.  NULL for a non-numeric list.  The
+   outputs stay float either way, so a wide group gives the same columns as
+   a narrow one, which narrows doubles to float at read time anyway. */
+static float *em_floats(DYN_LIST *dl, int *owned)
+{
+  int k, n = DYN_LIST_N(dl);
+  float *f;
+  *owned = 0;
+  if (DYN_LIST_DATATYPE(dl) == DF_FLOAT) return (float *) DYN_LIST_VALS(dl);
+  f = (float *) malloc((n > 0 ? n : 1) * sizeof(float));
+  switch (DYN_LIST_DATATYPE(dl)) {
+  case DF_DOUBLE: { double *s = (double *) DYN_LIST_VALS(dl);
+      for (k = 0; k < n; k++) f[k] = (float) s[k]; break; }
+  case DF_INT64:  { int64_t *s = (int64_t *) DYN_LIST_VALS(dl);
+      for (k = 0; k < n; k++) f[k] = (float) s[k]; break; }
+  case DF_LONG:   { int *s = (int *) DYN_LIST_VALS(dl);
+      for (k = 0; k < n; k++) f[k] = (float) s[k]; break; }
+  case DF_SHORT:  { short *s = (short *) DYN_LIST_VALS(dl);
+      for (k = 0; k < n; k++) f[k] = (float) s[k]; break; }
+  case DF_CHAR:   { unsigned char *s = (unsigned char *) DYN_LIST_VALS(dl);
+      for (k = 0; k < n; k++) f[k] = (float) s[k]; break; }
+  default: free(f); return NULL;
+  }
+  *owned = 1;
+  return f;
+}
+
 static void compute_speed(int n, const float *h, const float *v, const float *t,
                           float *speed)
 {
@@ -838,32 +868,30 @@ static int em_velocity_cmd(ClientData data, Tcl_Interp *interp,
 
   for (i = 0; i < ntr; i++) {
     DYN_LIST *hl = hsub[i], *vl = vsub[i], *tl = tsub[i];
-    int n;
-    if (DYN_LIST_DATATYPE(hl) != DF_FLOAT ||
-        DYN_LIST_DATATYPE(vl) != DF_FLOAT ||
-        DYN_LIST_DATATYPE(tl) != DF_FLOAT) {
-      dfuFreeDynList(result);
-      Tcl_AppendResult(interp, argv[0], ": expected float sublists", NULL);
-      return TCL_ERROR;
-    }
+    int n, ho, vo, to;
+    float *hf, *vf, *tf;
     n = DYN_LIST_N(hl);
     if (DYN_LIST_N(vl) != n || DYN_LIST_N(tl) != n) {
       dfuFreeDynList(result);
       Tcl_AppendResult(interp, argv[0], ": unequal sublist lengths", NULL);
       return TCL_ERROR;
     }
+    hf = em_floats(hl, &ho); vf = em_floats(vl, &vo); tf = em_floats(tl, &to);
+    if (!hf || !vf || !tf) {
+      if (hf && ho) free(hf); if (vf && vo) free(vf); if (tf && to) free(tf);
+      dfuFreeDynList(result);
+      Tcl_AppendResult(interp, argv[0], ": expected numeric sublists", NULL);
+      return TCL_ERROR;
+    }
     DYN_LIST *sp = dfuCreateDynList(DF_FLOAT, n > 0 ? n : 1);
     float *buf = (float *) calloc(n > 0 ? n : 1, sizeof(float));
-    compute_speed(n,
-                  (float *) DYN_LIST_VALS(hl),
-                  (float *) DYN_LIST_VALS(vl),
-                  (float *) DYN_LIST_VALS(tl),
-                  buf);
+    compute_speed(n, hf, vf, tf, buf);
     {
       int k;
       for (k = 0; k < n; k++) dfuAddDynListFloat(sp, buf[k]);
     }
     free(buf);
+    if (ho) free(hf); if (vo) free(vf); if (to) free(tf);
     dfuMoveDynListList(result, sp);
   }
 
@@ -963,23 +991,26 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
     float *speed;
     unsigned char *bvals_buf = NULL;    /* built from DF_CHAR/LONG/SHORT */
     const unsigned char *bvals = NULL;
+    int ho, vo, to;
+    float *hf, *vf, *tf;
 
-    if (DYN_LIST_DATATYPE(hl) != DF_FLOAT ||
-        DYN_LIST_DATATYPE(vl) != DF_FLOAT ||
-        DYN_LIST_DATATYPE(tl) != DF_FLOAT) {
-      Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
-                       ": expected float sublists", NULL);
-      return TCL_ERROR;
-    }
     n = DYN_LIST_N(hl);
     if (DYN_LIST_N(vl) != n || DYN_LIST_N(tl) != n) {
       Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
                        ": unequal sublist lengths", NULL);
       return TCL_ERROR;
     }
+    hf = em_floats(hl, &ho); vf = em_floats(vl, &vo); tf = em_floats(tl, &to);
+    if (!hf || !vf || !tf) {
+      if (hf && ho) free(hf); if (vf && vo) free(vf); if (tf && to) free(tf);
+      Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+                       ": expected numeric sublists", NULL);
+      return TCL_ERROR;
+    }
     if (bsub) {
       DYN_LIST *bl = bsub[i];
       if (DYN_LIST_N(bl) != n) {
+        if (ho) free(hf); if (vo) free(vf); if (to) free(tf);
         Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
                          ": blink length != signal length", NULL);
         return TCL_ERROR;
@@ -1006,8 +1037,19 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
         for (k = 0; k < n; k++) bvals_buf[k] = (s[k] != 0.0f) ? 1 : 0;
         break;
       }
+      case DF_DOUBLE: {
+        double *s = (double *) DYN_LIST_VALS(bl);
+        for (k = 0; k < n; k++) bvals_buf[k] = (s[k] != 0.0) ? 1 : 0;
+        break;
+      }
+      case DF_INT64: {
+        int64_t *s = (int64_t *) DYN_LIST_VALS(bl);
+        for (k = 0; k < n; k++) bvals_buf[k] = s[k] ? 1 : 0;
+        break;
+      }
       default:
         free(bvals_buf);
+        if (ho) free(hf); if (vo) free(vf); if (to) free(tf);
         Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
                          ": blink sublist must be numeric", NULL);
         return TCL_ERROR;
@@ -1016,17 +1058,9 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
     }
 
     speed = (float *) calloc(n > 0 ? n : 1, sizeof(float));
-    compute_speed(n,
-                  (float *) DYN_LIST_VALS(hl),
-                  (float *) DYN_LIST_VALS(vl),
-                  (float *) DYN_LIST_VALS(tl),
-                  speed);
+    compute_speed(n, hf, vf, tf, speed);
 
-    nev = detect_saccades_trial(n,
-                                (float *) DYN_LIST_VALS(hl),
-                                (float *) DYN_LIST_VALS(vl),
-                                (float *) DYN_LIST_VALS(tl),
-                                bvals, &opts, speed, &evs);
+    nev = detect_saccades_trial(n, hf, vf, tf, bvals, &opts, speed, &evs);
 
     /* build per-trial sublists and append */
     DYN_LIST *ss  = dfuCreateDynList(DF_LONG,  nev > 0 ? nev : 1);
@@ -1050,7 +1084,7 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
     DYN_LIST *ppv = dfuCreateDynList(DF_FLOAT, nev > 0 ? nev : 1);
     DYN_LIST *pa  = dfuCreateDynList(DF_FLOAT, nev > 0 ? nev : 1);
 
-    float *tvals = (float *) DYN_LIST_VALS(tl);
+    float *tvals = tf;
 
     for (k = 0; k < nev; k++) {
       em_sac_t *e = &evs[k];
@@ -1112,6 +1146,7 @@ static int em_detect_saccades_cmd(ClientData data, Tcl_Interp *interp,
     free(speed);
     free(evs);
     if (bvals_buf) free(bvals_buf);
+    if (ho) free(hf); if (vo) free(vf); if (to) free(tf);
   }
 
   retgroup = dfuCreateDynGroup(20);
@@ -1227,9 +1262,18 @@ static int em_classify_cmd(ClientData data, Tcl_Interp *interp,
 
   for (i = 0; i < ntr; i++) {
     int n = DYN_LIST_N(hsub[i]);
-    float *h = (float *) DYN_LIST_VALS(hsub[i]);
-    float *v = (float *) DYN_LIST_VALS(vsub[i]);
-    float *t = (float *) DYN_LIST_VALS(tsub[i]);
+    int ho, vo, to;
+    /* read as floats whatever the column type: a double sublist (wide
+       types) was taken for floats here, unchecked, and misread */
+    float *h = em_floats(hsub[i], &ho);
+    float *v = em_floats(vsub[i], &vo);
+    float *t = em_floats(tsub[i], &to);
+    if (!h || !v || !t || DYN_LIST_N(vsub[i]) != n || DYN_LIST_N(tsub[i]) != n) {
+      if (h && ho) free(h); if (v && vo) free(v); if (t && to) free(t);
+      Tcl_AppendResult(interp, Tcl_GetString(objv[0]),
+                       ": expected numeric h, v, t sublists of equal length", NULL);
+      return TCL_ERROR;
+    }
 
     unsigned char *state = (unsigned char *) calloc(n > 0 ? n : 1, 1);
 
@@ -1255,6 +1299,16 @@ static int em_classify_cmd(ClientData data, Tcl_Interp *interp,
       case DF_FLOAT: {
         float *s = (float *) DYN_LIST_VALS(bl);
         for (k = 0; k < n; k++) if (s[k] != 0.0f) state[k] = EM_STATE_BLINK;
+        break;
+      }
+      case DF_DOUBLE: {
+        double *s = (double *) DYN_LIST_VALS(bl);
+        for (k = 0; k < n; k++) if (s[k] != 0.0) state[k] = EM_STATE_BLINK;
+        break;
+      }
+      case DF_INT64: {
+        int64_t *s = (int64_t *) DYN_LIST_VALS(bl);
+        for (k = 0; k < n; k++) if (s[k]) state[k] = EM_STATE_BLINK;
         break;
       }
       default: break;
@@ -1370,6 +1424,7 @@ static int em_classify_cmd(ClientData data, Tcl_Interp *interp,
     dfuMoveDynListList(em_state, st);
 
     free(state);
+    if (ho) free(h); if (vo) free(v); if (to) free(t);
   }
 
   DYN_GROUP *retgroup = dfuCreateDynGroup(17);
