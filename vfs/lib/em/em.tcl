@@ -288,6 +288,86 @@ namespace eval em {
     }
     
     ######################################################################
+    #                     Recenter Drift (em/drift)                      #
+    ######################################################################
+
+    #
+    # The recenter drift a session ran with, as a step function
+    #
+    # dserv's em publishes em/drift {dh dv} (two floats, raw units) at
+    # every recenter while an emcalib fit applies, and the logger re-emits
+    # it at file open.  Online, eye position is bq(raw - drift); this is
+    # the history that lets extraction do the same.  Records fall outside
+    # obs periods (<session>em/drift, timed from the file's first record)
+    # or inside one (<ds>em/drift, timed from that period's BEGINOBS);
+    # both are put on the file axis with obs_start_ms.
+    #
+    # Arguments:
+    #   g - loaded dg (dslog::readESS)
+    #
+    # Returns:
+    #   flat Tcl list {t dh dv t dh dv ...}, t in ms on the file axis,
+    #   sorted by t; "" when the file has no em/drift (older files)
+    #
+    proc drift_history {g} {
+        set recs {}
+        if {[dl_exists $g:<session>em/drift]} {
+            set v [dl_tcllist [dl_unpack $g:<session>em/drift]]
+            set t [dl_tcllist [dl_unpack $g:<sessiont>em/drift]]
+            foreach tt $t {dh dv} $v { lappend recs [list $tt $dh $dv] }
+        }
+        if {[dl_exists $g:<ds>em/drift] && [dl_exists $g:obs_start_ms]} {
+            dl_local t [dl_unpack [dl_add $g:<dst>em/drift $g:obs_start_ms]]
+            set v [dl_tcllist [dl_unpack $g:<ds>em/drift]]
+            foreach tt [dl_tcllist $t] {dh dv} $v { lappend recs [list $tt $dh $dv] }
+        }
+        if {![llength $recs]} { return "" }
+        return [concat {*}[lsort -real -index 0 $recs]]
+    }
+
+    #
+    # Per-sample drift for the eyetracking/raw samples of chosen trials
+    #
+    # Each raw sample takes the drift last recorded at or before its
+    # record's time.  eyetracking/raw is logged buffered (several samples
+    # per record, one time each), so around a recenter made DURING a
+    # trial a record's worth of samples (~40 ms at 250 Hz) can take the
+    # neighbouring value; a recenter between trials is exact.
+    #
+    # Arguments:
+    #   f             - df::File object (or a dg, which is used directly)
+    #   valid_indices - obs periods to extract, as passed to dl_choose
+    #
+    # Returns:
+    #   list of two nested dl names {dh dv}, one value per eye_raw sample,
+    #   for process_raw_streams -drift; "" when the file has no drift
+    #   record or no raw eye data
+    #
+    proc drift_streams {f valid_indices} {
+        set g [expr {[dg_exists $f] ? $f : [$f group]}]
+        set hist [drift_history $g]
+        if {$hist eq ""} { return "" }
+        foreach c {<dst>eyetracking/raw <dsn>eyetracking/raw obs_start_ms} {
+            if {![dl_exists $g:$c]} { return "" }
+        }
+
+        # a sample's time is its record's, on the file axis
+        set rt [dl_choose $g:<dst>eyetracking/raw $valid_indices]
+        set per [dl_div [dl_choose $g:<dsn>eyetracking/raw $valid_indices] 2]
+        set st [dl_add [dl_repeat $rt $per] \
+                    [dl_choose $g:obs_start_ms $valid_indices]]
+
+        set dh [dl_mult $st 0.0]
+        set dv [dl_mult $st 0.0]
+        foreach {t h v} $hist {
+            set m [dl_gte $st $t]
+            set dh [dl_replace $dh $m [dl_flist $h]]
+            set dv [dl_replace $dv $m [dl_flist $v]]
+        }
+        return [list $dh $dv]
+    }
+
+    ######################################################################
     #              Calibration Application (dl vectorized)               #
     ######################################################################
     
@@ -337,6 +417,7 @@ namespace eval em {
     #             pupil, p1, p4 are interleaved x,y
     #   args    - optional key-value pairs:
     #               -calibration {x_coeffs y_coeffs}  (from calibration_coeffs)
+    #               -drift {dh dv}                     (from drift_streams; "" for none)
     #               -prefix string                     (column name prefix, default "")
     #
     # Creates columns (with optional prefix):
@@ -354,10 +435,12 @@ namespace eval em {
     proc process_raw_streams {g streams args} {
         # Parse options
         set calibration ""
+        set drift ""
         set prefix ""
         foreach {key val} $args {
             switch -- $key {
                 -calibration { set calibration $val }
+                -drift       { set drift $val }
                 -prefix      { set prefix $val }
             }
         }
@@ -395,13 +478,24 @@ namespace eval em {
         # Difference signals (p1p4, pupil_cr) are not stored as they are
         # trivially recomputable from the raw components above.
         #
+        # With -drift, the recenter drift the session ran with (see
+        # drift_streams) is subtracted first, as online.  eye_raw_h/v are
+        # stored unshifted either way.
+        #
         if {$calibration ne "" && [dict exists $streams eye_raw]} {
             dl_local raw_xy [separate_xy [dict get $streams eye_raw] $ns]
             dl_set $g:${prefix}eye_raw_h $raw_xy:0
             dl_set $g:${prefix}eye_raw_v $raw_xy:1
-            
-            dl_local cal [apply_calibration $calibration \
-                $g:${prefix}eye_raw_h $g:${prefix}eye_raw_v]
+
+            set h_in $g:${prefix}eye_raw_h
+            set v_in $g:${prefix}eye_raw_v
+            if {$drift ne ""} {
+                lassign $drift dh dv
+                dl_local h_in [dl_sub $h_in [truncate_to_length $dh $ns 0]]
+                dl_local v_in [dl_sub $v_in [truncate_to_length $dv $ns 0]]
+            }
+
+            dl_local cal [apply_calibration $calibration $h_in $v_in]
             dl_set $g:${prefix}em_h_deg $cal:0
             dl_set $g:${prefix}em_v_deg $cal:1
         }
@@ -424,7 +518,121 @@ namespace eval em {
             dl_set $g:${prefix}frame_id [truncate_to_length [dict get $streams frame_id] $ns 0]
         }
     }
-    
+
+    ######################################################################
+    #              Add Eye Data (one call for an extractor)              #
+    ######################################################################
+
+    # The streams an extractor collects, datapoint -> process_raw_streams key
+    variable eye_stream_map {
+        em/pupil        pupil
+        em/p1           p1
+        em/p4           p4
+        em/pupil_r      pupil_r
+        em/time         time
+        em/blink        blink
+        em/frame_id     frame_id
+        eyetracking/raw eye_raw
+    }
+
+    #
+    # Everything an extractor does with eye data, in one call
+    #
+    # Collects the logged eye streams for the chosen obs periods, finds the
+    # session's calibration and recenter drift, converts raw to degrees
+    # (process_raw_streams), and runs saccade/fixation detection
+    # (extract_events) once the calibrated set it needs is complete.  A
+    # session with no eye data, or a virtual eye with no calibration, adds
+    # what it has and nothing fails.
+    #
+    # Arguments:
+    #   trials        - the extractor's output dg (columns are added to it)
+    #   f             - df::File object, or a loaded dg
+    #   valid_indices - obs periods to extract, one output row each
+    #   args          - optional key-value pairs:
+    #       -repeat counts  repeat each chosen obs period's data counts[i]
+    #                       times, for extractors with several rows per obs
+    #                       period (prf: one row per stimulus)
+    #       -calibrate 0|1  convert raw to degrees (default 1)
+    #       -drift 0|1      apply the recenter drift the session ran with
+    #                       (default 1; see drift_streams)
+    #       -events 0|1     run extract_events (default 1)
+    #       -event_args l   extra arguments for extract_events (-params ...)
+    #       -keep_raw 0|1   also store eyetracking/raw as eye_raw,
+    #                       interleaved h v (default 1)
+    #
+    # Returns:
+    #   dict: calibration (the calibration dict, or ""), drift (0|1),
+    #         events (0|1), streams (the keys found)
+    #
+    proc add_eye_data {trials f valid_indices args} {
+        variable eye_stream_map
+        set repeat ""
+        set calibrate 1
+        set use_drift 1
+        set events 1
+        set event_args {}
+        set keep_raw 1
+        foreach {key val} $args {
+            switch -- $key {
+                -repeat     { set repeat $val }
+                -calibrate  { set calibrate $val }
+                -drift      { set use_drift $val }
+                -events     { set events $val }
+                -event_args { set event_args $val }
+                -keep_raw   { set keep_raw $val }
+                default     { error "em::add_eye_data: unknown option $key" }
+            }
+        }
+        set g [expr {[dg_exists $f] ? $f : [$f group]}]
+        set result [dict create calibration "" drift 0 events 0 streams {}]
+
+        set streams [dict create]
+        foreach {dp key} $eye_stream_map {
+            if {[dl_exists $g:<ds>$dp]} {
+                set s [dl_choose $g:<ds>$dp $valid_indices]
+                if {$repeat ne ""} { set s [dl_repeat $s $repeat] }
+                dict set streams $key $s
+            }
+        }
+        if {![dict size $streams]} { return $result }
+        dict set result streams [dict keys $streams]
+
+        set coeffs ""
+        if {$calibrate} {
+            set calib [extract_calibration_from_dg $g]
+            if {$calib ne ""} {
+                calibration_info $calib
+                set coeffs [calibration_coeffs $calib]
+                dict set result calibration $calib
+            }
+        }
+
+        set drift ""
+        if {$coeffs ne "" && $use_drift} {
+            set drift [drift_streams $g $valid_indices]
+            if {$drift ne "" && $repeat ne ""} {
+                set drift [lmap d $drift { dl_repeat $d $repeat }]
+            }
+            dict set result drift [expr {$drift ne ""}]
+        }
+
+        process_raw_streams $trials $streams -calibration $coeffs -drift $drift
+
+        # extract_events needs all three; a partial set (eyeless or
+        # virtual-eye session) must not kill the conversion
+        if {$events && [dl_exists $trials:em_h_deg] &&
+            [dl_exists $trials:em_v_deg] && [dl_exists $trials:em_seconds]} {
+            extract_events $trials {*}$event_args
+            dict set result events 1
+        }
+
+        if {$keep_raw && [dict exists $streams eye_raw]} {
+            dl_set $trials:eye_raw [dict get $streams eye_raw]
+        }
+        return $result
+    }
+
     ######################################################################
     #                    Biquadratic Calibration                         #
     ######################################################################
