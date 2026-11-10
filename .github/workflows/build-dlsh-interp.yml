@@ -22,6 +22,8 @@ on:
       - 'tests/**'
       - 'vfs/lib/**'          # staged into the test dlsh.zip
       - 'pkgs/tls/**'         # the tls package (static OpenSSL) is built + tested here
+      - 'pkgs/em/**'          # em and dslog: test_em_wide / test_dslog_* load them
+      - 'pkgs/dslog/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - 'linux/build-dlsh-deb.sh'
@@ -67,10 +69,11 @@ jobs:
         #
         # Stage ALL of vfs/lib, not just vfs/lib/dlsh: tests that exercise a
         # pure-Tcl package (test_mp_sim_kinematics needs mp_sim) find nothing
-        # otherwise. Packages with compiled parts simply won't load here, which
-        # is fine -- no dlsh-layer test depends on one.
+        # otherwise. Package libraries built here (tls, em, dslog) are what
+        # ctest's own stage_test_zip fixture adds to the zip it tests:
+        # test_tls, test_em_wide and test_dslog_* fail without them.
         run: |
-          cmake --build build --target dlsh tls -j"$(nproc)"
+          cmake --build build --target dlsh tls em dslog -j"$(nproc)"
           rm -rf zipstage && mkdir -p zipstage/lib
           cp -R vfs/lib/. zipstage/lib/
           dst="zipstage/lib/dlsh/$(uname -s)/$(uname -m)"; mkdir -p "$dst"
@@ -151,10 +154,11 @@ jobs:
         #
         # Stage ALL of vfs/lib, not just vfs/lib/dlsh: tests that exercise a
         # pure-Tcl package (test_mp_sim_kinematics needs mp_sim) find nothing
-        # otherwise. Packages with compiled parts simply won't load here, which
-        # is fine -- no dlsh-layer test depends on one.
+        # otherwise. Package libraries built here (tls, em, dslog) are what
+        # ctest's own stage_test_zip fixture adds to the zip it tests:
+        # test_tls, test_em_wide and test_dslog_* fail without them.
         run: |
-          cmake --build build --target dlsh tls -j"$(sysctl -n hw.ncpu)"
+          cmake --build build --target dlsh tls em dslog -j"$(sysctl -n hw.ncpu)"
           rm -rf zipstage && mkdir -p zipstage/lib
           cp -R vfs/lib/. zipstage/lib/
           dst="zipstage/lib/dlsh/$(uname -s)/$(uname -m)"; mkdir -p "$dst"
