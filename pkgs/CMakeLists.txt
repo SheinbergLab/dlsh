@@ -172,6 +172,7 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/tpool)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/yajltcl)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/sqlite)
 add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/thread)
+add_subdirectory(${CMAKE_SOURCE_DIR}/pkgs/tls)
 
 # Install each package - the binary goes on top of vfs/lib structure
 install_tcl_package(NAME trajectory_analysis TARGET trajectory_analysis)
@@ -191,6 +192,9 @@ install_tcl_package(NAME tpool TARGET tpool)
 install_tcl_package(NAME yajltcl TARGET yajltcl)
 install_tcl_package(NAME sqlite TARGET tclsqlite TCL_FILES ${SQLITE_PKGINDEX})
 install_tcl_package(NAME thread TARGET tclthread TCL_FILES ${THREAD_TCL_FILES})
+if(TARGET tls)   # not built on Windows (see pkgs/tls)
+    install_tcl_package(NAME tls TARGET tls)
+endif()
 
 ###############################
 # dlsh itself

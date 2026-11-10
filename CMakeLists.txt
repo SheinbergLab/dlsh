@@ -653,7 +653,9 @@ OFF emits a sidecar dlsh-runtime.zip so the binary signs cleanly" ON)
         test_dg_arrow
         test_dslog_tables
         test_dslog_readess
-        test_em_wide)
+        test_em_wide
+        test_tls)          # SKIPs unless the tls target was built
+                           # (DLSH_TEST_REQUIRE_TLS=1 makes that a failure)
     # Labelled `dlsh` so CI can run exactly these with `ctest -L dlsh`: a bare
     # ctest would also pick up tests registered by FetchContent dependencies
     # (zlib's `example`, libpng's suite), and a hardcoded -R list in the

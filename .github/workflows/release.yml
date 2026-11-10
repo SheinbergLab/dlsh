@@ -359,8 +359,12 @@ jobs:
             --sign "Developer ID Application" \
             install/lib/tdom/Darwin/arm64/*.dylib \
             install/lib/Tktable/Darwin/arm64/*.dylib
-          # Fail loudly if any did not end up Developer-ID signed.
-          for f in install/lib/tdom/Darwin/arm64/*.dylib install/lib/Tktable/Darwin/arm64/*.dylib; do
+          # Fail loudly if any did not end up Developer-ID signed. The tls
+          # package (pkgs/tls, static OpenSSL) is signed by the Xcode build
+          # like every CMake package; it is checked here too because a
+          # hardened dlsh/stim2 refuses to load it otherwise.
+          for f in install/lib/tdom/Darwin/arm64/*.dylib install/lib/Tktable/Darwin/arm64/*.dylib \
+                   install/lib/tls/Darwin/arm64/*.dylib; do
             codesign -dvvv "$f" 2>&1 | grep -q "Authority=Developer ID Application" \
               || { echo "FAIL: $f not Developer-ID signed"; exit 1; }
           done
@@ -412,6 +416,13 @@ jobs:
           
           echo "Merging Darwin arm64..."
           cp -rn artifacts/vfs-darwin-arm64/* final/lib/ 2>/dev/null || cp -r artifacts/vfs-darwin-arm64/* final/lib/
+
+          # tls (pkgs/tls) must be present for every platform: dserv, stim2
+          # and dlsh all expect `package require tls` to work from dlsh.zip.
+          for plat in Linux/x86_64 Linux/aarch64 Darwin/arm64; do
+            ls final/lib/tls/$plat/libtcl9tls*.* >/dev/null 2>&1 \
+              || { echo "FAIL: no tls library for $plat in dlsh.zip"; exit 1; }
+          done
 
           # Show what we've got
           echo "Final vfs structure (shared libs):"

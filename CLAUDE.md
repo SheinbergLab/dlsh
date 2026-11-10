@@ -55,5 +55,7 @@ README recording the traps in using them.
 - `src/lablib/` — the C list/group library (`dfu*`), no Tcl dependency
 - `lib/`, `vfs/lib/` — Tcl-level library shipped inside `dlsh.zip`
 - `docs/dynlists.md` — dynlist semantics
+- `pkgs/tls/` — `package require tls` (TclTLS + OpenSSL, both pinned,
+  OpenSSL static); `docs/tls.md` covers bumping the pins
 - `src/lablib/dslog.c`, `pkgs/dslog/` — the `dslog` package that reads dserv
   `.ess` files; `docs/dslog.md` describes its readers
